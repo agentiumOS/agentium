@@ -112,9 +112,9 @@ describe("BaseVectorStore multimodal routing (via InMemoryVectorStore)", () => {
       const embedder = makeTextEmbedder();
       const store = new InMemoryVectorStore(embedder);
       await store.upsert("col", { id: "1", content: "a", embedding: [1, 0, 0] });
-      await expect(
-        store.search("col", [{ type: "image", data: "B64", mimeType: "image/png" }]),
-      ).rejects.toThrow(/Multimodal query requires/);
+      await expect(store.search("col", [{ type: "image", data: "B64", mimeType: "image/png" }])).rejects.toThrow(
+        /Multimodal query requires/,
+      );
     });
   });
 

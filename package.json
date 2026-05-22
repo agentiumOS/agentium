@@ -43,7 +43,7 @@
     ]
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.4",
+    "@biomejs/biome": "^2.4.15",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "openai": "^6.25.0",

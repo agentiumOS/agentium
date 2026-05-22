@@ -142,8 +142,7 @@ async function partToGenAIContent(part: ContentPart): Promise<unknown> {
   }
   // FilePart
   const mt = part.mimeType;
-  const supported =
-    SUPPORTED_MM_MIME_PREFIXES.some((p) => mt.startsWith(p)) || SUPPORTED_MM_MIME_EXACT.has(mt);
+  const supported = SUPPORTED_MM_MIME_PREFIXES.some((p) => mt.startsWith(p)) || SUPPORTED_MM_MIME_EXACT.has(mt);
   if (!supported) {
     throw new Error(
       `Unsupported MIME type for multimodal embedding: "${mt}". ` +

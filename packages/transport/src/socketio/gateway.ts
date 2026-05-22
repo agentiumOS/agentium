@@ -1,5 +1,10 @@
 import type { Registry } from "@agentium/core";
-import { classifyServables, collectToolkitTools, describeToolLibrary, registry as globalRegistry } from "@agentium/core";
+import {
+  classifyServables,
+  collectToolkitTools,
+  describeToolLibrary,
+  registry as globalRegistry,
+} from "@agentium/core";
 import type { GatewayOptions } from "./types.js";
 
 function createSocketRateLimiter(maxPerMinute = 60) {

@@ -1,6 +1,11 @@
 import { createRequire } from "node:module";
 import type { Registry } from "@agentium/core";
-import { classifyServables, collectToolkitTools, describeToolLibrary, registry as globalRegistry } from "@agentium/core";
+import {
+  classifyServables,
+  collectToolkitTools,
+  describeToolLibrary,
+  registry as globalRegistry,
+} from "@agentium/core";
 import { createAdminRouter } from "./admin-router.js";
 import { buildMultiModalInput, createFileUploadMiddleware } from "./file-upload.js";
 import { createJwtMiddleware } from "./jwt-middleware.js";
