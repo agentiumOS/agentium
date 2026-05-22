@@ -1,5 +1,7 @@
 import { createRequire } from "node:module";
-import type { EmbeddingProvider } from "../types.js";
+import type { ContentPart } from "../../models/types.js";
+import type { EmbeddingInput, EmbeddingProvider } from "../types.js";
+import { fetchAsBase64 } from "./multimodal-utils.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -12,16 +14,23 @@ export interface GoogleEmbeddingConfig {
 const MODEL_DIMENSIONS: Record<string, number> = {
   "text-embedding-004": 768,
   "embedding-001": 768,
+  "gemini-embedding-001": 3072,
+  "gemini-embedding-2": 3072,
 };
+
+const SUPPORTED_MM_MIME_PREFIXES = ["image/", "audio/", "video/"];
+const SUPPORTED_MM_MIME_EXACT = new Set(["application/pdf"]);
 
 export class GoogleEmbedding implements EmbeddingProvider {
   readonly dimensions: number;
+  readonly supportsMultimodal: boolean;
   private ai: any;
   private model: string;
 
   constructor(config: GoogleEmbeddingConfig = {}) {
     this.model = config.model ?? "text-embedding-004";
     this.dimensions = config.dimensions ?? MODEL_DIMENSIONS[this.model] ?? 768;
+    this.supportsMultimodal = this.model.startsWith("gemini-embedding-");
 
     try {
       const { GoogleGenAI } = _require("@google/genai");
@@ -85,4 +94,69 @@ export class GoogleEmbedding implements EmbeddingProvider {
     }
     return results;
   }
+
+  async embedMultimodal(input: EmbeddingInput): Promise<number[]> {
+    if (!this.supportsMultimodal) {
+      throw new Error(
+        `Model "${this.model}" does not support multimodal embeddings. ` +
+          'Use "gemini-embedding-2" (or any "gemini-embedding-*" model).',
+      );
+    }
+    const parts = normalizeInput(input);
+    const contents = await Promise.all(parts.map((p) => partToGenAIContent(p)));
+
+    const result: any = await this.withRetry(() =>
+      this.ai.models.embedContent({
+        model: this.model,
+        contents,
+        ...(this.dimensions !== MODEL_DIMENSIONS[this.model]
+          ? { config: { outputDimensionality: this.dimensions } }
+          : {}),
+      }),
+    );
+    return result.embeddings[0].values;
+  }
+}
+
+function normalizeInput(input: EmbeddingInput): ContentPart[] {
+  if (typeof input === "string") return [{ type: "text", text: input }];
+  if (Array.isArray(input)) return input;
+  return [input];
+}
+
+async function partToGenAIContent(part: ContentPart): Promise<unknown> {
+  if (part.type === "text") {
+    return { text: part.text };
+  }
+  if (part.type === "image") {
+    const mimeType = part.mimeType ?? "image/png";
+    if (isUrl(part.data)) {
+      const fetched = await fetchAsBase64(part.data);
+      return { inlineData: { data: fetched.data, mimeType: fetched.mimeType || mimeType } };
+    }
+    return { inlineData: { data: part.data, mimeType } };
+  }
+  if (part.type === "audio") {
+    const mimeType = part.mimeType ?? "audio/wav";
+    return { inlineData: { data: part.data, mimeType } };
+  }
+  // FilePart
+  const mt = part.mimeType;
+  const supported =
+    SUPPORTED_MM_MIME_PREFIXES.some((p) => mt.startsWith(p)) || SUPPORTED_MM_MIME_EXACT.has(mt);
+  if (!supported) {
+    throw new Error(
+      `Unsupported MIME type for multimodal embedding: "${mt}". ` +
+        `Supported: image/*, audio/*, video/*, application/pdf.`,
+    );
+  }
+  if (isUrl(part.data)) {
+    const fetched = await fetchAsBase64(part.data);
+    return { inlineData: { data: fetched.data, mimeType: fetched.mimeType || mt } };
+  }
+  return { inlineData: { data: part.data, mimeType: mt } };
+}
+
+function isUrl(s: string): boolean {
+  return /^https?:\/\//i.test(s);
 }

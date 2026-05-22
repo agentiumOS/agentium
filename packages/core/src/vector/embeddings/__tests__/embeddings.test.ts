@@ -293,4 +293,120 @@ describe("GoogleEmbedding", () => {
       expect(mockEmbedContent).toHaveBeenCalledTimes(3);
     });
   });
+
+  describe("gemini-embedding-2 / multimodal", () => {
+    it("defaults gemini-embedding-2 to 3072 dimensions", () => {
+      const embedder = new GoogleEmbedding({ model: "gemini-embedding-2" });
+      expect(embedder.dimensions).toBe(3072);
+      expect(embedder.supportsMultimodal).toBe(true);
+    });
+
+    it("text-embedding-004 reports supportsMultimodal=false", () => {
+      const embedder = new GoogleEmbedding();
+      expect(embedder.supportsMultimodal).toBe(false);
+    });
+
+    it("embedMultimodal sends correct inlineData for text + base64 image", async () => {
+      mockEmbedContent.mockResolvedValueOnce({ embeddings: [{ values: [0.1, 0.2, 0.3] }] });
+
+      const embedder = makeEmbedder({ model: "gemini-embedding-2" });
+      const result = await embedder.embedMultimodal([
+        { type: "text", text: "A photo of a dog" },
+        { type: "image", data: "BASE64IMG", mimeType: "image/png" },
+      ]);
+
+      expect(result).toEqual([0.1, 0.2, 0.3]);
+      const call = mockEmbedContent.mock.calls[0][0];
+      expect(call.model).toBe("gemini-embedding-2");
+      expect(call.contents).toEqual([
+        { text: "A photo of a dog" },
+        { inlineData: { data: "BASE64IMG", mimeType: "image/png" } },
+      ]);
+    });
+
+    it("embedMultimodal accepts a string and wraps it as TextPart", async () => {
+      mockEmbedContent.mockResolvedValueOnce({ embeddings: [{ values: [1, 2] }] });
+
+      const embedder = makeEmbedder({ model: "gemini-embedding-2" });
+      await embedder.embedMultimodal("just text");
+
+      expect(mockEmbedContent.mock.calls[0][0].contents).toEqual([{ text: "just text" }]);
+    });
+
+    it("embedMultimodal fetches ImagePart with URL data into base64", async () => {
+      mockEmbedContent.mockResolvedValueOnce({ embeddings: [{ values: [0.5] }] });
+
+      const fakeFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        statusText: "OK",
+        status: 200,
+        headers: { get: (h: string) => (h === "content-type" ? "image/jpeg" : null) },
+        arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+      });
+      const origFetch = (globalThis as any).fetch;
+      (globalThis as any).fetch = fakeFetch;
+      try {
+        const embedder = makeEmbedder({ model: "gemini-embedding-2" });
+        await embedder.embedMultimodal([{ type: "image", data: "https://example.com/img.jpg" }]);
+
+        expect(fakeFetch).toHaveBeenCalledWith("https://example.com/img.jpg");
+        const parts = mockEmbedContent.mock.calls[0][0].contents;
+        expect(parts[0].inlineData.mimeType).toBe("image/jpeg");
+        expect(parts[0].inlineData.data).toBe(Buffer.from([1, 2, 3, 4]).toString("base64"));
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
+
+    it("embedMultimodal routes FilePart with video/mp4 through inlineData", async () => {
+      mockEmbedContent.mockResolvedValueOnce({ embeddings: [{ values: [0.9] }] });
+
+      const embedder = makeEmbedder({ model: "gemini-embedding-2" });
+      await embedder.embedMultimodal([
+        { type: "file", data: "VIDEOBASE64", mimeType: "video/mp4", filename: "clip.mp4" },
+      ]);
+
+      expect(mockEmbedContent.mock.calls[0][0].contents[0]).toEqual({
+        inlineData: { data: "VIDEOBASE64", mimeType: "video/mp4" },
+      });
+    });
+
+    it("embedMultimodal routes FilePart with application/pdf through inlineData", async () => {
+      mockEmbedContent.mockResolvedValueOnce({ embeddings: [{ values: [0.7] }] });
+
+      const embedder = makeEmbedder({ model: "gemini-embedding-2" });
+      await embedder.embedMultimodal([{ type: "file", data: "PDFBASE64", mimeType: "application/pdf" }]);
+
+      expect(mockEmbedContent.mock.calls[0][0].contents[0]).toEqual({
+        inlineData: { data: "PDFBASE64", mimeType: "application/pdf" },
+      });
+    });
+
+    it("embedMultimodal throws when model is text-embedding-004", async () => {
+      const embedder = makeEmbedder();
+      await expect(embedder.embedMultimodal([{ type: "text", text: "hi" }])).rejects.toThrow(
+        /does not support multimodal/,
+      );
+      expect(mockEmbedContent).not.toHaveBeenCalled();
+    });
+
+    it("embedMultimodal throws on unsupported FilePart MIME", async () => {
+      const embedder = makeEmbedder({ model: "gemini-embedding-2" });
+      await expect(
+        embedder.embedMultimodal([{ type: "file", data: "X", mimeType: "application/zip" }]),
+      ).rejects.toThrow(/Unsupported MIME type/);
+    });
+
+    it("embedMultimodal retries on 429 then succeeds", async () => {
+      const rateLimitError = Object.assign(new Error("rate limited"), { status: 429 });
+      mockEmbedContent
+        .mockRejectedValueOnce(rateLimitError)
+        .mockResolvedValueOnce({ embeddings: [{ values: [0.42] }] });
+
+      const embedder = makeEmbedder({ model: "gemini-embedding-2" });
+      const result = await embedder.embedMultimodal([{ type: "text", text: "retry me" }]);
+      expect(result).toEqual([0.42]);
+      expect(mockEmbedContent).toHaveBeenCalledTimes(2);
+    });
+  });
 });

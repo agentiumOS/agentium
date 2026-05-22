@@ -1,6 +1,6 @@
 {
   "name": "@agentium/observability",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Tracing, metrics, and structured logging for Agentium agents",
   "license": "MIT",
   "repository": {
@@ -38,7 +38,7 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "@agentium/core": "^1.0.0"
+    "@agentium/core": "^1.1.0"
   },
   "devDependencies": {
     "@types/node": "^25.3.1",

@@ -18,6 +18,7 @@ const MODEL_DIMENSIONS: Record<string, number> = {
 
 export class OpenAIEmbedding implements EmbeddingProvider {
   readonly dimensions: number;
+  readonly supportsMultimodal = false;
   private client: any;
   private model: string;
 

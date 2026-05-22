@@ -367,6 +367,7 @@ export type { BM25Document, BM25Result } from "./vector/bm25.js";
 export { BM25Index } from "./vector/bm25.js";
 export type { GoogleEmbeddingConfig } from "./vector/embeddings/google.js";
 export { GoogleEmbedding } from "./vector/embeddings/google.js";
+export { fetchAsBase64, partsFromFile } from "./vector/embeddings/multimodal-utils.js";
 export type { OpenAIEmbeddingConfig } from "./vector/embeddings/openai.js";
 export { OpenAIEmbedding } from "./vector/embeddings/openai.js";
 export { InMemoryVectorStore } from "./vector/in-memory.js";
@@ -379,6 +380,7 @@ export { QdrantVectorStore } from "./vector/qdrant.js";
 export type { RankedItem, RRFOptions } from "./vector/rrf.js";
 export { reciprocalRankFusion } from "./vector/rrf.js";
 export type {
+  EmbeddingInput,
   EmbeddingProvider,
   VectorDocument,
   VectorSearchOptions,

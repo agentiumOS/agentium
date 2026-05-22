@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import type { ContentPart } from "../models/types.js";
 import { BaseVectorStore } from "./base.js";
 import type { EmbeddingProvider, VectorDocument, VectorSearchOptions, VectorSearchResult } from "./types.js";
 
@@ -85,7 +86,7 @@ export class MongoDBVectorStore extends BaseVectorStore {
 
   async search(
     collection: string,
-    query: number[] | string,
+    query: number[] | string | ContentPart[],
     options?: VectorSearchOptions,
   ): Promise<VectorSearchResult[]> {
     const vec = await this.ensureQueryVector(query);

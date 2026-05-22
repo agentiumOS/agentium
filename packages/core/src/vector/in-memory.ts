@@ -1,3 +1,4 @@
+import type { ContentPart } from "../models/types.js";
 import { BaseVectorStore } from "./base.js";
 import type { VectorDocument, VectorSearchOptions, VectorSearchResult } from "./types.js";
 
@@ -40,7 +41,7 @@ export class InMemoryVectorStore extends BaseVectorStore {
 
   async search(
     collection: string,
-    query: number[] | string,
+    query: number[] | string | ContentPart[],
     options?: VectorSearchOptions,
   ): Promise<VectorSearchResult[]> {
     const vec = await this.ensureQueryVector(query);
