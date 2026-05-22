@@ -23,11 +23,12 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        # `npm install` (not `npm ci`) so that platform-specific optional
-        # dependencies (e.g. @rollup/rollup-linux-x64-gnu) resolve on the
-        # Linux runner even when the lockfile was generated on macOS.
-        # See https://github.com/npm/cli/issues/4828
-        run: npm install --legacy-peer-deps --include=optional
+        # Delete the lockfile (generated on macOS, missing Linux native
+        # bindings like @rollup/rollup-linux-x64-gnu) and re-resolve on the
+        # Linux runner. See https://github.com/npm/cli/issues/4828
+        run: |
+          rm -f package-lock.json
+          npm install --legacy-peer-deps --include=optional
 
       - name: Build packages
         run: npm run build
