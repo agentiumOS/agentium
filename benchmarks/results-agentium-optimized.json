@@ -1,0 +1,117 @@
+{
+  "framework": "Agentium",
+  "model": "gpt-4o-mini",
+  "scenarios": [
+    {
+      "name": "simple_completion",
+      "startupMs": 151,
+      "memoryMB": -8.84,
+      "runs": [
+        {
+          "responseMs": 945,
+          "promptTokens": 28,
+          "completionTokens": 7,
+          "totalTokens": 35
+        },
+        {
+          "responseMs": 641,
+          "promptTokens": 28,
+          "completionTokens": 7,
+          "totalTokens": 35
+        },
+        {
+          "responseMs": 704,
+          "promptTokens": 28,
+          "completionTokens": 7,
+          "totalTokens": 35
+        },
+        {
+          "responseMs": 691,
+          "promptTokens": 28,
+          "completionTokens": 7,
+          "totalTokens": 35
+        },
+        {
+          "responseMs": 607,
+          "promptTokens": 28,
+          "completionTokens": 7,
+          "totalTokens": 35
+        }
+      ]
+    },
+    {
+      "name": "tool_calling",
+      "startupMs": 38,
+      "memoryMB": -19.83,
+      "runs": [
+        {
+          "responseMs": 1790,
+          "promptTokens": 167,
+          "completionTokens": 29,
+          "totalTokens": 196
+        },
+        {
+          "responseMs": 2034,
+          "promptTokens": 167,
+          "completionTokens": 29,
+          "totalTokens": 196
+        },
+        {
+          "responseMs": 1986,
+          "promptTokens": 167,
+          "completionTokens": 29,
+          "totalTokens": 196
+        },
+        {
+          "responseMs": 1758,
+          "promptTokens": 167,
+          "completionTokens": 30,
+          "totalTokens": 197
+        },
+        {
+          "responseMs": 1851,
+          "promptTokens": 167,
+          "completionTokens": 29,
+          "totalTokens": 196
+        }
+      ]
+    },
+    {
+      "name": "multi_turn_memory",
+      "startupMs": 3,
+      "memoryMB": -18.24,
+      "runs": [
+        {
+          "responseMs": 2076,
+          "promptTokens": 178,
+          "completionTokens": 24,
+          "totalTokens": 202
+        },
+        {
+          "responseMs": 2175,
+          "promptTokens": 178,
+          "completionTokens": 24,
+          "totalTokens": 202
+        },
+        {
+          "responseMs": 2459,
+          "promptTokens": 184,
+          "completionTokens": 27,
+          "totalTokens": 211
+        },
+        {
+          "responseMs": 2835,
+          "promptTokens": 178,
+          "completionTokens": 24,
+          "totalTokens": 202
+        },
+        {
+          "responseMs": 2095,
+          "promptTokens": 202,
+          "completionTokens": 36,
+          "totalTokens": 238
+        }
+      ]
+    }
+  ]
+}

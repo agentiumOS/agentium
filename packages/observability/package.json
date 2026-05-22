@@ -1,0 +1,48 @@
+{
+  "name": "@agentium/observability",
+  "version": "1.0.0",
+  "description": "Tracing, metrics, and structured logging for Agentium agents",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentiumOS/agentium.git",
+    "directory": "packages/observability"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "observability",
+    "tracing",
+    "metrics",
+    "langfuse",
+    "opentelemetry"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --shims --clean",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --shims --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@agentium/core": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.1",
+    "tsup": "^8.0.0",
+    "typescript": "^5.6.0"
+  }
+}

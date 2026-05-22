@@ -1,0 +1,74 @@
+{
+  "name": "agentium",
+  "version": "1.0.0",
+  "description": "Production-ready AI agent framework with multi-model support, workflows, teams, and observability",
+  "private": true,
+  "keywords": [
+    "ai",
+    "agent",
+    "llm",
+    "framework",
+    "multi-agent",
+    "workflow",
+    "observability"
+  ],
+  "type": "module",
+  "workspaces": [
+    "packages/core",
+    "packages/transport",
+    "packages/queue",
+    "packages/browser",
+    "packages/eval",
+    "packages/observability",
+    "packages/admin",
+    "packages/edge"
+  ],
+  "scripts": {
+    "build": "npm run build -w packages/core && npm run build -w packages/transport -w packages/queue -w packages/browser -w packages/eval -w packages/observability -w packages/admin -w packages/edge",
+    "build:core": "npm run build -w packages/core",
+    "build:transport": "npm run build -w packages/transport",
+    "build:queue": "npm run build -w packages/queue",
+    "build:browser": "npm run build -w packages/browser",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "prepare": "husky",
+    "release": "node scripts/release.mjs"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,json}": [
+      "biome check --write --no-errors-on-unmatched"
+    ]
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.4",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "openai": "^6.25.0",
+    "tsx": "^4.21.0",
+    "vitest": "^4.0.18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentiumOS/agentium.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agentiumOS/agentium/issues"
+  },
+  "homepage": "https://github.com/agentiumOS/agentium#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.1",
+    "@google/genai": "^0.10.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@qdrant/js-client-rest": "^1.17.0",
+    "@types/express": "^5.0.6",
+    "express": "^5.2.1",
+    "mongodb": "^6.21.0",
+    "multer": "^2.0.2",
+    "socket.io": "^4.8.3",
+    "swagger-ui-express": "^5.0.1"
+  }
+}

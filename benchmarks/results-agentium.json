@@ -1,0 +1,1196 @@
+{
+  "framework": "Agentium",
+  "model": "gpt-4o-mini",
+  "scenarios": [
+    {
+      "name": "simple_completion",
+      "startupMs": 272,
+      "memoryMB": -12.77,
+      "runs": [
+        {
+          "responseMs": 1093,
+          "promptTokens": 28,
+          "completionTokens": 7,
+          "totalTokens": 35,
+          "tokenDetails": {
+            "input_tokens": 28,
+            "output_tokens": 7,
+            "total_tokens": 35,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.0000084,
+          "costInput": 0.0000042,
+          "costOutput": 0.0000042,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 28,
+              "output_tokens": 7,
+              "total_tokens": 35,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 28,
+              "output_tokens": 7,
+              "total_tokens": 35,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 862,
+          "promptTokens": 28,
+          "completionTokens": 7,
+          "totalTokens": 35,
+          "tokenDetails": {
+            "input_tokens": 28,
+            "output_tokens": 7,
+            "total_tokens": 35,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.0000084,
+          "costInput": 0.0000042,
+          "costOutput": 0.0000042,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 28,
+              "output_tokens": 7,
+              "total_tokens": 35,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 28,
+              "output_tokens": 7,
+              "total_tokens": 35,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 973,
+          "promptTokens": 28,
+          "completionTokens": 7,
+          "totalTokens": 35,
+          "tokenDetails": {
+            "input_tokens": 28,
+            "output_tokens": 7,
+            "total_tokens": 35,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.0000084,
+          "costInput": 0.0000042,
+          "costOutput": 0.0000042,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 28,
+              "output_tokens": 7,
+              "total_tokens": 35,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 28,
+              "output_tokens": 7,
+              "total_tokens": 35,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 1072,
+          "promptTokens": 28,
+          "completionTokens": 7,
+          "totalTokens": 35,
+          "tokenDetails": {
+            "input_tokens": 28,
+            "output_tokens": 7,
+            "total_tokens": 35,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.0000084,
+          "costInput": 0.0000042,
+          "costOutput": 0.0000042,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 28,
+              "output_tokens": 7,
+              "total_tokens": 35,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 28,
+              "output_tokens": 7,
+              "total_tokens": 35,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 771,
+          "promptTokens": 28,
+          "completionTokens": 7,
+          "totalTokens": 35,
+          "tokenDetails": {
+            "input_tokens": 28,
+            "output_tokens": 7,
+            "total_tokens": 35,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.0000084,
+          "costInput": 0.0000042,
+          "costOutput": 0.0000042,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 28,
+              "output_tokens": 7,
+              "total_tokens": 35,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 28,
+              "output_tokens": 7,
+              "total_tokens": 35,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        }
+      ],
+      "tokenAccuracyRate": 1
+    },
+    {
+      "name": "tool_calling",
+      "startupMs": 37,
+      "memoryMB": -75.89,
+      "runs": [
+        {
+          "responseMs": 2216,
+          "promptTokens": 167,
+          "completionTokens": 29,
+          "totalTokens": 196,
+          "tokenDetails": {
+            "input_tokens": 167,
+            "output_tokens": 29,
+            "total_tokens": 196,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00004245,
+          "costInput": 0.00002505,
+          "costOutput": 0.0000174,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 167,
+              "output_tokens": 29,
+              "total_tokens": 196,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 167,
+              "output_tokens": 29,
+              "total_tokens": 196,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 1842,
+          "promptTokens": 167,
+          "completionTokens": 29,
+          "totalTokens": 196,
+          "tokenDetails": {
+            "input_tokens": 167,
+            "output_tokens": 29,
+            "total_tokens": 196,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00004245,
+          "costInput": 0.00002505,
+          "costOutput": 0.0000174,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 167,
+              "output_tokens": 29,
+              "total_tokens": 196,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 167,
+              "output_tokens": 29,
+              "total_tokens": 196,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 1946,
+          "promptTokens": 167,
+          "completionTokens": 30,
+          "totalTokens": 197,
+          "tokenDetails": {
+            "input_tokens": 167,
+            "output_tokens": 30,
+            "total_tokens": 197,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.000043049999999999996,
+          "costInput": 0.00002505,
+          "costOutput": 0.000017999999999999997,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 167,
+              "output_tokens": 30,
+              "total_tokens": 197,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 167,
+              "output_tokens": 30,
+              "total_tokens": 197,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 1891,
+          "promptTokens": 167,
+          "completionTokens": 29,
+          "totalTokens": 196,
+          "tokenDetails": {
+            "input_tokens": 167,
+            "output_tokens": 29,
+            "total_tokens": 196,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00004245,
+          "costInput": 0.00002505,
+          "costOutput": 0.0000174,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 167,
+              "output_tokens": 29,
+              "total_tokens": 196,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 167,
+              "output_tokens": 29,
+              "total_tokens": 196,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 1742,
+          "promptTokens": 167,
+          "completionTokens": 29,
+          "totalTokens": 196,
+          "tokenDetails": {
+            "input_tokens": 167,
+            "output_tokens": 29,
+            "total_tokens": 196,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00004245,
+          "costInput": 0.00002505,
+          "costOutput": 0.0000174,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 167,
+              "output_tokens": 29,
+              "total_tokens": 196,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 167,
+              "output_tokens": 29,
+              "total_tokens": 196,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        }
+      ],
+      "tokenAccuracyRate": 1
+    },
+    {
+      "name": "multi_turn_memory",
+      "startupMs": 3,
+      "memoryMB": -5.28,
+      "runs": [
+        {
+          "responseMs": 2201,
+          "promptTokens": 184,
+          "completionTokens": 27,
+          "totalTokens": 211,
+          "tokenDetails": {
+            "input_tokens": 184,
+            "output_tokens": 27,
+            "total_tokens": 211,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.0000438,
+          "costInput": 0.0000276,
+          "costOutput": 0.0000162,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 184,
+              "output_tokens": 27,
+              "total_tokens": 211,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 184,
+              "output_tokens": 27,
+              "total_tokens": 211,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 2301,
+          "promptTokens": 178,
+          "completionTokens": 24,
+          "totalTokens": 202,
+          "tokenDetails": {
+            "input_tokens": 178,
+            "output_tokens": 24,
+            "total_tokens": 202,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.000041099999999999996,
+          "costInput": 0.0000267,
+          "costOutput": 0.0000144,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 178,
+              "output_tokens": 24,
+              "total_tokens": 202,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 178,
+              "output_tokens": 24,
+              "total_tokens": 202,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 2460,
+          "promptTokens": 196,
+          "completionTokens": 33,
+          "totalTokens": 229,
+          "tokenDetails": {
+            "input_tokens": 196,
+            "output_tokens": 33,
+            "total_tokens": 229,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00004919999999999999,
+          "costInput": 0.000029399999999999996,
+          "costOutput": 0.000019799999999999997,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 196,
+              "output_tokens": 33,
+              "total_tokens": 229,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 196,
+              "output_tokens": 33,
+              "total_tokens": 229,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 2557,
+          "promptTokens": 178,
+          "completionTokens": 24,
+          "totalTokens": 202,
+          "tokenDetails": {
+            "input_tokens": 178,
+            "output_tokens": 24,
+            "total_tokens": 202,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.000041099999999999996,
+          "costInput": 0.0000267,
+          "costOutput": 0.0000144,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 178,
+              "output_tokens": 24,
+              "total_tokens": 202,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 178,
+              "output_tokens": 24,
+              "total_tokens": 202,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 2459,
+          "promptTokens": 178,
+          "completionTokens": 24,
+          "totalTokens": 202,
+          "tokenDetails": {
+            "input_tokens": 178,
+            "output_tokens": 24,
+            "total_tokens": 202,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.000041099999999999996,
+          "costInput": 0.0000267,
+          "costOutput": 0.0000144,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 178,
+              "output_tokens": 24,
+              "total_tokens": 202,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 178,
+              "output_tokens": 24,
+              "total_tokens": 202,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        }
+      ],
+      "tokenAccuracyRate": 1
+    },
+    {
+      "name": "prompt_caching",
+      "startupMs": 1,
+      "memoryMB": -9.82,
+      "runs": [
+        {
+          "responseMs": 7525,
+          "promptTokens": 37,
+          "completionTokens": 411,
+          "totalTokens": 448,
+          "tokenDetails": {
+            "input_tokens": 37,
+            "output_tokens": 411,
+            "total_tokens": 448,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00025215,
+          "costInput": 0.000005549999999999999,
+          "costOutput": 0.0002466,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 37,
+              "output_tokens": 411,
+              "total_tokens": 448,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 37,
+              "output_tokens": 411,
+              "total_tokens": 448,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 6524,
+          "promptTokens": 37,
+          "completionTokens": 429,
+          "totalTokens": 466,
+          "tokenDetails": {
+            "input_tokens": 37,
+            "output_tokens": 429,
+            "total_tokens": 466,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00026294999999999997,
+          "costInput": 0.000005549999999999999,
+          "costOutput": 0.00025739999999999997,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 37,
+              "output_tokens": 429,
+              "total_tokens": 466,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 37,
+              "output_tokens": 429,
+              "total_tokens": 466,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 7913,
+          "promptTokens": 37,
+          "completionTokens": 424,
+          "totalTokens": 461,
+          "tokenDetails": {
+            "input_tokens": 37,
+            "output_tokens": 424,
+            "total_tokens": 461,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00025994999999999995,
+          "costInput": 0.000005549999999999999,
+          "costOutput": 0.00025439999999999995,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 37,
+              "output_tokens": 424,
+              "total_tokens": 461,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 37,
+              "output_tokens": 424,
+              "total_tokens": 461,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 8246,
+          "promptTokens": 37,
+          "completionTokens": 417,
+          "totalTokens": 454,
+          "tokenDetails": {
+            "input_tokens": 37,
+            "output_tokens": 417,
+            "total_tokens": 454,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00025574999999999996,
+          "costInput": 0.000005549999999999999,
+          "costOutput": 0.00025019999999999996,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 37,
+              "output_tokens": 417,
+              "total_tokens": 454,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 37,
+              "output_tokens": 417,
+              "total_tokens": 454,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 7584,
+          "promptTokens": 37,
+          "completionTokens": 475,
+          "totalTokens": 512,
+          "tokenDetails": {
+            "input_tokens": 37,
+            "output_tokens": 475,
+            "total_tokens": 512,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00029055,
+          "costInput": 0.000005549999999999999,
+          "costOutput": 0.000285,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 37,
+              "output_tokens": 475,
+              "total_tokens": 512,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 37,
+              "output_tokens": 475,
+              "total_tokens": 512,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        }
+      ],
+      "tokenAccuracyRate": 1
+    },
+    {
+      "name": "cost_tracking",
+      "startupMs": 3,
+      "memoryMB": 0.64,
+      "runs": [
+        {
+          "responseMs": 2139,
+          "promptTokens": 25,
+          "completionTokens": 84,
+          "totalTokens": 109,
+          "tokenDetails": {
+            "input_tokens": 25,
+            "output_tokens": 84,
+            "total_tokens": 109,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00005415,
+          "costInput": 0.0000037499999999999997,
+          "costOutput": 0.0000504,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 25,
+              "output_tokens": 84,
+              "total_tokens": 109,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 25,
+              "output_tokens": 84,
+              "total_tokens": 109,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 1946,
+          "promptTokens": 25,
+          "completionTokens": 71,
+          "totalTokens": 96,
+          "tokenDetails": {
+            "input_tokens": 25,
+            "output_tokens": 71,
+            "total_tokens": 96,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00004634999999999999,
+          "costInput": 0.0000037499999999999997,
+          "costOutput": 0.00004259999999999999,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 25,
+              "output_tokens": 71,
+              "total_tokens": 96,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 25,
+              "output_tokens": 71,
+              "total_tokens": 96,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 2102,
+          "promptTokens": 25,
+          "completionTokens": 87,
+          "totalTokens": 112,
+          "tokenDetails": {
+            "input_tokens": 25,
+            "output_tokens": 87,
+            "total_tokens": 112,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00005594999999999999,
+          "costInput": 0.0000037499999999999997,
+          "costOutput": 0.000052199999999999995,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 25,
+              "output_tokens": 87,
+              "total_tokens": 112,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 25,
+              "output_tokens": 87,
+              "total_tokens": 112,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 1944,
+          "promptTokens": 25,
+          "completionTokens": 82,
+          "totalTokens": 107,
+          "tokenDetails": {
+            "input_tokens": 25,
+            "output_tokens": 82,
+            "total_tokens": 107,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00005295,
+          "costInput": 0.0000037499999999999997,
+          "costOutput": 0.000049199999999999997,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 25,
+              "output_tokens": 82,
+              "total_tokens": 107,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 25,
+              "output_tokens": 82,
+              "total_tokens": 107,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        },
+        {
+          "responseMs": 2405,
+          "promptTokens": 25,
+          "completionTokens": 89,
+          "totalTokens": 114,
+          "tokenDetails": {
+            "input_tokens": 25,
+            "output_tokens": 89,
+            "total_tokens": 114,
+            "reasoning_tokens": 0,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_input_tokens": 0,
+            "audio_output_tokens": 0
+          },
+          "costTotal": 0.00005714999999999999,
+          "costInput": 0.0000037499999999999997,
+          "costOutput": 0.00005339999999999999,
+          "costReasoning": 0,
+          "costCached": 0,
+          "costAudioInput": 0,
+          "costAudioOutput": 0,
+          "tokenAccuracy": {
+            "api": {
+              "input_tokens": 25,
+              "output_tokens": 89,
+              "total_tokens": 114,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "tracker": {
+              "input_tokens": 25,
+              "output_tokens": 89,
+              "total_tokens": 114,
+              "reasoning_tokens": 0,
+              "cached_tokens": 0,
+              "cache_write_tokens": 0,
+              "audio_input_tokens": 0,
+              "audio_output_tokens": 0
+            },
+            "match": true
+          }
+        }
+      ],
+      "tokenAccuracyRate": 1
+    }
+  ]
+}

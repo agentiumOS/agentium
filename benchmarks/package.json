@@ -1,0 +1,11 @@
+{
+  "name": "agentium-benchmarks",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@langchain/core": "latest",
+    "@langchain/langgraph": "latest",
+    "@langchain/openai": "latest",
+    "zod": "^3.23.0"
+  }
+}

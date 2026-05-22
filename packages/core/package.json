@@ -1,0 +1,131 @@
+{
+  "name": "@agentium/core",
+  "version": "1.0.0",
+  "description": "Core framework for building AI agents with tools, memory, and multi-model support",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentiumOS/agentium.git",
+    "directory": "packages/core"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "llm",
+    "openai",
+    "anthropic",
+    "tools",
+    "memory"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/tools/sandbox-worker.ts --format esm,cjs --dts --shims --clean",
+    "dev": "tsup src/index.ts src/tools/sandbox-worker.ts --format esm,cjs --dts --shims --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "uuid": "^11.0.0",
+    "zod": "^3.23.0",
+    "zod-to-json-schema": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.1",
+    "@types/uuid": "^10.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.6.0"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@google/genai": "^0.10.0",
+    "@qdrant/js-client-rest": "^1.0.0",
+    "better-sqlite3": "^11.0.0",
+    "mongodb": "^6.0.0",
+    "ollama": "^0.5.0",
+    "openai": "^4.0.0 || ^5.0.0 || ^6.0.0",
+    "@perplexity-ai/perplexity_ai": ">=0.20.0",
+    "pg": "^8.0.0",
+    "@modelcontextprotocol/sdk": ">=1.0.0",
+    "googleapis": ">=100.0.0",
+    "pdf-parse": ">=1.1.0",
+    "ioredis": ">=5.0.0",
+    "@aws-sdk/client-s3": ">=3.0.0",
+    "@aws-sdk/s3-request-presigner": ">=3.0.0",
+    "discord.js": ">=14.0.0",
+    "stripe": ">=14.0.0",
+    "gpt-tokenizer": ">=3.0.0",
+    "neo4j-driver": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "openai": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "@google/genai": {
+      "optional": true
+    },
+    "ollama": {
+      "optional": true
+    },
+    "better-sqlite3": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    },
+    "mongodb": {
+      "optional": true
+    },
+    "@qdrant/js-client-rest": {
+      "optional": true
+    },
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
+    "googleapis": {
+      "optional": true
+    },
+    "@perplexity-ai/perplexity_ai": {
+      "optional": true
+    },
+    "pdf-parse": {
+      "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    },
+    "@aws-sdk/client-s3": {
+      "optional": true
+    },
+    "@aws-sdk/s3-request-presigner": {
+      "optional": true
+    },
+    "discord.js": {
+      "optional": true
+    },
+    "stripe": {
+      "optional": true
+    },
+    "gpt-tokenizer": {
+      "optional": true
+    },
+    "neo4j-driver": {
+      "optional": true
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "name": "@agentium/admin",
+  "version": "1.0.0",
+  "description": "Admin CRUD API for dynamically creating, updating, and deleting Agentium agents, teams, and workflows at runtime",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentiumOS/agentium.git",
+    "directory": "packages/admin"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "admin",
+    "crud",
+    "management",
+    "agentium"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --shims --clean",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --shims --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.1",
+    "tsup": "^8.0.0",
+    "typescript": "^5.6.0"
+  },
+  "peerDependencies": {
+    "@agentium/core": "^1.0.0",
+    "@types/express": "^4.0.0 || ^5.0.0",
+    "express": "^4.0.0 || ^5.0.0",
+    "socket.io": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    },
+    "@types/express": {
+      "optional": true
+    },
+    "socket.io": {
+      "optional": true
+    }
+  }
+}
