@@ -1,6 +1,6 @@
 {
   "name": "@agentium/transport",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "HTTP and WebSocket transport layer for Agentium agents",
   "license": "MIT",
   "repository": {
@@ -42,7 +42,7 @@
     "typescript": "^5.6.0"
   },
   "peerDependencies": {
-    "@agentium/core": "^1.1.1",
+    "@agentium/core": "^1.1.2",
     "@types/express": "^4.0.0 || ^5.0.0",
     "express": "^4.0.0 || ^5.0.0",
     "multer": ">=2.0.0",
