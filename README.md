@@ -1,8 +1,14 @@
 # Agentium
 
+[![npm version](https://img.shields.io/npm/v/@agentium/core.svg?label=%40agentium%2Fcore)](https://www.npmjs.com/package/@agentium/core)
+[![npm downloads](https://img.shields.io/npm/dm/@agentium/core.svg)](https://www.npmjs.com/package/@agentium/core)
+[![license](https://img.shields.io/npm/l/@agentium/core.svg)](https://github.com/agentiumOS/agentium/blob/main/LICENSE)
+
 **Build, run, and manage multi-agent systems in Node.js / TypeScript.**
 
 Agentium is a TypeScript-native agent orchestration framework with zero dependency on meta-frameworks like LangGraph or Vercel AI SDK. It provides a clean, declarative API and a custom model abstraction layer that wraps raw provider SDKs directly.
+
+> Install from npm: [`@agentium/core`](https://www.npmjs.com/package/@agentium/core) · view all packages on [npmjs.com/org/agentium](https://www.npmjs.com/org/agentium)
 
 ## Features
 
@@ -22,16 +28,16 @@ Agentium is a TypeScript-native agent orchestration framework with zero dependen
 
 ## Packages
 
-| Package | Description |
-|---------|-------------|
-| [`@agentium/core`](packages/core) | Agents, Teams, Workflows, Models, Tools, Memory, Voice |
-| [`@agentium/transport`](packages/transport) | Express router + Socket.IO + Voice/Browser gateways |
-| [`@agentium/queue`](packages/queue) | BullMQ background jobs |
-| [`@agentium/browser`](packages/browser) | Vision-based browser automation |
-| [`@agentium/eval`](packages/eval) | Agent output testing and scoring |
-| [`@agentium/observability`](packages/observability) | Tracing, metrics, structured logging |
-| [`@agentium/admin`](packages/admin) | Admin CRUD API for runtime agent management |
-| [`@agentium/edge`](packages/edge) | IoT toolkits + edge runtime for Raspberry Pi |
+| Package | npm | Description |
+|---------|-----|-------------|
+| [`@agentium/core`](packages/core) | [![npm](https://img.shields.io/npm/v/@agentium/core.svg)](https://www.npmjs.com/package/@agentium/core) | Agents, Teams, Workflows, Models, Tools, Memory, Voice |
+| [`@agentium/transport`](packages/transport) | [![npm](https://img.shields.io/npm/v/@agentium/transport.svg)](https://www.npmjs.com/package/@agentium/transport) | Express router + Socket.IO + Voice/Browser gateways |
+| [`@agentium/queue`](packages/queue) | [![npm](https://img.shields.io/npm/v/@agentium/queue.svg)](https://www.npmjs.com/package/@agentium/queue) | BullMQ background jobs |
+| [`@agentium/browser`](packages/browser) | [![npm](https://img.shields.io/npm/v/@agentium/browser.svg)](https://www.npmjs.com/package/@agentium/browser) | Vision-based browser automation |
+| [`@agentium/eval`](packages/eval) | [![npm](https://img.shields.io/npm/v/@agentium/eval.svg)](https://www.npmjs.com/package/@agentium/eval) | Agent output testing and scoring |
+| [`@agentium/observability`](packages/observability) | [![npm](https://img.shields.io/npm/v/@agentium/observability.svg)](https://www.npmjs.com/package/@agentium/observability) | Tracing, metrics, structured logging |
+| [`@agentium/admin`](packages/admin) | [![npm](https://img.shields.io/npm/v/@agentium/admin.svg)](https://www.npmjs.com/package/@agentium/admin) | Admin CRUD API for runtime agent management |
+| [`@agentium/edge`](packages/edge) | [![npm](https://img.shields.io/npm/v/@agentium/edge.svg)](https://www.npmjs.com/package/@agentium/edge) | IoT toolkits + edge runtime for Raspberry Pi |
 
 ## Quick Start
 
