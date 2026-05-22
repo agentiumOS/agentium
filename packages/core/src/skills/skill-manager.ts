@@ -1,4 +1,5 @@
 import type { ToolDef } from "../tools/types.js";
+import { GitSkillLoader } from "./loaders/git.js";
 import { LocalSkillLoader } from "./loaders/local.js";
 import { NpmSkillLoader } from "./loaders/npm.js";
 import { RemoteSkillLoader } from "./loaders/remote.js";
@@ -16,7 +17,7 @@ export class SkillManager {
 
   constructor(sources: Array<Skill | SkillSource>) {
     this.sources = sources;
-    this.loaders = [new LocalSkillLoader(), new RemoteSkillLoader(), new NpmSkillLoader()];
+    this.loaders = [new LocalSkillLoader(), new GitSkillLoader(), new RemoteSkillLoader(), new NpmSkillLoader()];
   }
 
   private async ensureLoaded(): Promise<void> {

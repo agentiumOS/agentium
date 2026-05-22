@@ -1,4 +1,5 @@
 import type { ContentPart } from "../models/types.js";
+import type { Reranker } from "../rerank/types.js";
 
 export interface VectorDocument {
   id: string;
@@ -24,6 +25,16 @@ export interface VectorSearchOptions {
   topK?: number;
   filter?: Record<string, unknown>;
   minScore?: number;
+  /**
+   * Optional reranker. When set, the backend fetches `topK * rerankMultiplier` candidates,
+   * then reranks them down to `topK` using the given reranker.
+   */
+  rerank?: Reranker;
+  /**
+   * Multiplier applied to `topK` when a reranker is configured. Defaults to 3.
+   * Example: topK=10, rerankMultiplier=3 -> initial fetch of 30 candidates, reranked down to 10.
+   */
+  rerankMultiplier?: number;
 }
 
 /**

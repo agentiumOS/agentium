@@ -136,11 +136,11 @@ export class QdrantVectorStore extends BaseVectorStore {
   ): Promise<VectorSearchResult[]> {
     await this.ensureCollection(collection);
     const vec = await this.ensureQueryVector(query);
-    const topK = options?.topK ?? 10;
+    const fetchK = this.effectiveFetchK(options);
 
     const searchParams: Record<string, unknown> = {
       vector: vec,
-      limit: topK,
+      limit: fetchK,
       with_payload: true,
     };
 
@@ -153,13 +153,13 @@ export class QdrantVectorStore extends BaseVectorStore {
       };
     }
 
-    if (options?.minScore != null) {
+    if (options?.minScore != null && !options.rerank) {
       searchParams.score_threshold = options.minScore;
     }
 
     const results = await this.client.search(collection, searchParams);
 
-    return results.map((r: any) => {
+    const initial: VectorSearchResult[] = results.map((r: any) => {
       const { _originalId, content, ...rest } = r.payload ?? {};
       return {
         id: _originalId ?? String(r.id),
@@ -168,6 +168,8 @@ export class QdrantVectorStore extends BaseVectorStore {
         metadata: rest,
       };
     });
+
+    return this.applyRerank(query, initial, options);
   }
 
   async delete(collection: string, id: string): Promise<void> {

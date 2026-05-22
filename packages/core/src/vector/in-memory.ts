@@ -45,13 +45,13 @@ export class InMemoryVectorStore extends BaseVectorStore {
     options?: VectorSearchOptions,
   ): Promise<VectorSearchResult[]> {
     const vec = await this.ensureQueryVector(query);
-    const topK = options?.topK ?? 10;
+    const fetchK = this.effectiveFetchK(options);
     const col = this.getCol(collection);
 
     const scored: VectorSearchResult[] = [];
     for (const doc of col.values()) {
       const score = this.cosineSimilarity(vec, doc.embedding);
-      if (options?.minScore != null && score < options.minScore) continue;
+      if (options?.minScore != null && score < options.minScore && !options.rerank) continue;
       if (options?.filter) {
         let match = true;
         for (const [k, v] of Object.entries(options.filter)) {
@@ -71,7 +71,8 @@ export class InMemoryVectorStore extends BaseVectorStore {
     }
 
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, topK);
+    const initial = scored.slice(0, fetchK);
+    return this.applyRerank(query, initial, options);
   }
 
   private cosineSimilarity(a: number[], b: number[]): number {

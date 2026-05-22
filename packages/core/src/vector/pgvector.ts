@@ -122,11 +122,11 @@ export class PgVectorStore extends BaseVectorStore {
   ): Promise<VectorSearchResult[]> {
     await this.ensureCollection(collection);
     const vec = await this.ensureQueryVector(query);
-    const topK = options?.topK ?? 10;
+    const fetchK = this.effectiveFetchK(options);
     const table = this.sanitize(collection);
 
     let filterClause = "";
-    const params: unknown[] = [this.toSql(vec), topK];
+    const params: unknown[] = [this.toSql(vec), fetchK];
 
     if (options?.filter) {
       const conditions = Object.entries(options.filter).map(([k, v], i) => {
@@ -156,16 +156,18 @@ export class PgVectorStore extends BaseVectorStore {
       metadata: Record<string, unknown>;
     }>;
 
-    if (options?.minScore != null) {
+    if (options?.minScore != null && !options.rerank) {
       rows = rows.filter((r) => r.score >= options.minScore!);
     }
 
-    return rows.map((r) => ({
+    const initial: VectorSearchResult[] = rows.map((r) => ({
       id: r.id,
       content: r.content,
       score: r.score,
       metadata: r.metadata,
     }));
+
+    return this.applyRerank(query, initial, options);
   }
 
   async delete(collection: string, id: string): Promise<void> {

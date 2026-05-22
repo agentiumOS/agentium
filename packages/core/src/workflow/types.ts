@@ -36,6 +36,11 @@ export interface WorkflowConfig<TState extends Record<string, unknown> = Record<
   eventBus?: EventBus;
   /** Auto-register this workflow in the global registry. Default: true. Set false to opt out. */
   register?: boolean;
+  /**
+   * Enable time-travel: automatically checkpoint state after each step so the
+   * workflow can be replayed or forked from any point.
+   */
+  checkpointStore?: import("./checkpoints.js").WorkflowCheckpointStore<TState>;
 }
 
 export interface WorkflowResult<TState> {

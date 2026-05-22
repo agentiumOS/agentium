@@ -31,6 +31,7 @@ const PACKAGES = [
   "packages/edge/package.json",
   "packages/eval/package.json",
   "packages/observability/package.json",
+  "packages/cli/package.json",
 ];
 
 const PEER_DEP_FILES = [
@@ -41,6 +42,7 @@ const PEER_DEP_FILES = [
   "packages/edge/package.json",
   "packages/eval/package.json",
   "packages/observability/package.json",
+  "packages/cli/package.json",
 ];
 
 function run(cmd) {

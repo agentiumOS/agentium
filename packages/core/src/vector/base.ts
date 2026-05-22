@@ -45,6 +45,69 @@ export abstract class BaseVectorStore implements VectorStore {
     return this.embedder.embedMultimodal(query);
   }
 
+  /**
+   * If a reranker is configured in `options`, returns the candidate `topK` for the
+   * initial fetch (effectively `topK * rerankMultiplier`). Otherwise returns `topK`
+   * (defaulting to 10).
+   *
+   * Backends call this to size the initial vector search.
+   */
+  protected effectiveFetchK(options?: VectorSearchOptions): number {
+    const topK = options?.topK ?? 10;
+    if (!options?.rerank) return topK;
+    const mult = options.rerankMultiplier ?? 3;
+    return Math.max(topK, topK * mult);
+  }
+
+  /**
+   * Applies the configured reranker (if any) to the initial vector results.
+   * Returns the original results untouched when no reranker is configured.
+   *
+   * For text or multimodal queries, the original input is reused as the reranker
+   * query. For pure numeric vector queries (no original text), reranking is
+   * skipped because rerankers require a textual query.
+   */
+  protected async applyRerank(
+    originalQuery: number[] | string | ContentPart[],
+    results: VectorSearchResult[],
+    options?: VectorSearchOptions,
+  ): Promise<VectorSearchResult[]> {
+    if (!options?.rerank || results.length === 0) return results;
+
+    let queryText: string | null = null;
+    if (typeof originalQuery === "string") {
+      queryText = originalQuery;
+    } else if (Array.isArray(originalQuery) && originalQuery.length > 0 && typeof originalQuery[0] === "object") {
+      // ContentPart[]: extract text parts
+      const parts = originalQuery as ContentPart[];
+      queryText = parts
+        .filter((p): p is { type: "text"; text: string } => p.type === "text")
+        .map((p) => p.text)
+        .join(" ")
+        .trim();
+      if (!queryText) queryText = null;
+    }
+
+    if (!queryText) {
+      // Pure-vector query (or multimodal query with no text parts) cannot be reranked.
+      return results.slice(0, options?.topK ?? 10);
+    }
+
+    const topK = options?.topK ?? 10;
+    const reranked = await options.rerank.rerank(
+      queryText,
+      results.map((r) => ({ id: r.id, content: r.content, metadata: r.metadata })),
+      { topK, minScore: options.minScore },
+    );
+
+    return reranked.map((r) => ({
+      id: r.id ?? results[r.index].id,
+      content: r.content,
+      score: r.score,
+      metadata: r.metadata,
+    }));
+  }
+
   abstract initialize(): Promise<void>;
   abstract upsert(collection: string, doc: VectorDocument): Promise<void>;
   abstract upsertBatch(collection: string, docs: VectorDocument[]): Promise<void>;

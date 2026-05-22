@@ -106,6 +106,23 @@ export interface AgentConfig {
   tenant?: import("../tenant/types.js").TenantConfig;
   /** Token-aware rate limiting and backpressure. */
   rateLimit?: import("../rate-limit/types.js").RateLimitConfig;
+  /**
+   * Memory Pointer Pattern: auto-inject `storeArtifact` / `getArtifact` / `listArtifacts`
+   * tools and automatically convert large tool outputs into pointers.
+   * Off by default.
+   */
+  artifacts?: ArtifactsConfig;
+}
+
+export interface ArtifactsConfig {
+  enabled?: boolean;
+  /**
+   * Maximum byte size of a tool result before it auto-converts to an `art:` pointer.
+   * Default: 51200 (50KB).
+   */
+  maxToolOutputBytes?: number;
+  /** Characters kept in the preview surfaced to the LLM. Default: 200. */
+  previewChars?: number;
 }
 
 export interface ContextCompactorConfig {

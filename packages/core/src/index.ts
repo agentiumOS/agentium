@@ -57,9 +57,27 @@ export type {
 } from "./a2a/types.js";
 // Agent
 export { Agent } from "./agent/agent.js";
-export { RunCancelledError } from "./agent/errors.js";
+export {
+  type ComputerAction,
+  type ComputerActionResult,
+  type ComputerExecutor,
+  ComputerUseAgent,
+  type ComputerUseAgentConfig,
+  type ComputerUseRunOutput,
+} from "./agent/computer-use-agent.js";
+export { DrainController, RunCancelledError, RunDrainedError } from "./agent/errors.js";
+// Utils
+export { AgentFactory, type FactoryContext, TeamFactory, WorkflowFactory } from "./agent/factory.js";
 export { LLMLoop } from "./agent/llm-loop.js";
 export { RunContext } from "./agent/run-context.js";
+export {
+  SandboxAgent,
+  type SandboxAgentConfig,
+  type SandboxBackend,
+  type WorkspaceFile,
+  type WorkspaceManifest,
+  type WorkspaceSnapshot,
+} from "./agent/sandbox-agent.js";
 export type { DeserializeRegistry, SerializedAgent } from "./agent/serialization.js";
 export { buildAgentConfigFromSerialized, serializeAgentConfig } from "./agent/serialization.js";
 export type {
@@ -85,6 +103,16 @@ export type { CompressionManagerConfig } from "./compression/compression-manager
 export { CompressionManager } from "./compression/compression-manager.js";
 // Context
 export { ContextCompactor } from "./context/context-compactor.js";
+export {
+  type ContextProvider,
+  DatabaseContextProvider,
+  type DatabaseContextProviderConfig,
+  FilesystemContextProvider,
+  type FilesystemContextProviderConfig,
+  HttpContextProvider,
+  type HttpContextProviderConfig,
+  resolveContextProviders,
+} from "./context/context-providers.js";
 export { CostTracker } from "./cost/cost-tracker.js";
 export { DEFAULT_PRICING, lookupPricing } from "./cost/pricing.js";
 // Cost Tracking
@@ -106,9 +134,19 @@ export { applyTemplates, resolveDependencies } from "./dependencies/resolver.js"
 // Events
 export { EventBus } from "./events/event-bus.js";
 export type { AgentEventMap } from "./events/types.js";
+export {
+  type CypherRecord,
+  type CypherSchema,
+  type CypherStore,
+  MemgraphCypherStore,
+  Neo4jCypherStore,
+  type Neo4jCypherStoreConfig,
+} from "./graph/cypher-store.js";
+export { type HybridResult, HybridRetriever, type HybridRetrieverConfig } from "./graph/hybrid.js";
 export { InMemoryGraphStore } from "./graph/in-memory.js";
 export type { Neo4jGraphStoreConfig } from "./graph/neo4j.js";
 export { Neo4jGraphStore } from "./graph/neo4j.js";
+export { type GraphRAGResult, GraphRAGRetriever, type GraphRAGRetrieverConfig } from "./graph/retriever.js";
 // Graph Store
 export type {
   GraphEdge,
@@ -137,11 +175,19 @@ export { KnowledgeBase } from "./knowledge/knowledge-base.js";
 // Logger
 export type { LoggerConfig, LogLevel } from "./logger/logger.js";
 export { Logger } from "./logger/logger.js";
+export {
+  authorizationServerSupportsIss,
+  MCPAuthError,
+  needsReRegistration,
+  pickOidcApplicationType,
+  validateAuthIssuer,
+} from "./mcp/auth-validation.js";
 // MCP
 export type { MCPToolProviderConfig } from "./mcp/mcp-client.js";
 export { MCPToolProvider } from "./mcp/mcp-client.js";
 export type { ConsolidateOptions, CuratorStores, PruneOptions } from "./memory/curator.js";
 export { Curator } from "./memory/curator.js";
+export { FlashMemoryStore, type FlashMemoryStoreConfig } from "./memory/flash-store.js";
 // Memory — Legacy (kept for backward compat, will be removed in next major)
 export { Memory } from "./memory/memory.js";
 // Memory — Unified
@@ -184,7 +230,6 @@ export { UserProfile } from "./memory/stores/user-profile.js";
 export type { MemoryConfig, MemoryEntry } from "./memory/types.js";
 export type { UserMemoryConfig } from "./memory/user-memory.js";
 export { UserMemory } from "./memory/user-memory.js";
-
 // Models
 export type { ModelProvider } from "./models/provider.js";
 export { AnthropicProvider } from "./models/providers/anthropic.js";
@@ -258,18 +303,43 @@ export type {
   ToolDefinition,
 } from "./models/types.js";
 export { getTextContent, isMultiModal } from "./models/types.js";
+export type { CohereRerankerConfig } from "./rerank/providers/cohere.js";
+export { CohereReranker } from "./rerank/providers/cohere.js";
+export type { ColbertRerankerConfig } from "./rerank/providers/colbert.js";
+export { ColbertReranker } from "./rerank/providers/colbert.js";
+export type { JinaRerankerConfig } from "./rerank/providers/jina.js";
+export { JinaReranker } from "./rerank/providers/jina.js";
+export type { VoyageRerankerConfig } from "./rerank/providers/voyage.js";
+export { VoyageReranker } from "./rerank/providers/voyage.js";
+export type { RerankDocument, Reranker, RerankOptions, RerankResult } from "./rerank/types.js";
+export type { CloudSandbox, SandboxRunOptions, SandboxRunResult } from "./sandbox/types.js";
 // ── Auto-discovery / Registry ─────────────────────────────────────────────
 export type { Servable } from "./serve.js";
 export { classifyServables, Registry, registry } from "./serve.js";
+export {
+  type IncrementalSessionConfig,
+  IncrementalSessionManager,
+} from "./session/incremental-session-manager.js";
 // Session
 export type { AppendResult, SessionManagerConfig } from "./session/session-manager.js";
 export { SessionManager } from "./session/session-manager.js";
 export type { Session } from "./session/types.js";
 export type { LearnedSkill, LearnedSkillStep } from "./skills/learned-skills.js";
 export { LearnedSkillStore } from "./skills/learned-skills.js";
+export { GitSkillLoader, type GitSkillLoaderConfig } from "./skills/loaders/git.js";
 export { loadSkill, SkillManager } from "./skills/skill-manager.js";
 // Skills
 export type { Skill, SkillLoader, SkillManifest, SkillSource } from "./skills/types.js";
+export type { ArtifactPointer, StoredArtifact } from "./state/artifact-store.js";
+export {
+  ARTIFACT_POINTER_PREFIX,
+  approxByteSize,
+  getArtifact,
+  isPointer,
+  listArtifacts,
+  storeArtifact,
+} from "./state/artifact-store.js";
+export { createArtifactTools } from "./state/artifact-tools.js";
 // Storage
 export type { StorageDriver } from "./storage/driver.js";
 export type { DynamoDBStorageConfig } from "./storage/dynamodb.js";
@@ -281,6 +351,7 @@ export { MySQLStorage } from "./storage/mysql.js";
 export { PostgresStorage } from "./storage/postgres.js";
 export type { RedisStorageConfig } from "./storage/redis.js";
 export { RedisStorage } from "./storage/redis.js";
+export { ScopedStorage, type StorageScope } from "./storage/scoped.js";
 export { SqliteStorage } from "./storage/sqlite.js";
 // Team
 export { Team } from "./team/team.js";
@@ -330,6 +401,12 @@ export type { RedisConfig } from "./toolkits/redis.js";
 export { RedisToolkit } from "./toolkits/redis.js";
 export type { S3Config } from "./toolkits/s3.js";
 export { S3Toolkit } from "./toolkits/s3.js";
+export {
+  DaytonaSandbox,
+  type DaytonaSandboxConfig,
+  DaytonaSandboxToolkit,
+} from "./toolkits/sandbox-daytona.js";
+export { E2BSandbox, type E2BSandboxConfig, E2BSandboxToolkit } from "./toolkits/sandbox-e2b.js";
 export type { ScraperConfig } from "./toolkits/scraper.js";
 export { ScraperToolkit } from "./toolkits/scraper.js";
 export type { ShellConfig } from "./toolkits/shell.js";
@@ -351,13 +428,15 @@ export { YouTubeToolkit } from "./toolkits/youtube.js";
 // Tools
 export type { ApprovalConfig, ApprovalDecision, ApprovalRequest } from "./tools/approval.js";
 export { ApprovalManager } from "./tools/approval.js";
+export { createPollResultTool, type DefineAsyncToolConfig, defineAsyncTool } from "./tools/async-handle.js";
 export { defineTool } from "./tools/define-tool.js";
 export { resolveSandboxConfig, Sandbox } from "./tools/sandbox.js";
-export { ToolExecutor } from "./tools/tool-executor.js";
+export { SemanticToolSelector, type SemanticToolSelectorConfig } from "./tools/semantic-selector.js";
+export { ToolExecutor, ToolLoopError } from "./tools/tool-executor.js";
 export type { ToolRouterConfig } from "./tools/tool-router.js";
 export { ToolRouter } from "./tools/tool-router.js";
 export type { Artifact, SandboxConfig, ToolCacheConfig, ToolCallResult, ToolDef, ToolResult } from "./tools/types.js";
-// Utils
+export { assertHostAllowed, isHostAllowed, PathSecurityError, safeJoin } from "./utils/path-safety.js";
 export type { RetryConfig } from "./utils/retry.js";
 export { withRetry } from "./utils/retry.js";
 export { countMessagesTokens, countMessageTokens, countTokens, hasExactTokenizer } from "./utils/token-counter.js";
@@ -430,6 +509,11 @@ export { type SlackWebhookConfig, slackWebhook } from "./webhooks/destinations/s
 // Webhooks
 export type { WebhookConfig, WebhookDestination } from "./webhooks/types.js";
 export { WebhookManager } from "./webhooks/webhook-manager.js";
+export {
+  StorageBackedCheckpointStore,
+  type WorkflowCheckpoint,
+  type WorkflowCheckpointStore,
+} from "./workflow/checkpoints.js";
 // Workflow
 export type {
   AgentStep,

@@ -15,6 +15,7 @@ import { registry } from "../serve.js";
 import { SessionManager } from "../session/session-manager.js";
 import type { Session } from "../session/types.js";
 import { SkillManager } from "../skills/skill-manager.js";
+import { createArtifactTools } from "../state/artifact-tools.js";
 import { InMemoryStorage } from "../storage/in-memory.js";
 import { ToolExecutor } from "../tools/tool-executor.js";
 import { ToolRouter } from "../tools/tool-router.js";
@@ -93,6 +94,12 @@ export class Agent {
       agentName: this.config.name,
       onToolCall: this.config.hooks?.onToolCall
         ? (ctx, toolName, args) => this.config.hooks!.onToolCall!(ctx, toolName, args)
+        : undefined,
+      artifacts: this.config.artifacts?.enabled
+        ? {
+            maxToolOutputBytes: this.config.artifacts.maxToolOutputBytes ?? 50 * 1024,
+            previewChars: this.config.artifacts.previewChars ?? 200,
+          }
         : undefined,
     };
   }
@@ -899,6 +906,10 @@ export class Agent {
 
     if (config.handoff && config.handoff.targets.length > 0) {
       tools.push(createHandoffTool(config.handoff.targets));
+    }
+
+    if (config.artifacts?.enabled) {
+      tools.push(...createArtifactTools());
     }
 
     return tools;

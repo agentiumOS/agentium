@@ -47,6 +47,17 @@ export interface ToolDef {
   requiresApproval?: boolean | ((args: Record<string, unknown>) => boolean);
   /** Enable strict mode for OpenAI Structured Outputs on tool calls. Guarantees valid JSON matching the schema. */
   strict?: boolean;
+  /**
+   * Optional N-shot examples that demonstrate valid tool calls to the LLM.
+   * Each example is rendered into the tool's JSON Schema description.
+   */
+  inputExamples?: Array<Record<string, unknown>>;
+  /**
+   * Optional async transformer applied to the tool result *after* execution but
+   * *before* the result is appended to the LLM context. Use to compress, summarize,
+   * redact, or otherwise reshape large outputs.
+   */
+  toModelOutput?: (result: string | ToolResult, ctx: RunContext) => Promise<string | ToolResult>;
 }
 
 export interface ToolCallResult {

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { z } from "zod";
 import type { RunContext } from "../agent/run-context.js";
 import type { ToolDef } from "../tools/types.js";
+import { PathSecurityError, safeJoin } from "../utils/path-safety.js";
 import { Toolkit } from "./base.js";
 
 export interface FileSystemConfig {
@@ -35,13 +36,14 @@ export class FileSystemToolkit extends Toolkit {
   }
 
   private resolvePath(filePath: string): string {
-    if (!this.basePath) return path.resolve(filePath);
-
-    const resolved = path.resolve(this.basePath, filePath);
-    if (!resolved.startsWith(this.basePath)) {
-      throw new Error(`Access denied: path "${filePath}" escapes the base directory`);
+    if (!this.basePath) {
+      // Reject control chars / null bytes even when no base path is set.
+      if (filePath.includes("\0")) {
+        throw new PathSecurityError("Path contains null byte");
+      }
+      return path.resolve(filePath);
     }
-    return resolved;
+    return safeJoin(this.basePath, filePath);
   }
 
   getTools(): ToolDef[] {

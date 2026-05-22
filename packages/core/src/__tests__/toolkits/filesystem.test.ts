@@ -68,6 +68,6 @@ describe("FileSystemToolkit", () => {
   it("blocks path traversal", async () => {
     const tk = new FileSystemToolkit({ basePath: tmpDir });
     const readTool = tk.getTools().find((t) => t.name === "fs_read_file")!;
-    await expect(readTool.execute({ path: "../../etc/passwd" }, ctx)).rejects.toThrow("Access denied");
+    await expect(readTool.execute({ path: "../../etc/passwd" }, ctx)).rejects.toThrow(/Path traversal blocked/);
   });
 });

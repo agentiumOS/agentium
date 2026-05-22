@@ -1,21 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 import { CameraToolkit } from "../../toolkits/camera.js";
 
-// Mock child_process
-vi.mock("node:child_process", () => ({
-  execFileSync: vi.fn().mockImplementation((cmd: string, args?: string[]) => {
-    if (cmd === "which") return `/usr/bin/${args?.[0] ?? "libcamera-still"}\n`;
-    return "";
-  }),
-  spawn: vi.fn().mockReturnValue({
-    pid: 12345,
-    kill: vi.fn(),
-    unref: vi.fn(),
-    on: vi.fn(),
-    stdout: { on: vi.fn() },
-    stderr: { on: vi.fn() },
-  }),
-}));
+// Mock child_process — keep `actual` so other modules (e.g. git skill loader)
+// can still use `execFile` via promisify.
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    execFileSync: vi.fn().mockImplementation((cmd: string, args?: string[]) => {
+      if (cmd === "which") return `/usr/bin/${args?.[0] ?? "libcamera-still"}\n`;
+      return "";
+    }),
+    spawn: vi.fn().mockReturnValue({
+      pid: 12345,
+      kill: vi.fn(),
+      unref: vi.fn(),
+      on: vi.fn(),
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+    }),
+  };
+});
 
 // Mock fs for capture
 vi.mock("node:fs", async () => {

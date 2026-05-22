@@ -11,6 +11,10 @@ export function defineTool<T extends z.ZodObject<any>>(config: {
   sandbox?: boolean | SandboxConfig;
   requiresApproval?: boolean | ((args: Record<string, unknown>) => boolean);
   strict?: boolean;
+  /** N-shot examples that demonstrate valid tool calls to the LLM. */
+  inputExamples?: Array<z.infer<T>>;
+  /** Async transformer applied to the tool result before it is appended to the LLM context. */
+  toModelOutput?: (result: string | ToolResult, ctx: RunContext) => Promise<string | ToolResult>;
 }): ToolDef {
   return {
     name: config.name,
@@ -21,5 +25,7 @@ export function defineTool<T extends z.ZodObject<any>>(config: {
     sandbox: config.sandbox,
     requiresApproval: config.requiresApproval,
     strict: config.strict,
+    inputExamples: config.inputExamples as ToolDef["inputExamples"],
+    toModelOutput: config.toModelOutput,
   };
 }

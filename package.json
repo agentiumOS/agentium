@@ -1,6 +1,6 @@
 {
   "name": "agentium",
-  "version": "1.1.2",
+  "version": "2.0.0",
   "description": "Production-ready AI agent framework with multi-model support, workflows, teams, and observability",
   "private": true,
   "keywords": [
@@ -21,10 +21,11 @@
     "packages/eval",
     "packages/observability",
     "packages/admin",
-    "packages/edge"
+    "packages/edge",
+    "packages/cli"
   ],
   "scripts": {
-    "build": "npm run build -w packages/core && npm run build -w packages/transport -w packages/queue -w packages/browser -w packages/eval -w packages/observability -w packages/admin -w packages/edge",
+    "build": "npm run build -w packages/core && npm run build -w packages/transport -w packages/queue -w packages/browser -w packages/eval -w packages/observability -w packages/admin -w packages/edge -w packages/cli",
     "build:core": "npm run build -w packages/core",
     "build:transport": "npm run build -w packages/transport",
     "build:queue": "npm run build -w packages/queue",
@@ -44,6 +45,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
+    "cohere-ai": "^8.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "openai": "^6.25.0",

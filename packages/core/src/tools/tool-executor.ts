@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import type { RunContext } from "../agent/run-context.js";
 import type { ToolCall } from "../models/types.js";
+import { approxByteSize, storeArtifact } from "../state/artifact-store.js";
 import type { ApprovalConfig } from "./approval.js";
 import { ApprovalManager } from "./approval.js";
 import { resolveSandboxConfig, Sandbox } from "./sandbox.js";
@@ -41,6 +42,36 @@ export interface ToolExecutorConfig {
   approval?: ApprovalConfig & { eventBus?: import("../events/event-bus.js").EventBus };
   agentName?: string;
   onToolCall?: (ctx: RunContext, toolName: string, args: unknown) => Promise<void>;
+  /**
+   * Memory Pointer Pattern: tool outputs over `maxToolOutputBytes` are auto-stored
+   * as artifacts and replaced with a `{ pointer, preview }` JSON string before being
+   * appended to the LLM context.
+   */
+  artifacts?: {
+    maxToolOutputBytes: number;
+    previewChars: number;
+  };
+  /**
+   * Tool-loop detection: when the same `(toolName, arguments)` pair is invoked
+   * more than `maxRepeats` times within a single run, take the configured action.
+   *   - `"abort"`: raise `ToolLoopError` and stop the run
+   *   - `"hint"`: return a synthetic result reminding the model to change strategy
+   */
+  loopDetection?: {
+    maxRepeats: number;
+    action: "abort" | "hint";
+  };
+}
+
+export class ToolLoopError extends Error {
+  readonly toolName: string;
+  readonly repeats: number;
+  constructor(toolName: string, repeats: number) {
+    super(`Tool "${toolName}" was called ${repeats} times with identical arguments - aborting to prevent a loop`);
+    this.name = "ToolLoopError";
+    this.toolName = toolName;
+    this.repeats = repeats;
+  }
 }
 
 export class ToolExecutor {
@@ -57,6 +88,9 @@ export class ToolExecutor {
   private approvalManager?: ApprovalManager;
   private agentName: string;
   private onToolCall?: (ctx: RunContext, toolName: string, args: unknown) => Promise<void>;
+  private artifactsConfig?: { maxToolOutputBytes: number; previewChars: number };
+  private loopDetection?: { maxRepeats: number; action: "abort" | "hint" };
+  private callCounts = new Map<string, number>();
 
   constructor(tools: ToolDef[], configOrConcurrency?: number | ToolExecutorConfig) {
     this.tools = new Map(tools.map((t) => [t.name, t]));
@@ -69,6 +103,8 @@ export class ToolExecutor {
       this.agentSandbox = configOrConcurrency.sandbox;
       this.agentName = configOrConcurrency.agentName ?? "";
       this.onToolCall = configOrConcurrency.onToolCall;
+      this.artifactsConfig = configOrConcurrency.artifacts;
+      this.loopDetection = configOrConcurrency.loopDetection;
 
       if (configOrConcurrency.approval && configOrConcurrency.approval.policy !== "none") {
         this.approvalManager = new ApprovalManager(configOrConcurrency.approval);
@@ -132,6 +168,10 @@ export class ToolExecutor {
         if (settled.status === "fulfilled") {
           results.push(settled.value);
         } else {
+          // Bubble fatal "stop the run" errors up to the agent loop.
+          if (settled.reason instanceof ToolLoopError) {
+            throw settled.reason;
+          }
           results.push({
             toolCallId: tc.id,
             toolName: tc.name,
@@ -154,6 +194,22 @@ export class ToolExecutor {
         result: `Error: Tool "${toolCall.name}" not found`,
         error: `Tool "${toolCall.name}" not found`,
       };
+    }
+
+    if (this.loopDetection) {
+      const sig = `${toolCall.name}::${JSON.stringify(toolCall.arguments)}`;
+      const count = (this.callCounts.get(sig) ?? 0) + 1;
+      this.callCounts.set(sig, count);
+      if (count > this.loopDetection.maxRepeats) {
+        if (this.loopDetection.action === "abort") {
+          throw new ToolLoopError(toolCall.name, count);
+        }
+        const hint =
+          `[loop-detected] Tool "${toolCall.name}" has now been called ${count} times with identical arguments. ` +
+          "Consider trying a different approach, changing the arguments, or finishing the response.";
+        ctx.eventBus.emit("tool.result", { runId: ctx.runId, toolName: toolCall.name, result: hint });
+        return { toolCallId: toolCall.id, toolName: toolCall.name, result: hint, error: "loop-detected" };
+      }
     }
 
     ctx.eventBus.emit("tool.call", {
@@ -235,6 +291,40 @@ export class ToolExecutor {
       rawResult = await tool.execute(parsed.data, ctx);
     }
 
+    // Per-tool result transform applied before any framework-level wrapping.
+    if (tool.toModelOutput) {
+      rawResult = await tool.toModelOutput(rawResult, ctx);
+    }
+
+    // Memory Pointer Pattern: auto-convert oversized outputs to artifact pointers.
+    // Skip artifact tools themselves so we don't recursively wrap their output.
+    if (
+      this.artifactsConfig &&
+      toolCall.name !== "storeArtifact" &&
+      toolCall.name !== "getArtifact" &&
+      toolCall.name !== "listArtifacts"
+    ) {
+      const content = typeof rawResult === "string" ? rawResult : rawResult.content;
+      if (approxByteSize(content) > this.artifactsConfig.maxToolOutputBytes) {
+        const ptr = storeArtifact(ctx, content, {
+          name: `${toolCall.name}_${toolCall.id}`,
+          contentType: "text/plain",
+          previewChars: this.artifactsConfig.previewChars,
+        });
+        const replacement = JSON.stringify({
+          pointer: ptr.pointer,
+          preview: ptr.preview,
+          sizeBytes: ptr.sizeBytes,
+          note: "Output too large; full value stored as artifact. Call getArtifact(pointer) to read it.",
+        });
+        if (typeof rawResult === "string") {
+          rawResult = replacement;
+        } else {
+          rawResult = { ...rawResult, content: replacement };
+        }
+      }
+    }
+
     const resultContent = typeof rawResult === "string" ? rawResult : rawResult.content;
 
     this.setCache(toolCall.name, toolCall.arguments, rawResult);
@@ -278,10 +368,16 @@ export class ToolExecutor {
     }> = [];
 
     for (const tool of this.tools.values()) {
+      const examplesSuffix =
+        tool.inputExamples && tool.inputExamples.length > 0
+          ? `\n\nExamples:\n${tool.inputExamples.map((ex, i) => `${i + 1}. ${JSON.stringify(ex)}`).join("\n")}`
+          : "";
+      const description = tool.description + examplesSuffix;
+
       if (tool.rawJsonSchema) {
         defs.push({
           name: tool.name,
-          description: tool.description,
+          description,
           parameters: stripJsonSchema(tool.rawJsonSchema),
           ...(tool.strict ? { strict: true } : {}),
         });
@@ -299,7 +395,7 @@ export class ToolExecutor {
 
         defs.push({
           name: tool.name,
-          description: tool.description,
+          description,
           parameters: stripped,
           ...(tool.strict ? { strict: true } : {}),
         });

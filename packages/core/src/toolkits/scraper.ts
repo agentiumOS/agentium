@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { RunContext } from "../agent/run-context.js";
 import type { ToolDef } from "../tools/types.js";
+import { assertHostAllowed } from "../utils/path-safety.js";
 import { Toolkit } from "./base.js";
 
 export interface ScraperConfig {
@@ -10,6 +11,12 @@ export interface ScraperConfig {
   userAgent?: string;
   /** Request timeout in milliseconds (default 15000). */
   timeout?: number;
+  /**
+   * SSRF protection: when set, only URLs whose hostname matches one of these
+   * entries (exact or sub-domain suffix) will be fetched. Otherwise all hosts
+   * are allowed.
+   */
+  allowedHosts?: string[];
 }
 
 function stripHtml(html: string): string {
@@ -74,6 +81,7 @@ export class ScraperToolkit extends Toolkit {
   }
 
   private async fetchPage(url: string): Promise<string> {
+    assertHostAllowed(url, this.config.allowedHosts);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeout ?? 15_000);
 

@@ -90,33 +90,34 @@ export class MongoDBVectorStore extends BaseVectorStore {
     options?: VectorSearchOptions,
   ): Promise<VectorSearchResult[]> {
     const vec = await this.ensureQueryVector(query);
+    let initial: VectorSearchResult[];
 
     if (this.useAtlas === true) {
-      return this.atlasSearch(collection, vec, options);
-    }
-
-    if (this.useAtlas === false) {
-      return this.localSearch(collection, vec, options);
-    }
-
-    // First call: auto-detect Atlas support
-    try {
-      const results = await this.atlasSearch(collection, vec, options);
-      this.useAtlas = true;
-      return results;
-    } catch (e: any) {
-      const code = e?.codeName ?? e?.code;
-      const isAtlasUnavailable =
-        code === "AtlasSearchNotEnabled" ||
-        code === "CommandNotFound" ||
-        code === 59 ||
-        /\$vectorSearch|\$search|atlas/i.test(e?.message ?? "");
-      if (isAtlasUnavailable) {
-        this.useAtlas = false;
-        return this.localSearch(collection, vec, options);
+      initial = await this.atlasSearch(collection, vec, options);
+    } else if (this.useAtlas === false) {
+      initial = await this.localSearch(collection, vec, options);
+    } else {
+      // First call: auto-detect Atlas support
+      try {
+        initial = await this.atlasSearch(collection, vec, options);
+        this.useAtlas = true;
+      } catch (e: any) {
+        const code = e?.codeName ?? e?.code;
+        const isAtlasUnavailable =
+          code === "AtlasSearchNotEnabled" ||
+          code === "CommandNotFound" ||
+          code === 59 ||
+          /\$vectorSearch|\$search|atlas/i.test(e?.message ?? "");
+        if (isAtlasUnavailable) {
+          this.useAtlas = false;
+          initial = await this.localSearch(collection, vec, options);
+        } else {
+          throw e;
+        }
       }
-      throw e;
     }
+
+    return this.applyRerank(query, initial, options);
   }
 
   private async atlasSearch(
@@ -124,7 +125,7 @@ export class MongoDBVectorStore extends BaseVectorStore {
     vec: number[],
     options?: VectorSearchOptions,
   ): Promise<VectorSearchResult[]> {
-    const topK = options?.topK ?? 10;
+    const topK = this.effectiveFetchK(options);
 
     const pipeline: Record<string, unknown>[] = [
       {
@@ -170,7 +171,7 @@ export class MongoDBVectorStore extends BaseVectorStore {
     console.warn(
       "[agentium] MongoDB Atlas $vectorSearch not available, using local brute-force search. This loads all documents into memory and is not recommended for production.",
     );
-    const topK = options?.topK ?? 10;
+    const topK = this.effectiveFetchK(options);
     const filter: Record<string, unknown> = {};
     if (options?.filter) {
       for (const [k, v] of Object.entries(options.filter)) {
@@ -188,7 +189,7 @@ export class MongoDBVectorStore extends BaseVectorStore {
     for (const doc of docs) {
       if (!doc.embedding) continue;
       const score = cosine(vec, doc.embedding);
-      if (options?.minScore != null && score < options.minScore) continue;
+      if (options?.minScore != null && score < options.minScore && !options.rerank) continue;
       scored.push({
         id: String(doc._id),
         content: doc.content ?? "",

@@ -1,6 +1,6 @@
 {
   "name": "@agentium/core",
-  "version": "1.1.2",
+  "version": "2.0.0",
   "description": "Core framework for building AI agents with tools, memory, and multi-model support",
   "license": "MIT",
   "repository": {
@@ -67,7 +67,13 @@
     "discord.js": ">=14.0.0",
     "stripe": ">=14.0.0",
     "gpt-tokenizer": ">=3.0.0",
-    "neo4j-driver": ">=5.0.0"
+    "neo4j-driver": ">=5.0.0",
+    "cohere-ai": ">=7.0.0",
+    "@xenova/transformers": ">=2.0.0",
+    "lmdb": ">=3.0.0",
+    "@e2b/sdk": ">=0.16.0",
+    "@daytonaio/sdk": ">=0.1.0",
+    "dockerode": ">=4.0.0"
   },
   "peerDependenciesMeta": {
     "openai": {
@@ -125,6 +131,24 @@
       "optional": true
     },
     "neo4j-driver": {
+      "optional": true
+    },
+    "cohere-ai": {
+      "optional": true
+    },
+    "@xenova/transformers": {
+      "optional": true
+    },
+    "lmdb": {
+      "optional": true
+    },
+    "@e2b/sdk": {
+      "optional": true
+    },
+    "@daytonaio/sdk": {
+      "optional": true
+    },
+    "dockerode": {
       "optional": true
     }
   }
