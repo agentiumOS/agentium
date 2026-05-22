@@ -6,9 +6,11 @@
 
 **Build, run, and manage multi-agent systems in Node.js / TypeScript.**
 
+[Website](https://agentium.in) · [Documentation](https://docs.agentium.in) · [npm](https://www.npmjs.com/org/agentium) · [GitHub](https://github.com/agentiumOS/agentium)
+
 Agentium is a TypeScript-native agent orchestration framework with zero dependency on meta-frameworks like LangGraph or Vercel AI SDK. It provides a clean, declarative API and a custom model abstraction layer that wraps raw provider SDKs directly.
 
-> Install from npm: [`@agentium/core`](https://www.npmjs.com/package/@agentium/core) · view all packages on [npmjs.com/org/agentium](https://www.npmjs.com/org/agentium)
+> Install from npm: [`@agentium/core`](https://www.npmjs.com/package/@agentium/core) · full docs at [docs.agentium.in](https://docs.agentium.in)
 
 ## Features
 

@@ -43,5 +43,9 @@
     "@types/node": "^25.3.1",
     "tsup": "^8.0.0",
     "typescript": "^5.6.0"
+  },
+  "homepage": "https://agentium.in",
+  "bugs": {
+    "url": "https://github.com/agentiumOS/agentium/issues"
   }
 }

@@ -59,5 +59,9 @@
     "@stoprocent/noble": {
       "optional": true
     }
+  },
+  "homepage": "https://agentium.in",
+  "bugs": {
+    "url": "https://github.com/agentiumOS/agentium/issues"
   }
 }

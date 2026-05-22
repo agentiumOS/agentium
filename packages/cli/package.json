@@ -48,5 +48,9 @@
   "dependencies": {
     "commander": "^12.0.0",
     "prompts": "^2.4.2"
+  },
+  "homepage": "https://agentium.in",
+  "bugs": {
+    "url": "https://github.com/agentiumOS/agentium/issues"
   }
 }

@@ -60,7 +60,7 @@
   "bugs": {
     "url": "https://github.com/agentiumOS/agentium/issues"
   },
-  "homepage": "https://github.com/agentiumOS/agentium#readme",
+  "homepage": "https://agentium.in",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.1",
     "@google/genai": "^0.10.0",

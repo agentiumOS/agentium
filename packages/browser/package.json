@@ -53,5 +53,9 @@
     "playwright": {
       "optional": false
     }
+  },
+  "homepage": "https://agentium.in",
+  "bugs": {
+    "url": "https://github.com/agentiumOS/agentium/issues"
   }
 }
