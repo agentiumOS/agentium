@@ -41,6 +41,7 @@ export class MemoryManager {
   private config: UnifiedMemoryConfig;
   private contextBudget: ContextBudgetConfig | null = null;
   private storageInitPromise: Promise<void> | null = null;
+  private pendingExtractions: Set<Promise<unknown>> = new Set();
 
   constructor(config: UnifiedMemoryConfig) {
     this.config = config;
@@ -282,49 +283,90 @@ export class MemoryManager {
 
   // ── After-run extraction (fire-and-forget) ────────────────────────────
 
+  /**
+   * Runs every background memory extraction (user facts, profile, entities,
+   * learnings, graph, procedures).
+   *
+   * Returns a Promise that resolves once every extraction has completed. The
+   * Agent fires this without awaiting (to keep run() latency low), but callers
+   * that need to inspect memory immediately after a turn can `await` it.
+   */
   afterRun(
     _sessionId: string,
     userId: string | undefined,
     messages: ChatMessage[],
     agentModel?: import("../models/provider.js").ModelProvider,
     _agentName?: string,
-  ): void {
+  ): Promise<void> {
     const model = this.config.model ?? agentModel;
+    const tasks: Promise<unknown>[] = [];
 
     if (this.userFacts && userId) {
-      this.userFacts
-        .extractAndStore(userId, messages, model)
-        .catch((e) => console.warn("[MemoryManager] UserFacts extraction failed:", e));
+      tasks.push(
+        this.userFacts
+          .extractAndStore(userId, messages, model)
+          .catch((e) => console.warn("[MemoryManager] UserFacts extraction failed:", e)),
+      );
     }
 
     if (this.userProfile && userId) {
-      this.userProfile
-        .extractAndUpdate(userId, messages, model)
-        .catch((e) => console.warn("[MemoryManager] UserProfile extraction failed:", e));
+      tasks.push(
+        this.userProfile
+          .extractAndUpdate(userId, messages, model)
+          .catch((e) => console.warn("[MemoryManager] UserProfile extraction failed:", e)),
+      );
     }
 
     if (this.entityMemory) {
-      this.entityMemory
-        .extractEntities(messages, model)
-        .catch((e) => console.warn("[MemoryManager] Entity extraction failed:", e));
+      tasks.push(
+        this.entityMemory
+          .extractEntities(messages, model)
+          .catch((e) => console.warn("[MemoryManager] Entity extraction failed:", e)),
+      );
     }
 
     if (this.learnedKnowledge) {
-      this.learnedKnowledge
-        .extractLearnings(messages, model, userId)
-        .catch((e) => console.warn("[MemoryManager] Learning extraction failed:", e));
+      tasks.push(
+        this.learnedKnowledge
+          .extractLearnings(messages, model, userId)
+          .catch((e) => console.warn("[MemoryManager] Learning extraction failed:", e)),
+      );
     }
 
     if (this.graphMemory) {
-      this.graphMemory
-        .extractFromConversation(messages, model)
-        .catch((e) => console.warn("[MemoryManager] Graph extraction failed:", e));
+      tasks.push(
+        this.graphMemory
+          .extractFromConversation(messages, model)
+          .catch((e) => console.warn("[MemoryManager] Graph extraction failed:", e)),
+      );
     }
 
     if (this.procedureMemory) {
-      this.procedureMemory
-        .extractProcedures(messages, model)
-        .catch((e) => console.warn("[MemoryManager] Procedure extraction failed:", e));
+      tasks.push(
+        this.procedureMemory
+          .extractProcedures(messages, model)
+          .catch((e) => console.warn("[MemoryManager] Procedure extraction failed:", e)),
+      );
+    }
+
+    const combined = Promise.all(tasks).then(() => undefined);
+    this.pendingExtractions.add(combined);
+    combined.finally(() => this.pendingExtractions.delete(combined));
+    return combined;
+  }
+
+  /**
+   * Wait for every in-flight background extraction (user facts, profile,
+   * entities, learnings, graph, procedures) to settle.
+   *
+   * Useful in tests, demos, and graceful-shutdown paths where you want to be
+   * sure all extractions for prior turns are persisted before reading or
+   * exiting. Normal agent.run() callers do NOT need this — extraction runs in
+   * the background and is best-effort.
+   */
+  async awaitExtractions(): Promise<void> {
+    while (this.pendingExtractions.size > 0) {
+      await Promise.allSettled([...this.pendingExtractions]);
     }
   }
 

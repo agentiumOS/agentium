@@ -1,3 +1,4 @@
+import type { Logger } from "../logger/logger.js";
 import type { ModelProvider } from "../models/provider.js";
 import { countTokens } from "../utils/token-counter.js";
 import type { ToolDef } from "./types.js";
@@ -11,6 +12,8 @@ export interface ToolRouterConfig {
   minTools?: number;
   /** Temperature for the selection model. Default: 0 */
   temperature?: number;
+  /** Optional logger for diagnostic output. When omitted, the router is silent. */
+  logger?: Logger;
 }
 
 /**
@@ -23,21 +26,25 @@ export interface ToolRouterConfig {
 export class ToolRouter {
   private config: ToolRouterConfig;
   private maxTools: number;
+  private logger?: Logger;
 
   constructor(config: ToolRouterConfig) {
     this.config = config;
     this.maxTools = config.maxTools ?? 8;
+    this.logger = config.logger;
   }
 
   async select(query: string, tools: ToolDef[]): Promise<ToolDef[]> {
-    console.log(`[ToolRouter] ${tools.length} total tools, maxTools=${this.maxTools}`);
+    this.logger?.debug(`[ToolRouter] ${tools.length} total tools, maxTools=${this.maxTools}`);
     if (tools.length <= this.maxTools) {
-      console.log(`[ToolRouter] Skipping selection — tool count within limit`);
+      this.logger?.debug(`[ToolRouter] Skipping selection — tool count within limit`);
       return tools;
     }
 
     const toolIndex = tools.map((t) => `${t.name} — ${(t.description ?? "").slice(0, 100)}`).join("\n");
-    console.log(`[ToolRouter] Tool index size: ${toolIndex.length} chars (~${countTokens(toolIndex)} tokens)`);
+    this.logger?.debug(
+      `[ToolRouter] Tool index size: ${toolIndex.length} chars (~${countTokens(toolIndex)} tokens)`,
+    );
 
     try {
       const response = await this.config.model.generate(
@@ -56,27 +63,29 @@ Return ONLY a JSON array of tool name strings. Pick at most ${this.maxTools} too
       );
 
       const text = typeof response.message.content === "string" ? response.message.content : "";
-      console.log(`[ToolRouter] Model response: ${text.slice(0, 500)}`);
+      this.logger?.debug(`[ToolRouter] Model response: ${text.slice(0, 500)}`);
       const match = text.match(/\[[\s\S]*\]/);
       if (match) {
         const names: string[] = JSON.parse(match[0]);
         const toolMap = new Map(tools.map((t) => [t.name, t]));
         const selected = names.map((n) => toolMap.get(n)).filter(Boolean) as ToolDef[];
-        console.log(`[ToolRouter] Selected ${selected.length} tools: ${selected.map((t) => t.name).join(", ")}`);
+        this.logger?.debug(
+          `[ToolRouter] Selected ${selected.length} tools: ${selected.map((t) => t.name).join(", ")}`,
+        );
         if (selected.length >= (this.config.minTools ?? 0)) {
           return selected;
         }
-        console.warn(
+        this.logger?.warn(
           `[ToolRouter] Selected ${selected.length} < minTools ${this.config.minTools ?? 0}, falling back to ALL tools`,
         );
       } else {
-        console.warn(`[ToolRouter] No JSON array found in response, falling back to ALL tools`);
+        this.logger?.warn(`[ToolRouter] No JSON array found in response, falling back to ALL tools`);
       }
     } catch (e) {
-      console.warn("[ToolRouter] Selection FAILED, sending ALL tools:", (e as Error)?.message ?? e);
+      this.logger?.warn(`[ToolRouter] Selection FAILED, sending ALL tools: ${(e as Error)?.message ?? e}`);
     }
 
-    console.warn(`[ToolRouter] ⚠ FALLBACK: sending all ${tools.length} tools to main model`);
+    this.logger?.warn(`[ToolRouter] FALLBACK: sending all ${tools.length} tools to main model`);
     return tools;
   }
 }

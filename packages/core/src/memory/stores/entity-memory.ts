@@ -47,14 +47,22 @@ export interface Entity {
 
 const EXTRACTION_PROMPT = `You are an entity extraction assistant. Analyze the conversation and extract entities (companies, people, projects, products, etc.) mentioned.
 
+Today's date is {today}.
+
+Date handling:
+- Resolve genuinely relative references ("today", "yesterday", "last quarter", "next month") to absolute YYYY-MM-DD using {today} as the anchor.
+- If the user mentions a date without a year for a recurring event (anniversaries, birthdays, holidays), DO NOT invent a year. Store the date as "April 11" rather than "2026-04-11".
+- Only include a year when the user explicitly stated one.
+- Never store the literal words "today", "yesterday", "tomorrow", etc.
+
 For each entity, extract:
 - name: the entity name
 - entityType: "company" | "person" | "project" | "product" | "other"
 - facts: array of factual statements about the entity
-- events: array of events related to the entity (with optional date)
+- events: array of events related to the entity (with optional ISO date)
 
 Return ONLY a JSON array:
-[{"name": "string", "entityType": "string", "facts": ["string"], "events": [{"event": "string", "date": "optional date string"}]}]
+[{"name": "string", "entityType": "string", "facts": ["string"], "events": [{"event": "string", "date": "optional YYYY-MM-DD"}]}]
 
 If no entities are found, return [].
 
@@ -259,7 +267,10 @@ export class EntityMemory {
         })
         .join("\n");
 
-      const prompt = EXTRACTION_PROMPT.replace("{knownEntities}", knownStr).replace("{conversation}", conversationStr);
+      const today = new Date().toISOString().slice(0, 10);
+      const prompt = EXTRACTION_PROMPT.replace("{today}", today)
+        .replace("{knownEntities}", knownStr)
+        .replace("{conversation}", conversationStr);
 
       const response = await model.generate([{ role: "user", content: prompt }], {
         temperature: 0,

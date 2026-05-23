@@ -257,7 +257,10 @@ export class Agent {
     }
 
     if (config.toolRouter) {
-      this.toolRouter = new ToolRouter(config.toolRouter);
+      this.toolRouter = new ToolRouter({
+        ...config.toolRouter,
+        logger: config.toolRouter.logger ?? this.logger,
+      });
     }
 
     if (config.culture) {
@@ -291,8 +294,8 @@ export class Agent {
 
     const totalToolsBefore = tools.length;
     const schemaSize = tools.reduce((sum, t) => sum + JSON.stringify(t.rawJsonSchema ?? {}).length, 0);
-    console.log(
-      `[Agent:${this.name}] buildRunLoop: ${totalToolsBefore} tools, total schema size: ${schemaSize} chars (~${countTokens(JSON.stringify(tools.map((t) => t.rawJsonSchema ?? {})))} tokens)`,
+    this.logger.debug(
+      `buildRunLoop: ${totalToolsBefore} tools, total schema size: ${schemaSize} chars (~${countTokens(JSON.stringify(tools.map((t) => t.rawJsonSchema ?? {})))} tokens)`,
     );
 
     if (this.toolRouter && tools.length > 0) {
@@ -300,8 +303,8 @@ export class Agent {
     }
 
     const finalSchemaSize = tools.reduce((sum, t) => sum + JSON.stringify(t.rawJsonSchema ?? {}).length, 0);
-    console.log(
-      `[Agent:${this.name}] buildRunLoop: after routing: ${tools.length} tools, schema size: ${finalSchemaSize} chars (~${countTokens(JSON.stringify(tools.map((t) => t.rawJsonSchema ?? {})))} tokens)`,
+    this.logger.debug(
+      `buildRunLoop: after routing: ${tools.length} tools, schema size: ${finalSchemaSize} chars (~${countTokens(JSON.stringify(tools.map((t) => t.rawJsonSchema ?? {})))} tokens)`,
     );
 
     const executor = tools.length > 0 ? new ToolExecutor(tools, this.buildToolExecutorConfig()) : null;
@@ -852,8 +855,8 @@ export class Agent {
       }
     }
 
-    console.log(
-      `[Agent:${this.name}] buildMessages: system content size: ${systemContent.length} chars (~${countTokens(systemContent)} tokens)`,
+    this.logger.debug(
+      `buildMessages: system content size: ${systemContent.length} chars (~${countTokens(systemContent)} tokens)`,
     );
 
     if (systemContent) {
@@ -872,8 +875,8 @@ export class Agent {
     }
 
     const historySize = history.reduce((s, m) => s + (typeof m.content === "string" ? m.content.length : 100), 0);
-    console.log(
-      `[Agent:${this.name}] buildMessages: ${history.length} history msgs, size: ${historySize} chars (~${countTokens(history.map((m) => (typeof m.content === "string" ? m.content : "")).join(""))} tokens)`,
+    this.logger.debug(
+      `buildMessages: ${history.length} history msgs, size: ${historySize} chars (~${countTokens(history.map((m) => (typeof m.content === "string" ? m.content : "")).join(""))} tokens)`,
     );
 
     if (history.length > 0) {
@@ -882,14 +885,14 @@ export class Agent {
     messages.push(...history);
 
     const inputSize = typeof input === "string" ? input.length : 100;
-    console.log(
-      `[Agent:${this.name}] buildMessages: user input size: ${inputSize} chars (~${countTokens(typeof input === "string" ? input : "")} tokens)`,
+    this.logger.debug(
+      `buildMessages: user input size: ${inputSize} chars (~${countTokens(typeof input === "string" ? input : "")} tokens)`,
     );
     messages.push({ role: "user", content: input });
 
     const totalChars = systemContent.length + historySize + inputSize;
-    console.log(
-      `[Agent:${this.name}] buildMessages: TOTAL message content: ${totalChars} chars (~${countTokens(messages.map((m) => (typeof m.content === "string" ? m.content : "")).join(""))} tokens), ${messages.length} messages`,
+    this.logger.debug(
+      `buildMessages: TOTAL message content: ${totalChars} chars (~${countTokens(messages.map((m) => (typeof m.content === "string" ? m.content : "")).join(""))} tokens), ${messages.length} messages`,
     );
 
     this.logger.info(`Sending ${messages.length} messages to LLM`);

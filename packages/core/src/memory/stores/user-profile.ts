@@ -20,7 +20,16 @@ export interface UserProfileData {
 
 const EXTRACTION_PROMPT = `You are a profile extraction assistant. Analyze the conversation and extract structured user profile information.
 
+Today's date is {today}.
+
+Date handling:
+- Resolve genuinely relative references ("today", "yesterday", "next week") to absolute YYYY-MM-DD using {today} as the anchor.
+- For recurring events the user mentions without a year (birthday, anniversary), DO NOT invent a year. Store "April 11" rather than "2026-04-11".
+- Only include a year when the user explicitly stated one.
+
 Extract ONLY concrete profile data mentioned in the conversation. Do not infer or guess.
+
+If the user explicitly asks to forget or remove a profile field (e.g. "forget my birthday", "I'm no longer at Acme"), set that field's value to null in the response. A null value means "clear this field". Do NOT use null to indicate "no change" — simply omit the field instead.
 
 Return a JSON object with any of these fields (omit fields not mentioned):
 {
@@ -65,10 +74,44 @@ export class UserProfile {
       updatedAt: new Date(),
     };
 
+    const existingCustom = (existing.custom ?? {}) as Record<string, unknown>;
+    const forgotten = new Set<string>(
+      Array.isArray((existingCustom as any)._forgotten) ? ((existingCustom as any)._forgotten as string[]) : [],
+    );
+
+    const merged: any = { ...existing };
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === "custom") continue;
+      if (value === null) {
+        // Explicit "forget this field": remove the value AND remember that
+        // the user asked us to forget it so we don't recall it from history.
+        if ((merged as any)[key] != null) forgotten.add(key);
+        delete merged[key];
+      } else if (value !== undefined) {
+        merged[key] = value;
+        forgotten.delete(key); // user re-set it; no longer forgotten
+      }
+    }
+
+    const mergedCustom: Record<string, unknown> = { ...existingCustom };
+    for (const [key, value] of Object.entries(patch.custom ?? {})) {
+      if (value === null) {
+        if (mergedCustom[key] != null) forgotten.add(key);
+        delete mergedCustom[key];
+      } else if (value !== undefined) {
+        mergedCustom[key] = value;
+        forgotten.delete(key);
+      }
+    }
+    if (forgotten.size > 0) {
+      mergedCustom._forgotten = Array.from(forgotten);
+    } else {
+      delete mergedCustom._forgotten;
+    }
+
     const updated: UserProfileData = {
-      ...existing,
-      ...patch,
-      custom: { ...existing.custom, ...patch.custom },
+      ...merged,
+      custom: mergedCustom,
       updatedAt: new Date(),
     };
 
@@ -93,12 +136,23 @@ export class UserProfile {
     if (profile.timezone) lines.push(`- Timezone: ${profile.timezone}`);
     if (profile.language) lines.push(`- Language: ${profile.language}`);
 
-    for (const [key, value] of Object.entries(profile.custom)) {
+    const custom = (profile.custom ?? {}) as Record<string, unknown>;
+    const forgotten = Array.isArray((custom as any)._forgotten) ? ((custom as any)._forgotten as string[]) : [];
+    for (const [key, value] of Object.entries(custom)) {
+      if (key === "_forgotten") continue; // internal bookkeeping
       if (value != null) lines.push(`- ${key}: ${value}`);
     }
 
-    if (lines.length === 0) return "";
-    return `About this user:\n${lines.join("\n")}`;
+    const blocks: string[] = [];
+    if (lines.length > 0) blocks.push(`About this user:\n${lines.join("\n")}`);
+    if (forgotten.length > 0) {
+      blocks.push(
+        `IMPORTANT — the user has asked you to forget the following profile fields: ${forgotten.join(", ")}. ` +
+          `Do NOT recall, mention, or restate these even if earlier messages reference them. ` +
+          `If asked, say you no longer have that information.`,
+      );
+    }
+    return blocks.join("\n\n");
   }
 
   asTool(): ToolDef {
@@ -141,10 +195,10 @@ export class UserProfile {
         })
         .join("\n");
 
-      const prompt = EXTRACTION_PROMPT.replace("{currentProfile}", currentStr).replace(
-        "{conversation}",
-        conversationStr,
-      );
+      const today = new Date().toISOString().slice(0, 10);
+      const prompt = EXTRACTION_PROMPT.replace("{today}", today)
+        .replace("{currentProfile}", currentStr)
+        .replace("{conversation}", conversationStr);
 
       const response = await model.generate([{ role: "user", content: prompt }], {
         temperature: 0,
