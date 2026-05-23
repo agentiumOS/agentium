@@ -1,19 +1,36 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { devServer } from "./commands/dev.js";
 import { newProject } from "./commands/new.js";
 import { publishPackage } from "./commands/publish.js";
 import { installSkill } from "./commands/skills.js";
 
+function readPackageVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // dist/bin.js sits next to package.json (../package.json from dist/).
+    for (const candidate of [resolve(here, "../package.json"), resolve(here, "./package.json")]) {
+      try {
+        return JSON.parse(readFileSync(candidate, "utf8")).version as string;
+      } catch {}
+    }
+  } catch {}
+  return "0.0.0";
+}
+
 const program = new Command();
 
 program
   .name("agentium")
   .description("Command-line tool for scaffolding and managing Agentium projects")
-  .version("1.1.2");
+  .version(readPackageVersion());
 
 program
-  .command("new <name>")
+  .command("init <name>")
+  .aliases(["new", "create"])
   .description("Scaffold a new Agentium project from a template")
   .option("-t, --template <name>", "Template name (basic, rag, voice, browser)", "basic")
   .action(async (name: string, opts: { template: string }) => {
