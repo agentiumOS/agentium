@@ -305,11 +305,7 @@ export class UserFacts {
       const existing = await this.getFacts(userId);
       const active = existing.filter((f) => !f.invalidatedAt);
       const existingStr =
-        active.length > 0
-          ? active
-              .map((f) => `- [subject=${f.subject ?? "?"}] ${f.fact}`)
-              .join("\n")
-          : "(none)";
+        active.length > 0 ? active.map((f) => `- [subject=${f.subject ?? "?"}] ${f.fact}`).join("\n") : "(none)";
 
       const conversationStr = messages
         .filter((m) => m.role === "user" || m.role === "assistant")
@@ -376,7 +372,8 @@ function parseExtractionResponse(text: string): {
       : [];
   const forgetRaw: unknown[] = Array.isArray((parsed as any)?.forget) ? (parsed as any).forget : [];
 
-  const add: Array<{ fact: string; subject?: string; topics?: string[]; importance?: number; supersedes?: string }> = [];
+  const add: Array<{ fact: string; subject?: string; topics?: string[]; importance?: number; supersedes?: string }> =
+    [];
   for (const item of addRaw) {
     if (typeof item === "string" && item.trim()) {
       add.push({ fact: item.trim() });
@@ -393,7 +390,9 @@ function parseExtractionResponse(text: string): {
     }
   }
 
-  const forget = forgetRaw.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => x.trim());
+  const forget = forgetRaw
+    .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    .map((x) => x.trim());
 
   return { add, forget };
 }

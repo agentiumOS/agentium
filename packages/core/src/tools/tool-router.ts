@@ -42,9 +42,7 @@ export class ToolRouter {
     }
 
     const toolIndex = tools.map((t) => `${t.name} — ${(t.description ?? "").slice(0, 100)}`).join("\n");
-    this.logger?.debug(
-      `[ToolRouter] Tool index size: ${toolIndex.length} chars (~${countTokens(toolIndex)} tokens)`,
-    );
+    this.logger?.debug(`[ToolRouter] Tool index size: ${toolIndex.length} chars (~${countTokens(toolIndex)} tokens)`);
 
     try {
       const response = await this.config.model.generate(
@@ -69,9 +67,7 @@ Return ONLY a JSON array of tool name strings. Pick at most ${this.maxTools} too
         const names: string[] = JSON.parse(match[0]);
         const toolMap = new Map(tools.map((t) => [t.name, t]));
         const selected = names.map((n) => toolMap.get(n)).filter(Boolean) as ToolDef[];
-        this.logger?.debug(
-          `[ToolRouter] Selected ${selected.length} tools: ${selected.map((t) => t.name).join(", ")}`,
-        );
+        this.logger?.debug(`[ToolRouter] Selected ${selected.length} tools: ${selected.map((t) => t.name).join(", ")}`);
         if (selected.length >= (this.config.minTools ?? 0)) {
           return selected;
         }
