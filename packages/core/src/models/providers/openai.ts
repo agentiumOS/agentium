@@ -101,10 +101,16 @@ export class OpenAIProvider implements ModelProvider {
       messages: this.toOpenAIMessages(messages),
     };
 
+    // Reasoning model families (o1, o3, o4, o5, gpt-5, ...) auto-reason and
+    // REJECT arbitrary temperature/top_p/stop. Only the default temperature
+    // (1) is accepted. Strip those fields here so callers can keep passing
+    // `temperature: 0` for extraction without us forwarding it.
+    const isReasoningModel = /^(o\d|gpt-5)/i.test(this.modelId);
+
     if (options?.reasoning?.enabled) {
       params.reasoning_effort = options.reasoning.effort ?? "medium";
-    } else {
-      if (options?.temperature !== undefined) params.temperature = options.temperature;
+    } else if (!isReasoningModel && options?.temperature !== undefined) {
+      params.temperature = options.temperature;
     }
     if (options?.maxTokens !== undefined) {
       // OpenAI Chat Completions accepts max_completion_tokens for ALL models
@@ -113,8 +119,8 @@ export class OpenAIProvider implements ModelProvider {
       // o1/o3/o4/o5/gpt-5/gpt-5-mini. Always use the new name.
       params.max_completion_tokens = options.maxTokens;
     }
-    if (options?.topP !== undefined) params.top_p = options.topP;
-    if (options?.stop) params.stop = options.stop;
+    if (!isReasoningModel && options?.topP !== undefined) params.top_p = options.topP;
+    if (!isReasoningModel && options?.stop) params.stop = options.stop;
     this.applyResponseFormat(params, options);
     if (options?.tools?.length) {
       params.tools = this.toOpenAITools(options.tools);
@@ -136,10 +142,16 @@ export class OpenAIProvider implements ModelProvider {
       stream_options: { include_usage: true },
     };
 
+    // Reasoning model families (o1, o3, o4, o5, gpt-5, ...) auto-reason and
+    // REJECT arbitrary temperature/top_p/stop. Only the default temperature
+    // (1) is accepted. Strip those fields here so callers can keep passing
+    // `temperature: 0` for extraction without us forwarding it.
+    const isReasoningModel = /^(o\d|gpt-5)/i.test(this.modelId);
+
     if (options?.reasoning?.enabled) {
       params.reasoning_effort = options.reasoning.effort ?? "medium";
-    } else {
-      if (options?.temperature !== undefined) params.temperature = options.temperature;
+    } else if (!isReasoningModel && options?.temperature !== undefined) {
+      params.temperature = options.temperature;
     }
     if (options?.maxTokens !== undefined) {
       // OpenAI Chat Completions accepts max_completion_tokens for ALL models
@@ -148,8 +160,8 @@ export class OpenAIProvider implements ModelProvider {
       // o1/o3/o4/o5/gpt-5/gpt-5-mini. Always use the new name.
       params.max_completion_tokens = options.maxTokens;
     }
-    if (options?.topP !== undefined) params.top_p = options.topP;
-    if (options?.stop) params.stop = options.stop;
+    if (!isReasoningModel && options?.topP !== undefined) params.top_p = options.topP;
+    if (!isReasoningModel && options?.stop) params.stop = options.stop;
     this.applyResponseFormat(params, options);
     if (options?.tools?.length) {
       params.tools = this.toOpenAITools(options.tools);

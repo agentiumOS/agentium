@@ -19,6 +19,26 @@ interface AnthropicConfig {
   apiKey?: string;
 }
 
+/**
+ * Newer Claude models with extended thinking on by default have deprecated
+ * arbitrary `temperature`. Sending any value (including 0) returns a 400:
+ *   "temperature is deprecated for this model"
+ *
+ * Detected families (covers current + forward-compatible aliases):
+ *   - claude-opus-4*       (4, 4.1, 4.5, 4.6, 4.7, ...)
+ *   - claude-sonnet-4.5+   (4.5 and later 4.x)
+ *   - claude-haiku-4.5+    (4.5 and later 4.x)
+ *   - claude-*-5.x         (whole Claude 5 family)
+ */
+function isAnthropicReasoningOnlyTempModel(modelId: string): boolean {
+  const id = modelId.toLowerCase();
+  if (id.startsWith("claude-opus-4")) return true;
+  if (/^claude-sonnet-4\.(?:[5-9]|\d{2,})/.test(id)) return true;
+  if (/^claude-haiku-4\.(?:[5-9]|\d{2,})/.test(id)) return true;
+  if (/^claude-(opus|sonnet|haiku)-5/.test(id)) return true;
+  return false;
+}
+
 export class AnthropicProvider implements ModelProvider {
   readonly providerId = "anthropic";
   readonly modelId: string;
@@ -109,8 +129,13 @@ export class AnthropicProvider implements ModelProvider {
       max_tokens: maxTokens,
     };
 
+    // Newer Claude models (Opus 4.x, Sonnet 4.5+, Haiku 4.5+) have deprecated
+    // arbitrary temperature — only the default is accepted. Detect by ID and
+    // drop the field so callers can keep passing temperature: 0 elsewhere.
+    const supportsTemperature = !isAnthropicReasoningOnlyTempModel(this.modelId);
+
     if (systemMsg) params.system = systemMsg;
-    if (options?.temperature !== undefined) params.temperature = options.temperature;
+    if (supportsTemperature && options?.temperature !== undefined) params.temperature = options.temperature;
     if (options?.topP !== undefined) params.top_p = options.topP;
     if (options?.stop) params.stop_sequences = options.stop;
     if (options?.tools?.length) {
@@ -148,8 +173,10 @@ export class AnthropicProvider implements ModelProvider {
       stream: true,
     };
 
+    const supportsTemperature = !isAnthropicReasoningOnlyTempModel(this.modelId);
+
     if (systemMsg) params.system = systemMsg;
-    if (options?.temperature !== undefined) params.temperature = options.temperature;
+    if (supportsTemperature && options?.temperature !== undefined) params.temperature = options.temperature;
     if (options?.topP !== undefined) params.top_p = options.topP;
     if (options?.stop) params.stop_sequences = options.stop;
     if (options?.tools?.length) {
