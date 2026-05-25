@@ -101,12 +101,11 @@ export class AzureOpenAIProvider implements ModelProvider {
       if (options?.temperature !== undefined) params.temperature = options.temperature;
     }
     if (options?.maxTokens !== undefined) {
-      const isReasoningModel = /^o[134]/.test(this.modelId);
-      if (isReasoningModel) {
-        params.max_completion_tokens = options.maxTokens;
-      } else {
-        params.max_tokens = options.maxTokens;
-      }
+      // Azure-hosted OpenAI models follow the same Chat Completions API as
+      // openai.com. max_completion_tokens is accepted for ALL models on
+      // current API versions; max_tokens is rejected by reasoning models
+      // (o1/o3/o4/o5/gpt-5/gpt-5-mini). Always use the new name.
+      params.max_completion_tokens = options.maxTokens;
     }
     if (options?.topP !== undefined) params.top_p = options.topP;
     if (options?.stop) params.stop = options.stop;
@@ -136,12 +135,11 @@ export class AzureOpenAIProvider implements ModelProvider {
       if (options?.temperature !== undefined) params.temperature = options.temperature;
     }
     if (options?.maxTokens !== undefined) {
-      const isReasoningModel = /^o[134]/.test(this.modelId);
-      if (isReasoningModel) {
-        params.max_completion_tokens = options.maxTokens;
-      } else {
-        params.max_tokens = options.maxTokens;
-      }
+      // Azure-hosted OpenAI models follow the same Chat Completions API as
+      // openai.com. max_completion_tokens is accepted for ALL models on
+      // current API versions; max_tokens is rejected by reasoning models
+      // (o1/o3/o4/o5/gpt-5/gpt-5-mini). Always use the new name.
+      params.max_completion_tokens = options.maxTokens;
     }
     if (options?.topP !== undefined) params.top_p = options.topP;
     if (options?.stop) params.stop = options.stop;

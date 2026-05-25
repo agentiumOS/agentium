@@ -58,9 +58,14 @@ The "subject" field is REQUIRED for every added fact. It should be a short stabl
 When a new fact updates an existing one, USE THE SAME subject value as the old fact.
 
 Rules:
-- Extract concrete facts: preferences, location, profession, interests, goals, communication style, foods, hobbies, relationships, possessions.
+- Extract STABLE long-term facts about the user — things that would still be true the next time they talk to the assistant (next day, next week, next session): preferences, location, profession, interests, goals, communication style, allergies, dietary restrictions, ongoing health conditions, language, hobbies, persistent relationships.
 - Each fact is short and self-contained.
-- Do NOT extract transient information (e.g. "asked about weather today", "wants to know X").
+- Do NOT extract transactional / one-off context. Those belong in session memory and tool calls, not in long-term user facts. Examples to SKIP:
+    • Specific order IDs, ticket IDs being discussed right now ("Order #ORD-7823")
+    • Deal values or quotes for ongoing negotiations ("Acme quoted $50k")
+    • The specific stack on a particular project for this chat ("currently using Next.js 14")
+    • Symptoms, prices, dates, addresses, or other data better fetched via tool calls
+- Do NOT extract questions or requests ("user asked about today's weather", "wants to know X").
 - Do NOT extract information about the assistant.
 
 ALWAYS extract these natural-language patterns from a USER message as facts:
@@ -74,7 +79,11 @@ ALWAYS extract these natural-language patterns from a USER message as facts:
     → fact: "User works as X." (subject: "role")
 - "I live in X" / "I'm based in X" / "I'm from X"
     → fact: "User lives in X." (subject: "location")
-- "I have a X" / "I own a X" (when X is a notable possession like a pet/car/instrument)
+- "I'm allergic to X"
+    → fact: "User is allergic to X." (subject: "allergy:<x>")
+- "I take X for Y" (ongoing medication)
+    → fact: "User takes X for Y." (subject: "medication:<x>")
+- "I have a X" / "I own a X" (notable persistent possession like a pet/car)
     → fact: "User owns a X." (subject: "owns:<x>")
 Each casual statement above counts as a meaningful fact — do not skip them as "transient".
 
