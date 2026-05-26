@@ -49,21 +49,24 @@ export class BrowserProvider {
     }
 
     // ── Launch options ─────────────────────────────────────────────
+    // NOTE: we intentionally do NOT pass `--window-size` here. Playwright's
+    // `viewport` (set on the context below) is the single source of truth
+    // for the rendering surface dimensions. Forcing `--window-size` to
+    // match the viewport caused page zoom-out in headed mode because the
+    // flag sets the OUTER window size (including chrome / title bar), so
+    // Chromium would shrink the page to fit. On Retina (DPR=2) it was
+    // even worse — `--window-size` is treated as physical pixels on some
+    // builds, halving the logical window. Letting Playwright manage
+    // sizing via `viewport` alone produces correct rendering in both
+    // headless and headed modes.
     const launchOpts: Record<string, unknown> = {
       headless: opts?.headless ?? true,
     };
 
-    // Ensure the Chromium window itself matches the viewport so headed
-    // mode doesn't show a tiny default window around a 1280×720 page.
-    const windowSizeArg = `--window-size=${this._viewport.width},${this._viewport.height}`;
-    const windowPositionArg = "--window-position=0,0";
-
     if (stealthEnabled) {
       const { args, proxy } = buildStealthLaunchArgs(stealthCfg);
-      launchOpts.args = [...args, windowSizeArg, windowPositionArg];
+      launchOpts.args = args;
       if (proxy) launchOpts.proxy = proxy;
-    } else {
-      launchOpts.args = [windowSizeArg, windowPositionArg];
     }
 
     this.browser = await chromium.launch(launchOpts);
