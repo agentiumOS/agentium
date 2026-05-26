@@ -8,6 +8,7 @@ export type {
   BrowserRunOpts,
   BrowserRunOutput,
   BrowserStep,
+  DomElement,
   HumanizeConfig,
   PageInfo,
   StealthConfig,

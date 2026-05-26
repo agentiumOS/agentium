@@ -1,18 +1,104 @@
-import type { CostTracker, EventBus, LogLevel, ModelProvider, UnifiedMemoryConfig } from "@agentium/core";
+import type { CostTracker, EventBus, LogLevel, ModelProvider, ToolDef, UnifiedMemoryConfig } from "@agentium/core";
 import type { CredentialVault } from "./credential-vault.js";
 
 // ── Browser Actions ──────────────────────────────────────────────────────
 
+/**
+ * The complete set of actions a `BrowserAgent` can take during a run.
+ *
+ * Click / type / scroll accept EITHER an `index` (preferred — resolved
+ * against the DOM tree we showed the model) OR `x`/`y` coordinates as a
+ * fallback. Indexed actions are far more reliable on dynamic pages because
+ * they survive layout shifts, devicePixelRatio mismatches, and "the
+ * sibling 4 pixels away" failure modes.
+ */
 export type BrowserAction =
-  | { action: "click"; x: number; y: number; description: string }
-  | { action: "type"; text: string; x?: number; y?: number }
-  | { action: "scroll"; direction: "up" | "down"; amount?: number }
+  | {
+      action: "click";
+      /** Element index from the DOM snapshot. Preferred. */
+      index?: number;
+      /** Fallback x coordinate (CSS pixels). */
+      x?: number;
+      /** Fallback y coordinate (CSS pixels). */
+      y?: number;
+      /** Free-form description; if it contains a quoted label, used as a text-locator fallback. */
+      description?: string;
+    }
+  | {
+      action: "type";
+      /** Element index from the DOM snapshot. Preferred. */
+      index?: number;
+      text: string;
+      /** Fallback x coordinate (CSS pixels). */
+      x?: number;
+      /** Fallback y coordinate (CSS pixels). */
+      y?: number;
+      /** If true (default), clear the field first. */
+      clear?: boolean;
+      /** If true (default), press Enter after typing when text ends with `\n`. */
+      submit?: boolean;
+    }
+  | {
+      action: "scroll";
+      direction: "up" | "down";
+      /** Pixels to scroll. Default: 400. */
+      amount?: number;
+      /** If provided, scroll the element with this index into view instead. */
+      index?: number;
+    }
   | { action: "navigate"; url: string }
   | { action: "back" }
   | { action: "wait"; ms: number }
   | { action: "screenshot" }
+  | { action: "send_keys"; keys: string }
+  | { action: "find_text"; text: string }
+  | { action: "evaluate"; code: string }
+  | { action: "dropdown_options"; index: number }
+  | { action: "select_dropdown"; index: number; text: string }
+  | { action: "upload_file"; index: number; path: string }
+  | {
+      action: "extract";
+      /** Natural-language description of what to extract. */
+      query: string;
+      /** Include link hrefs in the extracted content. Default: false. */
+      extractLinks?: boolean;
+    }
+  | {
+      action: "tool";
+      /** Name of a custom tool registered on the BrowserAgent. */
+      name: string;
+      args?: Record<string, unknown>;
+    }
   | { action: "done"; result: string }
   | { action: "fail"; reason: string };
+
+// ── DOM Snapshot ────────────────────────────────────────────────────────
+
+/**
+ * One entry in the DOM snapshot the model sees. Returned by
+ * `BrowserProvider.extractDOM()` alongside the human-readable string form.
+ */
+export interface DomElement {
+  /** Stable 1-based index for this step. Used by indexed actions. */
+  index: number;
+  /** Center coordinate in CSS pixels (fallback for the model if needed). */
+  cx: number;
+  cy: number;
+  /** ARIA role or tag name. */
+  role: string;
+  /** Input type, if applicable. */
+  type?: string;
+  /** Visible label (text / aria-label / placeholder / href / …). */
+  label: string;
+  /** Tag name. */
+  tag: string;
+  /** Whether it's an `<input>` / `<textarea>` / `[contenteditable]`. */
+  isInput: boolean;
+  /** Whether it's a `<select>`. */
+  isSelect: boolean;
+  /** Whether it's an `<input type="file">`. */
+  isFile: boolean;
+}
 
 // ── Config ───────────────────────────────────────────────────────────────
 
@@ -20,10 +106,58 @@ export interface BrowserAgentConfig {
   name: string;
   /** Vision-capable model (GPT-4o, Gemini, etc.) */
   model: ModelProvider;
-  /** Extra instructions appended to the system prompt */
+  /**
+   * Optional secondary (usually cheaper) model used for the `extract`
+   * action and other text-only sub-tasks. Falls back to `model`.
+   */
+  pageExtractionLLM?: ModelProvider;
+  /** Extra instructions appended to the default system prompt. */
   instructions?: string;
+  /**
+   * Append additional instructions to the default system prompt.
+   * Alias for `instructions` (browser-use parity). Both are concatenated.
+   */
+  extendSystemMessage?: string;
+  /**
+   * Completely replace the default system prompt with this string.
+   * The credentials / DOM / coordinate sections are still appended at the
+   * end automatically. Most users should use `instructions` instead.
+   */
+  overrideSystemMessage?: string;
   /** Max vision loop iterations. Default: 30 */
   maxSteps?: number;
+  /**
+   * Maximum number of consecutive step failures (action threw, invalid
+   * JSON from model, locator timeout) before the agent gives up. Default: 3.
+   */
+  maxFailures?: number;
+  /**
+   * Maximum number of actions the model can return in a single step.
+   * If the model returns an array, we execute them in order until the page
+   * navigates or the DOM changes substantially. Default: 3.
+   * Set to 1 to force one-action-per-step (the v2.0.x behaviour).
+   */
+  maxActionsPerStep?: number;
+  /**
+   * Actions to run before the LLM loop starts. Useful for boilerplate
+   * (cookie-banner click, login flow, scrolling) you already know the
+   * answer to — saves vision tokens.
+   */
+  initialActions?: BrowserAction[];
+  /**
+   * Vision mode. Default: `"auto"`.
+   * - `true`: always send a screenshot with every step (v2.0.x behaviour).
+   * - `false`: never send screenshots; DOM-only operation.
+   * - `"auto"`: send a screenshot on the first step and whenever the model
+   *   used the `screenshot` action in the previous step. Saves vision
+   *   tokens dramatically on DOM-only-suitable workloads.
+   */
+  useVision?: boolean | "auto";
+  /**
+   * If true (default), detect a URL in the task string and navigate to it
+   * before the first LLM call — saves one round trip on simple tasks.
+   */
+  directlyOpenUrl?: boolean;
   /** Run browser without visible window. Default: true */
   headless?: boolean;
   /** Browser viewport size. Default: 1280x720 */
@@ -42,10 +176,35 @@ export interface BrowserAgentConfig {
    */
   useDOM?: boolean;
   /**
+   * Allow the `evaluate` action to run arbitrary JavaScript inside the
+   * page. Default: false (security). Only enable if you trust the source
+   * of task strings — a malicious task could exfiltrate page contents.
+   */
+  allowEvaluate?: boolean;
+  /**
+   * Restrict navigation to specific domains. Wildcard patterns supported:
+   * `"example.com"`, `"*.example.com"`, `"http*://example.com"`.
+   * When set, any `navigate` action to a non-matching URL throws.
+   */
+  allowedDomains?: string[];
+  /**
+   * Block navigation to specific domains. Same pattern format as
+   * `allowedDomains`. Evaluated AFTER `allowedDomains`, so if both are
+   * set a URL must be in `allowedDomains` AND not in `prohibitedDomains`.
+   */
+  prohibitedDomains?: string[];
+  /**
    * Path to a Playwright storageState JSON file.
    * Restores cookies, localStorage, and sessionStorage from a previous session.
    */
   storageState?: string;
+  /**
+   * Connect to an existing browser via Chrome DevTools Protocol instead
+   * of launching one. Format: `"http://localhost:9222"`. When set,
+   * `headless`, `stealth.args`, `recordVideo`, etc. are ignored — the
+   * existing browser's configuration is used.
+   */
+  cdpUrl?: string;
   /**
    * Enable video recording of the browser session.
    * Pass `true` for default dir (`./browser-videos`) or `{ dir: "/path" }`.
@@ -76,6 +235,14 @@ export interface BrowserAgentConfig {
   memory?: UnifiedMemoryConfig;
   /** Skills — pre-packaged or learned tool bundles. */
   skills?: Array<import("@agentium/core").Skill | string>;
+  /**
+   * Custom tools that the BrowserAgent itself can invoke during a run.
+   * The agent emits `{ "action": "tool", "name": "<tool>", "args": {...} }`
+   * and we dispatch to the tool's `execute(args)`. Use this for 2FA codes,
+   * API calls, file I/O, calling out to other agents — anything the
+   * browser can't do alone.
+   */
+  tools?: ToolDef[];
   /** Cost tracker — track vision model token usage and enforce budgets across browser runs. */
   costTracker?: CostTracker;
   logLevel?: LogLevel;
@@ -95,6 +262,8 @@ export interface BrowserRunOpts {
   userId?: string;
   /** Path to save storageState (cookies/auth) after the run completes */
   saveStorageState?: string;
+  /** Per-run override of `maxSteps`. */
+  maxSteps?: number;
 }
 
 // ── Output ───────────────────────────────────────────────────────────────
@@ -114,18 +283,24 @@ export interface BrowserRunOutput {
   durationMs: number;
   /** Video file path (if recordVideo was enabled) */
   videoPath?: string;
+  /** Extracted content from every `extract` action, in chronological order. */
+  extractedContent?: string[];
 }
 
 export interface BrowserStep {
   index: number;
   action: BrowserAction;
-  /** Screenshot taken before this action was executed */
+  /** Screenshot taken before this action was executed. May be empty if useVision=false. */
   screenshot: Buffer;
   pageUrl: string;
   pageTitle: string;
   timestamp: Date;
   /** Simplified DOM snapshot (if useDOM is enabled) */
   dom?: string;
+  /** Free-form result string produced by the action (e.g. extract output). */
+  output?: string;
+  /** Whether this step succeeded (vs threw / failed locator). Default: true. */
+  ok?: boolean;
 }
 
 // ── Stealth & Humanize ──────────────────────────────────────────────────

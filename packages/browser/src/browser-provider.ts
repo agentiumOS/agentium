@@ -1,8 +1,12 @@
 import { buildStealthContextOpts, buildStealthLaunchArgs, getStealthScript, pickUserAgent } from "./stealth.js";
-import type { HumanizeConfig, PageInfo, StealthConfig } from "./types.js";
+import type { DomElement, HumanizeConfig, PageInfo, StealthConfig } from "./types.js";
 
 /**
- * Playwright wrapper with stealth anti-detection and human-like behavior.
+ * Playwright wrapper with stealth anti-detection, human-like behavior,
+ * indexed DOM element resolution, and a rich action vocabulary.
+ *
+ * The `BrowserProvider` is intentionally LLM-agnostic — it exposes the
+ * primitives that `BrowserAgent` orchestrates via vision+DOM reasoning.
  */
 export class BrowserProvider {
   private browser: any = null;
@@ -14,6 +18,13 @@ export class BrowserProvider {
   private _viewport: { width: number; height: number };
   private _videoDir?: string;
   private _humanize?: Required<HumanizeConfig>;
+  /**
+   * Most recent DOM snapshot (one per `extractDOM` call). Indexed actions
+   * (`clickByIndex`, `inputByIndex`, …) resolve their `index` against this.
+   */
+  private _lastDom: DomElement[] = [];
+  /** True if we connected over CDP (don't tear down the browser on close). */
+  private _attached = false;
 
   constructor() {
     this._viewport = { width: 1280, height: 720 };
@@ -28,14 +39,12 @@ export class BrowserProvider {
     recordVideo?: boolean | { dir: string };
     stealth?: boolean | StealthConfig;
     humanize?: boolean | HumanizeConfig;
+    cdpUrl?: string;
   }): Promise<void> {
     const pw = await import("playwright");
     const chromium = pw.chromium;
 
     this._viewport = opts?.viewport ?? { width: 1280, height: 720 };
-
-    const stealthEnabled = !!opts?.stealth;
-    const stealthCfg: StealthConfig = typeof opts?.stealth === "object" ? opts.stealth : {};
 
     // ── Humanize defaults ──────────────────────────────────────────
     if (opts?.humanize) {
@@ -48,17 +57,30 @@ export class BrowserProvider {
       };
     }
 
+    // ── CDP attach mode ────────────────────────────────────────────
+    if (opts?.cdpUrl) {
+      this.browser = await chromium.connectOverCDP(opts.cdpUrl);
+      this._attached = true;
+      // Reuse the first existing context if any, else create one.
+      const contexts = this.browser.contexts();
+      this.context =
+        contexts.length > 0 ? contexts[0] : await this.browser.newContext({ viewport: this._viewport });
+      const existingPages = this.context.pages();
+      this.page = existingPages.length > 0 ? existingPages[0] : await this.context.newPage();
+      this.tabCounter = 0;
+      this.activeTabId = "tab-0";
+      this.pages.set("tab-0", this.page);
+      return;
+    }
+
+    const stealthEnabled = !!opts?.stealth;
+    const stealthCfg: StealthConfig = typeof opts?.stealth === "object" ? opts.stealth : {};
+
     // ── Launch options ─────────────────────────────────────────────
     // NOTE: we intentionally do NOT pass `--window-size` here. Playwright's
     // `viewport` (set on the context below) is the single source of truth
-    // for the rendering surface dimensions. Forcing `--window-size` to
-    // match the viewport caused page zoom-out in headed mode because the
-    // flag sets the OUTER window size (including chrome / title bar), so
-    // Chromium would shrink the page to fit. On Retina (DPR=2) it was
-    // even worse — `--window-size` is treated as physical pixels on some
-    // builds, halving the logical window. Letting Playwright manage
-    // sizing via `viewport` alone produces correct rendering in both
-    // headless and headed modes.
+    // for the rendering surface dimensions. See v2.0.7 commit for the
+    // full rationale.
     const launchOpts: Record<string, unknown> = {
       headless: opts?.headless ?? true,
     };
@@ -134,10 +156,9 @@ export class BrowserProvider {
   async screenshot(): Promise<Buffer> {
     this.ensurePage();
     // `scale: "css"` forces the screenshot to viewport (CSS pixel) dimensions
-    // regardless of the context's `deviceScaleFactor`. This keeps the image
-    // the vision model sees aligned 1:1 with the coordinate space used by
-    // `page.mouse.click(x, y)`, preventing the "clicks land on random
-    // elements" class of bugs when stealth (DPR=2) is enabled.
+    // regardless of the context's `deviceScaleFactor`. Keeps the image the
+    // vision model sees aligned 1:1 with the coordinate space used for
+    // mouse clicks.
     return await this.page.screenshot({
       type: "png",
       fullPage: false,
@@ -150,7 +171,12 @@ export class BrowserProvider {
     return this._viewport;
   }
 
-  // ── Interaction (with optional humanize) ─────────────────────────────
+  /** Most recent DOM snapshot. Each entry has a stable `index`. */
+  get lastDom(): DomElement[] {
+    return this._lastDom;
+  }
+
+  // ── Coordinate-based Interaction ─────────────────────────────────────
 
   async click(x: number, y: number): Promise<void> {
     this.ensurePage();
@@ -188,6 +214,21 @@ export class BrowserProvider {
     await this.page.keyboard.press(key);
   }
 
+  /**
+   * Send arbitrary keyboard keys / shortcuts. Accepts a single
+   * Playwright key spec (`"Enter"`, `"Control+l"`, `"Shift+ArrowDown"`)
+   * or a space-separated sequence (`"Tab Tab Enter"`).
+   */
+  async sendKeys(keys: string): Promise<void> {
+    this.ensurePage();
+    const tokens = keys.trim().split(/\s+/).filter(Boolean);
+    for (const token of tokens) {
+      await this.page.keyboard.press(token);
+      await this.sleep(this._humanize ? this.randInt(40, 120) : 30);
+    }
+    await this.humanPause();
+  }
+
   async scroll(direction: "up" | "down", amount?: number): Promise<void> {
     this.ensurePage();
     const base = amount ?? 400;
@@ -208,17 +249,289 @@ export class BrowserProvider {
     await this.humanPause();
   }
 
-  // ── DOM Extraction ───────────────────────────────────────────────────
+  // ── Indexed Interaction (preferred path) ─────────────────────────────
 
-  async extractDOM(opts?: { maxElements?: number }): Promise<string> {
+  /**
+   * Build a Playwright locator for a DOM-snapshot index. Each `extractDOM`
+   * call tags surviving elements with `data-bua-idx="<n>"`; we resolve by
+   * that attribute. Returns null if the index is unknown.
+   */
+  private locatorForIndex(index: number): any | null {
+    if (!this.page) return null;
+    if (!this._lastDom.find((e) => e.index === index)) return null;
+    return this.page.locator(`[data-bua-idx="${index}"]`).first();
+  }
+
+  /**
+   * Click an element by its DOM-snapshot index. The most reliable click
+   * path on dynamic pages — survives layout shifts and DPR oddities.
+   */
+  async clickByIndex(index: number, opts?: { timeout?: number }): Promise<boolean> {
+    this.ensurePage();
+    const loc = this.locatorForIndex(index);
+    if (!loc) return false;
+    try {
+      await loc.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
+      await loc.click({ timeout: opts?.timeout ?? 5000 });
+      await this.humanPause();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Focus an indexed input, optionally clear it, and type. Returns false
+   * if the index couldn't be resolved or the input couldn't be focused.
+   */
+  async inputByIndex(
+    index: number,
+    text: string,
+    opts?: { clear?: boolean; submit?: boolean; timeout?: number },
+  ): Promise<boolean> {
+    this.ensurePage();
+    const loc = this.locatorForIndex(index);
+    if (!loc) return false;
+    try {
+      const timeout = opts?.timeout ?? 5000;
+      await loc.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
+      if (opts?.clear !== false) {
+        await loc.fill("", { timeout });
+      }
+      // Use a humanised per-character type rather than `fill` so input
+      // event listeners that depend on keystroke timing (autocomplete,
+      // validation) still trigger.
+      const delay = this._humanize ? this.randInt(this._humanize.typingDelay[0], this._humanize.typingDelay[1]) : 30;
+      await loc.click({ timeout });
+      await loc.pressSequentially(text, { delay });
+      if (opts?.submit) {
+        await this.page.keyboard.press("Enter");
+      }
+      await this.humanPause();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async uploadFileByIndex(index: number, path: string): Promise<boolean> {
+    this.ensurePage();
+    const loc = this.locatorForIndex(index);
+    if (!loc) return false;
+    try {
+      await loc.setInputFiles(path, { timeout: 5000 });
+      await this.humanPause();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Scroll the indexed element into view (no click). */
+  async scrollIntoViewByIndex(index: number): Promise<boolean> {
+    this.ensurePage();
+    const loc = this.locatorForIndex(index);
+    if (!loc) return false;
+    try {
+      await loc.scrollIntoViewIfNeeded({ timeout: 3000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // ── Text-based Interaction ───────────────────────────────────────────
+
+  /**
+   * Deterministic, DOM-based click using Playwright's text locator.
+   *
+   * Returns `true` if a matching, visible, clickable element was found and
+   * clicked within `timeout` ms; `false` otherwise (so the caller can fall
+   * back to coordinate clicking). Substring-matches by default — e.g.
+   * `clickByText("Cheapest")` matches "Cheapest · 23-28 days · $2,550".
+   */
+  async clickByText(keyword: string, opts?: { timeout?: number }): Promise<boolean> {
+    this.ensurePage();
+    const timeout = opts?.timeout ?? 3000;
+    try {
+      const locator = this.page.locator(`text=${keyword}`).first();
+      await locator.click({ timeout });
+      await this.humanPause();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Scroll the first occurrence of `text` into view. Returns false if no
+   * match was found within the timeout.
+   */
+  async findText(text: string, opts?: { timeout?: number }): Promise<boolean> {
+    this.ensurePage();
+    const timeout = opts?.timeout ?? 3000;
+    try {
+      const locator = this.page.getByText(text).first();
+      await locator.scrollIntoViewIfNeeded({ timeout });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // ── Dropdowns ────────────────────────────────────────────────────────
+
+  /**
+   * Read the options of a native `<select>` at the given DOM-snapshot
+   * index. Returns `[]` if the element is not a `<select>`.
+   */
+  async dropdownOptions(index: number): Promise<{ value: string; label: string; selected: boolean }[]> {
+    this.ensurePage();
+    const loc = this.locatorForIndex(index);
+    if (!loc) return [];
+    try {
+      return (await loc.evaluate((el: any) => {
+        if (!el || el.tagName !== "SELECT") return [];
+        return Array.from(el.options).map((opt: any) => ({
+          value: opt.value,
+          label: (opt.label || opt.textContent || "").trim(),
+          selected: !!opt.selected,
+        }));
+      })) as { value: string; label: string; selected: boolean }[];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Select an option in a native `<select>` by its visible text or value.
+   * Returns false if the element isn't a `<select>` or no option matched.
+   */
+  async selectDropdown(index: number, text: string): Promise<boolean> {
+    this.ensurePage();
+    const loc = this.locatorForIndex(index);
+    if (!loc) return false;
+    try {
+      await loc.selectOption({ label: text }, { timeout: 3000 });
+      await this.humanPause();
+      return true;
+    } catch {
+      try {
+        await loc.selectOption({ value: text }, { timeout: 3000 });
+        await this.humanPause();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  // ── JS Evaluation ────────────────────────────────────────────────────
+
+  /**
+   * Run arbitrary JS in the page context. The caller is responsible for
+   * gating this behind a config flag — the BrowserAgent only routes the
+   * `evaluate` action here when `allowEvaluate: true`.
+   *
+   * The code is wrapped in `(async () => { ... })()` and the return value
+   * is coerced to a string for the model.
+   */
+  async evaluate(code: string): Promise<string> {
+    this.ensurePage();
+    try {
+      const result = await this.page.evaluate(
+        // eslint-disable-next-line @typescript-eslint/no-implied-eval
+        new Function("return (async () => { " + code + " })()") as any,
+      );
+      if (result === undefined) return "undefined";
+      if (result === null) return "null";
+      if (typeof result === "string") return result;
+      try {
+        return JSON.stringify(result);
+      } catch {
+        return String(result);
+      }
+    } catch (e: any) {
+      throw new Error(`evaluate failed: ${e?.message ?? e}`);
+    }
+  }
+
+  // ── Page text (for `extract`) ────────────────────────────────────────
+
+  /**
+   * Returns a clean text representation of the visible page body, with
+   * optional link extraction. Used by the BrowserAgent's `extract` action
+   * — the text is passed to a (usually cheap) LLM with the user's query.
+   */
+  async pageText(opts?: { extractLinks?: boolean; maxChars?: number }): Promise<string> {
+    this.ensurePage();
+    const maxChars = opts?.maxChars ?? 20_000;
+    const extractLinks = !!opts?.extractLinks;
+    const raw: string = await this.page.evaluate((withLinks: boolean) => {
+      const doc = (globalThis as any).document;
+      // Walk the body, skipping invisible nodes, scripts, styles.
+      const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG"]);
+      const win = (globalThis as any).window;
+      const lines: string[] = [];
+
+      function visit(node: any) {
+        if (!node) return;
+        if (node.nodeType === 3) {
+          const t = (node.nodeValue || "").trim();
+          if (t) lines.push(t);
+          return;
+        }
+        if (node.nodeType !== 1) return;
+        const tag = (node.tagName as string).toUpperCase();
+        if (SKIP.has(tag)) return;
+        const style = win.getComputedStyle(node);
+        if (style && (style.visibility === "hidden" || style.display === "none")) return;
+        if (tag === "A" && withLinks) {
+          const href = node.getAttribute("href") || "";
+          const txt = (node.innerText || node.textContent || "").trim();
+          if (txt && href) {
+            lines.push(`[${txt}](${href})`);
+            return;
+          }
+        }
+        for (const child of node.childNodes) visit(child);
+      }
+      visit(doc.body);
+      return lines.join("\n");
+    }, extractLinks);
+    const collapsed = raw.replace(/\n{3,}/g, "\n\n").trim();
+    return collapsed.length > maxChars ? `${collapsed.slice(0, maxChars)}\n…[truncated]` : collapsed;
+  }
+
+  // ── DOM Extraction (with index tagging) ──────────────────────────────
+
+  /**
+   * Snapshot the interactive elements visible in the viewport, tag each
+   * with a `data-bua-idx="<n>"` attribute (used by indexed actions), and
+   * return BOTH a human-readable string (for the model) and the
+   * structured list (for the runtime).
+   *
+   * Three properties matter for accuracy:
+   *  - Hit-tested: each listed coordinate / index actually reaches the
+   *    labeled element (overlays / occlusion skip the entry).
+   *  - Visibility-filtered: invisible, zero-size, `pointer-events: none`,
+   *    and near-zero-opacity elements are excluded.
+   *  - `cursor: pointer` fallback pass: a second scan catches custom React
+   *    widgets that have no semantic role/href/onclick but are clickable.
+   */
+  async extractDOM(opts?: { maxElements?: number }): Promise<{ text: string; elements: DomElement[] }> {
     this.ensurePage();
     const max = opts?.maxElements ?? 120;
 
-    const elements: string = await this.page.evaluate((limit: number): string => {
+    const raw: DomElement[] = await this.page.evaluate((limit: number): DomElement[] => {
       const doc = (globalThis as any).document;
       const win = (globalThis as any).window;
 
-      // Pass 1: semantic / ARIA / standard interactive selectors.
+      // Clear any markers left over from previous snapshots.
+      for (const stale of doc.querySelectorAll("[data-bua-idx]")) {
+        stale.removeAttribute("data-bua-idx");
+      }
+
       const selectors = [
         "a[href]",
         "button",
@@ -240,13 +553,7 @@ export class BrowserProvider {
       ];
       const semantic = Array.from(doc.querySelectorAll(selectors.join(","))) as any[];
 
-      // Pass 2: ANY element whose computed `cursor` is `pointer` and isn't
-      // already covered by the semantic pass. Modern React/Tailwind sites
-      // (FreightOS, Linear, Notion, etc.) wrap interactive widgets in plain
-      // `<div>` / `<span>` with no role, href, or onclick attribute — the
-      // only visual hint that they're clickable is the pointer cursor.
-      // Without this pass those elements are invisible to the agent.
-      // We cap the candidate pool to keep this affordable on large pages.
+      // Second pass: anything whose computed cursor is `pointer`.
       const POINTER_SCAN_CAP = 2000;
       const pointerCandidates: any[] = [];
       const allEls = doc.querySelectorAll("*") as ArrayLike<any>;
@@ -255,7 +562,6 @@ export class BrowserProvider {
         if (!el) continue;
         const tag = (el.tagName as string).toLowerCase();
         if (tag === "html" || tag === "body" || tag === "head" || tag === "script" || tag === "style") continue;
-        // cheap pre-filter: element must have a layout box that's visible-ish
         const rect = el.getBoundingClientRect();
         if (rect.width < 4 || rect.height < 4) continue;
         if (rect.bottom < 0 || rect.top > win.innerHeight) continue;
@@ -269,7 +575,7 @@ export class BrowserProvider {
       const vh = win.innerHeight as number;
       const vw = win.innerWidth as number;
 
-      const entries: { cx: number; cy: number; line: string }[] = [];
+      const entries: Array<{ el: any; cx: number; cy: number }> = [];
       const seen = new Set<any>();
 
       for (const el of all) {
@@ -293,26 +599,27 @@ export class BrowserProvider {
         const cx = Math.round(Math.max(0, Math.min(vw - 1, rect.left + rect.width / 2)));
         const cy = Math.round(Math.max(0, Math.min(vh - 1, rect.top + rect.height / 2)));
 
-        // Hit-test the element at its visual center. If a click at (cx, cy)
-        // would actually land on a completely unrelated element (overlay,
-        // sibling) instead of this one, skip this entry — it would mislead
-        // the model into producing coordinates that don't hit the labeled
-        // element. This is the single biggest source of "clicked the wrong
-        // thing" errors.
         try {
           const hit = doc.elementFromPoint(cx, cy);
           if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) {
             continue;
           }
-          // If a descendant of `el` is the actual hit target, mark it seen
-          // too so we don't list the same visual control twice.
           if (hit && el.contains(hit)) seen.add(hit);
         } catch {
           // ignore hit-testing failures
         }
 
         seen.add(el);
+        entries.push({ el, cx, cy });
+      }
 
+      // Sort top-to-bottom, left-to-right.
+      entries.sort((a, b) => (a.cy === b.cy ? a.cx - b.cx : a.cy - b.cy));
+
+      const out: DomElement[] = [];
+      let idx = 1;
+      for (const { el, cx, cy } of entries) {
+        if (out.length >= limit) break;
         const tag = (el.tagName as string).toLowerCase();
         const role = el.getAttribute("role") || tag;
         const type = el.getAttribute("type") || "";
@@ -329,47 +636,34 @@ export class BrowserProvider {
         if (!label && href) label = href.slice(0, 60);
         if (!label) label = `(${tag}${type ? ` type=${type}` : ""})`;
 
-        entries.push({
+        el.setAttribute("data-bua-idx", String(idx));
+
+        out.push({
+          index: idx,
           cx,
           cy,
-          line: `[${cx},${cy}] ${role}${type ? `(${type})` : ""}: "${label}"`,
+          role,
+          type: type || undefined,
+          label,
+          tag,
+          isInput: tag === "input" || tag === "textarea" || el.isContentEditable === true,
+          isSelect: tag === "select",
+          isFile: tag === "input" && type === "file",
         });
+        idx++;
       }
 
-      // Sort top-to-bottom, then left-to-right for stable ordering.
-      entries.sort((a, b) => (a.cy === b.cy ? a.cx - b.cx : a.cy - b.cy));
-
-      return entries
-        .slice(0, limit)
-        .map((e) => e.line)
-        .join("\n");
+      return out;
     }, max);
 
-    return elements;
-  }
+    this._lastDom = raw;
 
-  /**
-   * Deterministic, DOM-based click using Playwright's text locator.
-   *
-   * Returns `true` if a matching, visible, clickable element was found and
-   * clicked within `timeout` ms; `false` otherwise (so the caller can fall
-   * back to coordinate clicking). Substring-matches by default — e.g.
-   * `clickByText("Cheapest")` matches "Cheapest · 23-28 days · $2,550".
-   *
-   * This is the same pattern browser-use uses in DOM-only mode and is far
-   * more reliable than coordinate clicks for text-bearing targets.
-   */
-  async clickByText(keyword: string, opts?: { timeout?: number }): Promise<boolean> {
-    this.ensurePage();
-    const timeout = opts?.timeout ?? 3000;
-    try {
-      const locator = this.page.locator(`text=${keyword}`).first();
-      await locator.click({ timeout });
-      await this.humanPause();
-      return true;
-    } catch {
-      return false;
-    }
+    const lines = raw.map((e) => {
+      const typeSuffix = e.type ? `(${e.type})` : "";
+      return `[${e.index}] [${e.cx},${e.cy}] ${e.role}${typeSuffix}: "${e.label}"`;
+    });
+
+    return { text: lines.join("\n"), elements: raw };
   }
 
   // ── Page Info ────────────────────────────────────────────────────────
@@ -471,12 +765,20 @@ export class BrowserProvider {
 
   async close(): Promise<void> {
     try {
-      if (this.context) await this.context.close();
+      if (this.context && !this._attached) await this.context.close();
     } catch (err) {
       console.warn("[agentium/browser] Error closing context:", err instanceof Error ? err.message : err);
     }
     try {
-      if (this.browser) await this.browser.close();
+      if (this.browser && !this._attached) await this.browser.close();
+      else if (this.browser && this._attached) {
+        // CDP-attached: don't kill the remote browser, just detach.
+        try {
+          await this.browser.close();
+        } catch {
+          /* ignore */
+        }
+      }
     } catch (err) {
       console.warn("[agentium/browser] Error closing browser:", err instanceof Error ? err.message : err);
     }
@@ -484,6 +786,7 @@ export class BrowserProvider {
     this.context = null;
     this.browser = null;
     this.pages.clear();
+    this._lastDom = [];
   }
 
   // ── Private: Humanize helpers ────────────────────────────────────────
@@ -509,8 +812,7 @@ export class BrowserProvider {
   }
 
   /**
-   * Simulate human mouse movement using Bézier-like interpolation.
-   * Moves from the current mouse position to the target in small steps.
+   * Simulate human mouse movement using smoothstep interpolation.
    */
   private async humanMouseMove(targetX: number, targetY: number): Promise<void> {
     const steps = this.randInt(5, 12);

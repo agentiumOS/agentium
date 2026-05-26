@@ -1,92 +1,170 @@
+import type { ToolDef } from "@agentium/core";
+
 export function buildSystemPrompt(
   viewport: { width: number; height: number },
   extraInstructions?: string,
   credentialKeys?: string[],
+  options?: {
+    overrideSystemMessage?: string;
+    maxActionsPerStep?: number;
+    allowEvaluate?: boolean;
+    tools?: ToolDef[];
+    useVision?: boolean | "auto";
+    useDOM?: boolean;
+  },
 ): string {
-  const lines = [
-    `You are a browser automation agent. You receive a screenshot of a web browser and decide what action to take next to complete the user's task.`,
-    ``,
-    `## Viewport & Coordinate System`,
-    `- The browser viewport is ${viewport.width}×${viewport.height} CSS pixels.`,
-    `- The screenshot you are given has EXACTLY the same dimensions: ${viewport.width}×${viewport.height} pixels (top-left = 0,0).`,
-    `- ALL coordinates you return MUST be within 0..${viewport.width - 1} for x and 0..${viewport.height - 1} for y.`,
-    `- Coordinates outside this range will be rejected — your click will go nowhere.`,
-    `- If a "Interactive elements on page" list is provided below, PREFER its coordinates over your own visual estimation. They are exact element centers in the same coordinate system.`,
-    ``,
-    `## Available Actions`,
-    `Respond with a JSON object containing one of these actions:`,
-    ``,
-    `### click`,
-    `Click at a specific coordinate. Use for buttons, links, inputs, checkboxes, etc.`,
-    `\`{ "action": "click", "x": <number>, "y": <number>, "description": "<what you are clicking>" }\``,
-    `IMPORTANT: when the target has visible text, ALWAYS put that text in single or double quotes inside the description, e.g. \`"description": "Click on 'Cheapest' tab"\` or \`"description": "Press the \\"Sign in\\" button"\`. The runtime uses the quoted phrase to do a deterministic DOM text-locator click and only falls back to (x,y) if no match is found, which dramatically improves accuracy on dynamic pages.`,
-    ``,
-    `### type`,
-    `Type text. If x/y are provided, click that position first (to focus the input), then type. If omitted, types into the currently focused element. To press Enter after typing (e.g., to submit a search), append "\\n" to the text.`,
-    `\`{ "action": "type", "text": "<text to type>", "x": <number|optional>, "y": <number|optional> }\``,
-    `Example: \`{ "action": "type", "text": "search query\\n", "x": 640, "y": 300 }\` — clicks the search box, types, and presses Enter.`,
-    ``,
-    `### scroll`,
-    `Scroll the page up or down. Use when content is below or above the visible area.`,
-    `\`{ "action": "scroll", "direction": "up"|"down", "amount": <pixels, optional, default 400> }\``,
-    ``,
-    `### navigate`,
-    `Navigate to a specific URL. Use when you know the exact URL to visit.`,
-    `\`{ "action": "navigate", "url": "<full URL>" }\``,
-    ``,
-    `### back`,
-    `Go back to the previous page.`,
-    `\`{ "action": "back" }\``,
-    ``,
-    `### wait`,
-    `Wait for the page to load or for a timed event. Use sparingly.`,
-    `\`{ "action": "wait", "ms": <milliseconds> }\``,
-    ``,
-    `### done`,
-    `The task is complete. Provide a summary of what was accomplished.`,
-    `\`{ "action": "done", "result": "<summary of what was accomplished>" }\``,
-    ``,
-    `### fail`,
-    `The task cannot be completed. Explain why.`,
-    `\`{ "action": "fail", "reason": "<why the task failed>" }\``,
-    ``,
-    `## Rules`,
-    `1. ALWAYS look at the screenshot carefully before deciding your action.`,
-    `2. Provide coordinates that target the CENTER of the element you want to interact with.`,
-    `3. When an "Interactive elements on page" list is provided, identify the target element in that list by its visible label (button text, aria-label, placeholder, link href) and use ITS coordinates — they are the ground truth. Only fall back to visual estimation when no matching element is listed.`,
-    `4. For text inputs: click the input field first (using "type" with x/y), then the text will be typed.`,
-    `5. After typing in a search box, you often need to press Enter — use type with text "\\n" or click the search/submit button.`,
-    `6. If your previous click landed on the wrong element (e.g. page didn't change or a different element became focused), the target was probably misaligned — re-read the elements list and pick a different coordinate; do NOT repeat the same click.`,
-    `7. If a page is loading or blank, use "wait" with a short delay and try again.`,
-    `8. If you see a cookie banner, consent dialog, or popup, dismiss it FIRST before proceeding with the task — these often intercept clicks on elements behind them.`,
-    `9. NEVER hallucinate content. Only report what you can actually see on the screen.`,
-    `10. When the task is fully complete, use "done" immediately with a comprehensive result.`,
-    `11. If after several attempts you cannot complete the task, use "fail" with a clear reason.`,
-    ``,
-    `## Response Format`,
-    `Respond with ONLY a valid JSON object. No markdown, no explanation, just the JSON action.`,
-  ];
+  const maxActions = options?.maxActionsPerStep ?? 3;
+  const allowEvaluate = !!options?.allowEvaluate;
+  const tools = options?.tools ?? [];
+  const useVision = options?.useVision ?? "auto";
 
-  if (credentialKeys && credentialKeys.length > 0) {
+  if (options?.overrideSystemMessage) {
+    // Caller is taking full control. We still append the safety-critical
+    // sections (credentials + response format) so the runtime contract
+    // holds.
+    const lines = [options.overrideSystemMessage];
+    appendCredentials(lines, credentialKeys);
+    lines.push("", "## Response Format", responseFormatLines(maxActions).join("\n"));
+    return lines.join("\n");
+  }
+
+  const lines: string[] = [];
+
+  lines.push(
+    `You are a browser automation agent. Your job is to complete the user's task by interacting with a real web page.`,
+    ``,
+    `## What you receive each step`,
+    `- The current URL and page title`,
+    `- A numbered list of interactive elements visible in the viewport (the "DOM snapshot"). Each entry looks like \`[idx] [cx,cy] role(type): "label"\` where \`idx\` is a stable per-step index, \`cx,cy\` are the CSS-pixel center coordinates, and \`label\` is the visible text / aria-label / placeholder. **Use the index to act on elements** — it is the most reliable handle.`,
+  );
+
+  if (useVision !== false) {
     lines.push(
-      ``,
-      `## Secure Credentials`,
-      `The following credential placeholders are available for use in "type" actions:`,
-      ...credentialKeys.map((k) => `- \`{{${k}}}\``),
-      ``,
-      `When you need to fill in a login form or any field requiring these credentials,`,
-      `use the EXACT placeholder (e.g. \`{{email}}\`) as the "text" value in a type action.`,
-      `The system will securely replace them with real values at execution time.`,
-      `NEVER guess, invent, or ask the user for the actual credential values.`,
-      `NEVER include real credential values in "done" or "fail" results.`,
+      `- A PNG screenshot of the same viewport at exactly ${viewport.width}×${viewport.height} pixels. Use it for visual context (layout, icons, charts) when the DOM snapshot is ambiguous.`,
+    );
+  } else {
+    lines.push(
+      `- (Vision is disabled — no screenshot. Rely entirely on the DOM snapshot and page text.)`,
     );
   }
+
+  lines.push(
+    `- A short list of your previous actions (so you don't repeat yourself).`,
+    ``,
+    `## Coordinate System`,
+    `The browser viewport is ${viewport.width}×${viewport.height} CSS pixels, top-left origin. Coordinates outside that range are rejected.`,
+    ``,
+    `## Available Actions`,
+    `Respond with a JSON object — or, when several independent actions can be safely batched (e.g. filling multiple form fields), an array of up to ${maxActions} JSON objects. The runtime executes them in order and stops early if the page navigates.`,
+    ``,
+    `### click — by index (preferred)`,
+    `\`{ "action": "click", "index": <n>, "description": "<what you are clicking, ideally with the visible text in quotes>" }\``,
+    `If you cannot find a matching index (e.g. an element is partly off-screen and not in the snapshot), you may fall back to coordinates: \`{ "action": "click", "x": <n>, "y": <n>, "description": "Click on 'Cheapest' tab" }\`. The runtime will additionally try a Playwright text locator using the quoted phrase.`,
+    ``,
+    `### type — by index (preferred)`,
+    `Type into the element at \`index\`. The field is cleared first by default. Set \`"submit": true\` to press Enter after typing (e.g. submit a search).`,
+    `\`{ "action": "type", "index": <n>, "text": "<text>", "clear": true, "submit": false }\``,
+    `Fallback: \`{ "action": "type", "text": "<text>", "x": <n>, "y": <n> }\` clicks the coordinates first, then types.`,
+    ``,
+    `### scroll`,
+    `\`{ "action": "scroll", "direction": "down"|"up", "amount": 400 }\` or \`{ "action": "scroll", "index": <n> }\` to scroll a specific element into view.`,
+    ``,
+    `### find_text`,
+    `Scroll the first occurrence of a phrase into the viewport. Use this instead of repeated \`scroll\` actions when you know what you're hunting for.`,
+    `\`{ "action": "find_text", "text": "Annual report 2024" }\``,
+    ``,
+    `### send_keys`,
+    `Send arbitrary keys / shortcuts. Single key, combo (with \`+\`), or space-separated sequence.`,
+    `\`{ "action": "send_keys", "keys": "Tab Tab Enter" }\` · \`{ "action": "send_keys", "keys": "Control+l" }\` · \`{ "action": "send_keys", "keys": "Escape" }\``,
+    ``,
+    `### dropdown_options / select_dropdown`,
+    `Inspect or set a native \`<select>\` by index. **Do not click into native selects** — the OS overlay is not part of the DOM.`,
+    `\`{ "action": "dropdown_options", "index": <n> }\` returns the option list in the next observation.`,
+    `\`{ "action": "select_dropdown", "index": <n>, "text": "United States" }\` picks the matching option.`,
+    ``,
+    `### upload_file`,
+    `Set a file on an \`<input type="file">\` by index. \`path\` must be a path the runtime can read; the agent does NOT have a filesystem of its own.`,
+    `\`{ "action": "upload_file", "index": <n>, "path": "/abs/path/to/file.pdf" }\``,
+    ``,
+    `### navigate / back`,
+    `\`{ "action": "navigate", "url": "<full URL>" }\` · \`{ "action": "back" }\``,
+    ``,
+    `### wait / screenshot`,
+    `\`{ "action": "wait", "ms": <ms ≤ 10000> }\` · \`{ "action": "screenshot" }\` (request a fresh image on the next step — only useful when vision mode is "auto").`,
+    ``,
+    `### extract`,
+    `Extract structured information from the current page using a secondary LLM. Cheaper than reasoning over multiple screenshots yourself when you just need facts/text. The extracted result is returned in the next observation as \`Last extract result:\`.`,
+    `\`{ "action": "extract", "query": "List the top 5 result titles and their prices", "extractLinks": false }\``,
+  );
+
+  if (allowEvaluate) {
+    lines.push(
+      ``,
+      `### evaluate (JS escape hatch)`,
+      `Run arbitrary JavaScript in the page context. Use this ONLY when no other action fits — e.g. shadow DOM access, complex selectors, custom widget state. The return value is stringified and returned in the next observation.`,
+      `\`{ "action": "evaluate", "code": "return document.title" }\``,
+    );
+  }
+
+  if (tools.length > 0) {
+    lines.push(``, `### tool — invoke a custom tool`);
+    lines.push(
+      `In addition to browser actions, you have access to the following custom tools. Invoke them with \`{ "action": "tool", "name": "<tool>", "args": { ... } }\`. The result is returned in the next observation.`,
+    );
+    for (const t of tools) {
+      lines.push(`- **${t.name}** — ${t.description}`);
+    }
+  }
+
+  lines.push(
+    ``,
+    `### done / fail`,
+    `\`{ "action": "done", "result": "<comprehensive summary of what was accomplished and any data the user asked for>" }\` — use when the task is complete.`,
+    `\`{ "action": "fail", "reason": "<why>" }\` — use when the task cannot be completed even after several attempts.`,
+    ``,
+    `## Rules`,
+    `1. ALWAYS check the DOM snapshot first. If the target element is listed, use its \`index\`. Coordinates are a fallback.`,
+    `2. For text-bearing targets, ALSO include the visible label in quotes in \`description\` — the runtime will use it as a third-tier fallback if the locator fails.`,
+    `3. Dismiss cookie banners, consent dialogs, and modal popups FIRST — they intercept clicks on elements behind them.`,
+    `4. If a previous action clearly hit the wrong thing, do NOT repeat it. Pick a different element or a different action.`,
+    `5. Batch independent actions when safe (e.g. filling 3 form fields). Don't batch when an action navigates or substantially changes the DOM.`,
+    `6. NEVER hallucinate. Only report data you can actually see in the snapshot, screenshot, or an extract result.`,
+    `7. When the task is fully complete, return \`done\` IMMEDIATELY with a thorough result — don't add extra confirmation steps.`,
+    `8. If after several attempts you cannot make progress, return \`fail\` with a clear reason.`,
+  );
+
+  appendCredentials(lines, credentialKeys);
 
   if (extraInstructions) {
     lines.push(``, `## Additional Instructions`, extraInstructions);
   }
 
+  lines.push(``, `## Response Format`, responseFormatLines(maxActions).join("\n"));
+
   return lines.join("\n");
+}
+
+function appendCredentials(lines: string[], credentialKeys?: string[]): void {
+  if (!credentialKeys || credentialKeys.length === 0) return;
+  lines.push(
+    ``,
+    `## Secure Credentials`,
+    `The following credential placeholders are available for use in "type" actions:`,
+    ...credentialKeys.map((k) => `- \`{{${k}}}\``),
+    ``,
+    `When you need to fill in a login form or any field requiring these credentials,`,
+    `use the EXACT placeholder (e.g. \`{{email}}\`) as the "text" value in a type action.`,
+    `The system will securely replace them with real values at execution time.`,
+    `NEVER guess, invent, or ask the user for the actual credential values.`,
+    `NEVER include real credential values in "done" or "fail" results.`,
+  );
+}
+
+function responseFormatLines(maxActions: number): string[] {
+  return [
+    `Respond with ONLY valid JSON. No markdown, no commentary.`,
+    `Either a single action object, or an array of up to ${maxActions} action objects to execute in order.`,
+  ];
 }
 
 export function buildUserMessage(
@@ -96,6 +174,7 @@ export function buildUserMessage(
   stepIndex: number,
   actionHistory: string[],
   domSnapshot?: string,
+  lastExtract?: string,
 ): string {
   const lines: string[] = [];
 
@@ -106,8 +185,14 @@ export function buildUserMessage(
 
   if (domSnapshot) {
     lines.push(``);
-    lines.push(`**Interactive elements on page (format: [centerX,centerY] role: "label"):**`);
+    lines.push(`**Interactive elements (format: [idx] [cx,cy] role: "label"):**`);
     lines.push(domSnapshot);
+  }
+
+  if (lastExtract) {
+    lines.push(``);
+    lines.push(`**Last extract result:**`);
+    lines.push(lastExtract);
   }
 
   if (actionHistory.length > 0) {
@@ -119,7 +204,7 @@ export function buildUserMessage(
   }
 
   lines.push(``);
-  lines.push(`Look at the screenshot and decide the next action to complete the task.`);
+  lines.push(`Decide the next action(s) to complete the task.`);
 
   return lines.join("\n");
 }
@@ -127,12 +212,15 @@ export function buildUserMessage(
 export function summarizeAction(action: Record<string, unknown>): string {
   switch (action.action) {
     case "click":
-      return `Clicked at (${action.x}, ${action.y}): ${action.description}`;
+      if (typeof action.index === "number") return `Clicked [${action.index}]: ${action.description ?? ""}`.trim();
+      return `Clicked at (${action.x}, ${action.y}): ${action.description ?? ""}`.trim();
     case "type":
+      if (typeof action.index === "number") return `Typed into [${action.index}]: "${action.text}"`;
       return action.x != null
         ? `Clicked (${action.x}, ${action.y}) and typed "${action.text}"`
         : `Typed "${action.text}"`;
     case "scroll":
+      if (typeof action.index === "number") return `Scrolled [${action.index}] into view`;
       return `Scrolled ${action.direction}${action.amount ? ` ${action.amount}px` : ""}`;
     case "navigate":
       return `Navigated to ${action.url}`;
@@ -141,7 +229,23 @@ export function summarizeAction(action: Record<string, unknown>): string {
     case "wait":
       return `Waited ${action.ms}ms`;
     case "screenshot":
-      return `Took an extra screenshot`;
+      return `Requested a fresh screenshot`;
+    case "send_keys":
+      return `Sent keys: ${action.keys}`;
+    case "find_text":
+      return `Scrolled to text: "${action.text}"`;
+    case "evaluate":
+      return `Evaluated JS`;
+    case "dropdown_options":
+      return `Read dropdown options at [${action.index}]`;
+    case "select_dropdown":
+      return `Selected "${action.text}" in dropdown [${action.index}]`;
+    case "upload_file":
+      return `Uploaded file to [${action.index}]: ${action.path}`;
+    case "extract":
+      return `Extracted: "${action.query}"`;
+    case "tool":
+      return `Called tool "${action.name}"`;
     case "done":
       return `Done: ${action.result}`;
     case "fail":

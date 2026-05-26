@@ -1,5 +1,5 @@
 import type { ChatMessage, CostTracker, ModelProvider, ToolDef } from "@agentium/core";
-import { EventBus, Logger, MemoryManager } from "@agentium/core";
+import { EventBus, Logger, MemoryManager, RunContext } from "@agentium/core";
 import { z } from "zod";
 import { BrowserProvider } from "./browser-provider.js";
 import type { CredentialVault } from "./credential-vault.js";
@@ -11,19 +11,32 @@ export class BrowserAgent {
   readonly eventBus: EventBus;
 
   private model: ModelProvider;
+  private pageExtractionLLM: ModelProvider | null;
   private instructions?: string;
+  private extendSystemMessage?: string;
+  private overrideSystemMessage?: string;
   private maxSteps: number;
+  private maxFailures: number;
+  private maxActionsPerStep: number;
+  private initialActions: BrowserAction[];
+  private useVision: boolean | "auto";
+  private directlyOpenUrl: boolean;
   private headless: boolean;
   private viewport: { width: number; height: number };
   private defaultStartUrl?: string;
   private waitAfterAction: number;
   private maxRepeats: number;
   private useDOM: boolean;
+  private allowEvaluate: boolean;
+  private allowedDomains?: string[];
+  private prohibitedDomains?: string[];
   private storageState?: string;
+  private cdpUrl?: string;
   private recordVideo?: boolean | { dir: string };
   private credentials?: CredentialVault;
-  private stealth?: boolean | import("./types.js").StealthConfig;
-  private humanize?: boolean | import("./types.js").HumanizeConfig;
+  private stealth?: import("./types.js").StealthConfig | boolean;
+  private humanize?: import("./types.js").HumanizeConfig | boolean;
+  private tools: ToolDef[];
   private costTracker: CostTracker | null;
   private memoryManager: MemoryManager | null = null;
   private logger: Logger;
@@ -36,19 +49,32 @@ export class BrowserAgent {
   constructor(config: BrowserAgentConfig) {
     this.name = config.name;
     this.model = config.model;
+    this.pageExtractionLLM = config.pageExtractionLLM ?? null;
     this.instructions = config.instructions;
+    this.extendSystemMessage = config.extendSystemMessage;
+    this.overrideSystemMessage = config.overrideSystemMessage;
     this.maxSteps = config.maxSteps ?? 30;
+    this.maxFailures = config.maxFailures ?? 3;
+    this.maxActionsPerStep = Math.max(1, config.maxActionsPerStep ?? 3);
+    this.initialActions = config.initialActions ?? [];
+    this.useVision = config.useVision ?? "auto";
+    this.directlyOpenUrl = config.directlyOpenUrl ?? true;
     this.headless = config.headless ?? true;
     this.viewport = config.viewport ?? { width: 1280, height: 720 };
     this.defaultStartUrl = config.startUrl;
     this.waitAfterAction = config.waitAfterAction ?? 1500;
     this.maxRepeats = config.maxRepeats ?? 3;
     this.useDOM = config.useDOM ?? true;
+    this.allowEvaluate = config.allowEvaluate ?? false;
+    this.allowedDomains = config.allowedDomains;
+    this.prohibitedDomains = config.prohibitedDomains;
     this.storageState = config.storageState;
+    this.cdpUrl = config.cdpUrl;
     this.recordVideo = config.recordVideo;
     this.credentials = config.credentials;
     this.stealth = config.stealth;
     this.humanize = config.humanize;
+    this.tools = config.tools ?? [];
     this.costTracker = config.costTracker ?? null;
     this.eventBus = config.eventBus ?? new EventBus();
     this.logger = new Logger({
@@ -63,14 +89,22 @@ export class BrowserAgent {
 
   async run(task: string, opts?: BrowserRunOpts): Promise<BrowserRunOutput> {
     const startTime = Date.now();
-    const startUrl = opts?.startUrl ?? this.defaultStartUrl;
+    const maxSteps = opts?.maxSteps ?? this.maxSteps;
     const sessionId = opts?.sessionId ?? `browser_${Date.now()}`;
     const userId = opts?.userId;
     const browser = new BrowserProvider();
     const steps: BrowserStep[] = [];
     const actionHistory: string[] = [];
+    const extractedContent: string[] = [];
+    let lastExtractResult: string | undefined;
+    let failureCount = 0;
+    let lastActionKey = "";
+    let repeatCount = 0;
+    let lastActionWasScreenshot = false;
 
-    let extraInstructions = this.instructions ?? "";
+    // ── Compose instructions (memory + user-provided) ────────────────
+    const baseExtra = [this.instructions, this.extendSystemMessage].filter(Boolean).join("\n\n");
+    let extraInstructions = baseExtra;
     if (this.memoryManager) {
       await this.memoryManager.ensureReady();
       const memoryContext = await this.memoryManager.buildContext(sessionId, userId, task, this.name);
@@ -80,15 +114,22 @@ export class BrowserAgent {
     }
 
     const credentialKeys = this.credentials?.keys();
-    const systemPrompt = buildSystemPrompt(this.viewport, extraInstructions || undefined, credentialKeys);
-    let lastActionKey = "";
-    let repeatCount = 0;
+    const systemPrompt = buildSystemPrompt(this.viewport, extraInstructions || undefined, credentialKeys, {
+      overrideSystemMessage: this.overrideSystemMessage,
+      maxActionsPerStep: this.maxActionsPerStep,
+      allowEvaluate: this.allowEvaluate,
+      tools: this.tools,
+      useVision: this.useVision,
+      useDOM: this.useDOM,
+    });
 
     try {
       this.logger.info("Launching browser", {
         headless: this.headless,
         viewport: this.viewport,
         useDOM: this.useDOM,
+        useVision: this.useVision,
+        cdpUrl: this.cdpUrl ?? undefined,
         recordVideo: !!this.recordVideo,
         stealth: !!this.stealth,
         humanize: !!this.humanize,
@@ -101,49 +142,85 @@ export class BrowserAgent {
         recordVideo: this.recordVideo,
         stealth: this.stealth,
         humanize: this.humanize,
+        cdpUrl: this.cdpUrl,
       });
 
+      // ── Decide the starting URL ────────────────────────────────
+      const startUrl = opts?.startUrl ?? this.defaultStartUrl ?? this.detectUrlInTask(task);
       if (startUrl) {
         this.logger.info("Navigating to start URL", { url: startUrl });
+        this.assertDomainAllowed(startUrl);
         await browser.navigate(startUrl);
       }
 
-      for (let step = 0; step < this.maxSteps; step++) {
-        const screenshot = await browser.screenshot();
+      // ── Run initialActions (no LLM cost) ───────────────────────
+      for (const ia of this.initialActions) {
+        try {
+          await this.executeAction(browser, ia, actionHistory, extractedContent);
+        } catch (e: any) {
+          this.logger.warn("initialAction failed", { action: ia, error: e?.message });
+        }
+        await this.sleep(this.waitAfterAction);
+      }
+
+      // ── Main loop ──────────────────────────────────────────────
+      for (let step = 0; step < maxSteps; step++) {
         const pageInfo = await browser.getPageInfo();
 
         let domSnapshot: string | undefined;
         if (this.useDOM) {
-          domSnapshot = await browser.extractDOM();
+          const dom = await browser.extractDOM();
+          domSnapshot = dom.text;
         }
 
-        this.eventBus.emit("browser.screenshot", { data: screenshot });
+        // Decide whether to capture a screenshot this step.
+        const wantVision = this.shouldCaptureVision(step, lastActionWasScreenshot);
+        const screenshot = wantVision ? await browser.screenshot() : Buffer.alloc(0);
+        if (wantVision) this.eventBus.emit("browser.screenshot", { data: screenshot });
 
-        const userText = buildUserMessage(task, pageInfo.url, pageInfo.title, step, actionHistory, domSnapshot);
+        const userText = buildUserMessage(
+          task,
+          pageInfo.url,
+          pageInfo.title,
+          step,
+          actionHistory,
+          domSnapshot,
+          lastExtractResult,
+        );
+
+        const content: any[] = [];
+        if (wantVision) {
+          content.push({ type: "image", data: screenshot.toString("base64"), mimeType: "image/png" });
+        }
+        content.push({ type: "text", text: userText });
 
         const messages: ChatMessage[] = [
           { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                data: screenshot.toString("base64"),
-                mimeType: "image/png",
-              },
-              { type: "text", text: userText },
-            ],
-          },
+          { role: "user", content },
         ];
 
-        this.logger.debug("Sending screenshot to vision model", { step, url: pageInfo.url });
+        this.logger.debug("Calling model", { step, url: pageInfo.url, vision: wantVision });
 
-        const response = await this.model.generate(messages, {
-          temperature: 0.1,
-          maxTokens: 1024,
-          apiKey: opts?.apiKey,
-          responseFormat: "json",
-        });
+        let response: any;
+        try {
+          response = await this.model.generate(messages, {
+            temperature: 0.1,
+            maxTokens: 1024,
+            apiKey: opts?.apiKey,
+            responseFormat: "json",
+          });
+        } catch (e: any) {
+          failureCount++;
+          this.logger.warn("Model call failed", { error: e?.message, failureCount });
+          if (failureCount > this.maxFailures) {
+            return await this.finalize(browser, steps, startTime, opts, extractedContent, {
+              result: `Model call failed ${failureCount} times: ${e?.message}`,
+              success: false,
+            });
+          }
+          actionHistory.push(`(model call failed: ${e?.message ?? "unknown"} — retrying)`);
+          continue;
+        }
 
         if (this.costTracker && response.usage) {
           this.costTracker.track({
@@ -158,93 +235,144 @@ export class BrowserAgent {
 
         const raw = typeof response.message.content === "string" ? response.message.content : "";
 
-        let action: BrowserAction;
+        let parsed: BrowserAction | BrowserAction[];
         try {
-          action = JSON.parse(raw) as BrowserAction;
+          parsed = JSON.parse(raw) as BrowserAction | BrowserAction[];
         } catch {
-          this.logger.warn("Failed to parse model response as JSON, retrying", { raw });
+          failureCount++;
+          this.logger.warn("Failed to parse model response as JSON", { raw, failureCount });
+          if (failureCount > this.maxFailures) {
+            return await this.finalize(browser, steps, startTime, opts, extractedContent, {
+              result: `Model returned invalid JSON ${failureCount} times. Last response: ${raw.slice(0, 200)}`,
+              success: false,
+            });
+          }
           actionHistory.push("(invalid JSON response — retrying)");
           continue;
         }
 
-        // Store the sanitized action (with placeholders) in step history
-        const step_: BrowserStep = {
-          index: step,
-          action,
-          screenshot,
-          pageUrl: pageInfo.url,
-          pageTitle: pageInfo.title,
-          timestamp: new Date(),
-          dom: domSnapshot,
-        };
-        steps.push(step_);
+        // Normalize to array and cap to maxActionsPerStep.
+        const actions: BrowserAction[] = (Array.isArray(parsed) ? parsed : [parsed]).slice(
+          0,
+          this.maxActionsPerStep,
+        );
 
-        let summary = summarizeAction(action as unknown as Record<string, unknown>);
-        if (this.credentials) {
-          summary = this.credentials.mask(summary);
-        }
+        let didTerminate: { result: string; success: boolean } | null = null;
+        let didNavigate = false;
+        lastActionWasScreenshot = false;
 
-        // ── Loop detection ─────────────────────────────────────────────
-        const actionKey = JSON.stringify(action);
-        if (actionKey === lastActionKey) {
-          repeatCount++;
-        } else {
-          lastActionKey = actionKey;
-          repeatCount = 1;
-        }
+        for (let ai = 0; ai < actions.length; ai++) {
+          const action = actions[ai];
 
-        if (repeatCount > this.maxRepeats && action.action !== "done" && action.action !== "fail") {
-          this.logger.warn("Stuck in a loop — same action repeated", {
-            action: action.action,
-            repeats: repeatCount,
-            maxRepeats: this.maxRepeats,
+          let summary = summarizeAction(action as unknown as Record<string, unknown>);
+          if (this.credentials) summary = this.credentials.mask(summary);
+
+          // ── Loop detection on every action ───────────────────
+          const actionKey = JSON.stringify(action);
+          if (actionKey === lastActionKey) {
+            repeatCount++;
+          } else {
+            lastActionKey = actionKey;
+            repeatCount = 1;
+          }
+          if (
+            repeatCount > this.maxRepeats &&
+            action.action !== "done" &&
+            action.action !== "fail"
+          ) {
+            this.logger.warn("Stuck in a loop — same action repeated", {
+              action: action.action,
+              repeats: repeatCount,
+              maxRepeats: this.maxRepeats,
+            });
+            actionHistory.push(
+              `⚠ LOOP DETECTED: "${summary}" repeated ${repeatCount} times. Auto-stopping.`,
+            );
+            didTerminate = {
+              result: `Stuck in a loop: "${summary}" was repeated ${repeatCount} times. The page may have a popup, consent banner, or unexpected state blocking progress.`,
+              success: false,
+            };
+            break;
+          }
+
+          actionHistory.push(summary);
+          this.logger.info(`Step ${step + 1}.${ai + 1}: ${summary}`);
+
+          this.eventBus.emit("browser.action", { action });
+
+          // Terminal actions.
+          if (action.action === "done") {
+            const result = this.credentials ? this.credentials.mask(action.result) : action.result;
+            didTerminate = { result, success: true };
+            break;
+          }
+          if (action.action === "fail") {
+            const result = this.credentials ? this.credentials.mask(action.reason) : action.reason;
+            didTerminate = { result, success: false };
+            break;
+          }
+
+          // Execute and track success/extract output.
+          let stepOk = true;
+          let stepOutput: string | undefined;
+          try {
+            const exec = await this.executeAction(browser, action, actionHistory, extractedContent);
+            stepOutput = exec?.output;
+            if (exec?.didNavigate) didNavigate = true;
+            if (action.action === "extract" && exec?.output) {
+              lastExtractResult = exec.output;
+            }
+            if (action.action === "screenshot") {
+              lastActionWasScreenshot = true;
+            }
+          } catch (e: any) {
+            stepOk = false;
+            failureCount++;
+            this.logger.warn("Action failed", { action: action.action, error: e?.message, failureCount });
+            actionHistory.push(`(error: ${e?.message ?? "unknown"})`);
+            if (failureCount > this.maxFailures) {
+              didTerminate = {
+                result: `Action ${action.action} failed ${failureCount} times. Last error: ${e?.message}`,
+                success: false,
+              };
+              break;
+            }
+          }
+
+          steps.push({
+            index: steps.length,
+            action,
+            screenshot,
+            pageUrl: pageInfo.url,
+            pageTitle: pageInfo.title,
+            timestamp: new Date(),
+            dom: domSnapshot,
+            output: stepOutput,
+            ok: stepOk,
           });
-          actionHistory.push(
-            `⚠ LOOP DETECTED: "${summary}" repeated ${repeatCount} times. ` +
-              `The agent was stuck and auto-stopped. Try a different approach or a different startUrl.`,
-          );
 
-          return await this.finalize(browser, steps, startTime, opts, {
-            result: `Stuck in a loop: "${summary}" was repeated ${repeatCount} times. The page may have a popup, consent banner, or unexpected state blocking progress.`,
-            success: false,
+          this.eventBus.emit("browser.step", {
+            index: steps.length - 1,
+            action,
+            pageUrl: pageInfo.url,
+            screenshot,
           });
+
+          await this.sleep(this.waitAfterAction);
+
+          // If the action navigated, stop batching — the DOM snapshot is stale.
+          if (didNavigate) break;
         }
 
-        actionHistory.push(summary);
-        this.logger.info(`Step ${step + 1}: ${summary}`);
-
-        this.eventBus.emit("browser.action", { action });
-        this.eventBus.emit("browser.step", {
-          index: step,
-          action,
-          pageUrl: pageInfo.url,
-          screenshot,
-        });
-
-        if (action.action === "done") {
-          const result = this.credentials ? this.credentials.mask(action.result) : action.result;
-          return await this.finalize(browser, steps, startTime, opts, {
-            result,
-            success: true,
-          });
+        if (didTerminate) {
+          return await this.finalize(browser, steps, startTime, opts, extractedContent, didTerminate);
         }
-
-        if (action.action === "fail") {
-          const result = this.credentials ? this.credentials.mask(action.reason) : action.reason;
-          return await this.finalize(browser, steps, startTime, opts, {
-            result,
-            success: false,
-          });
-        }
-
-        await this.executeAction(browser, action);
-        await this.sleep(this.waitAfterAction);
       }
 
       // Max steps exhausted
-      this.logger.warn("Max steps reached without completing task", { maxSteps: this.maxSteps });
-      return await this.finalize(browser, steps, startTime, opts, {
-        result: `Task not completed within ${this.maxSteps} steps. Last actions: ${actionHistory.slice(-3).join("; ")}`,
+      this.logger.warn("Max steps reached without completing task", { maxSteps });
+      return await this.finalize(browser, steps, startTime, opts, extractedContent, {
+        result: `Task not completed within ${maxSteps} steps. Last actions: ${actionHistory.slice(-3).join("; ")}`,
         success: false,
       });
     } catch (error: any) {
@@ -259,6 +387,7 @@ export class BrowserAgent {
         finalUrl: "",
         finalScreenshot: Buffer.alloc(0),
         durationMs: Date.now() - startTime,
+        extractedContent,
       };
     }
   }
@@ -286,15 +415,57 @@ export class BrowserAgent {
 
   // ── Private helpers ──────────────────────────────────────────────────
 
+  private shouldCaptureVision(step: number, lastActionWasScreenshot: boolean): boolean {
+    if (this.useVision === false) return false;
+    if (this.useVision === true) return true;
+    // "auto":
+    // - always include vision on the first step (model needs to orient itself)
+    // - always include if useDOM is false (no other signal)
+    // - otherwise only when the model explicitly requested it last step
+    if (step === 0) return true;
+    if (!this.useDOM) return true;
+    return lastActionWasScreenshot;
+  }
+
+  private detectUrlInTask(task: string): string | undefined {
+    if (!this.directlyOpenUrl) return undefined;
+    const match = task.match(/https?:\/\/[^\s)<>"']+/);
+    return match ? match[0] : undefined;
+  }
+
+  private assertDomainAllowed(url: string): void {
+    if (!this.allowedDomains?.length && !this.prohibitedDomains?.length) return;
+    let host: string;
+    try {
+      host = new URL(url).hostname.toLowerCase();
+    } catch {
+      throw new Error(`Cannot parse URL for domain check: ${url}`);
+    }
+    if (this.allowedDomains?.length && !this.allowedDomains.some((p) => matchDomain(host, p))) {
+      throw new Error(`Navigation blocked: ${host} is not in allowedDomains`);
+    }
+    if (this.prohibitedDomains?.length && this.prohibitedDomains.some((p) => matchDomain(host, p))) {
+      throw new Error(`Navigation blocked: ${host} is in prohibitedDomains`);
+    }
+  }
+
   private async finalize(
     browser: BrowserProvider,
     steps: BrowserStep[],
     startTime: number,
     opts: BrowserRunOpts | undefined,
+    extractedContent: string[],
     outcome: { result: string; success: boolean },
   ): Promise<BrowserRunOutput> {
-    const finalScreenshot = await browser.screenshot();
-    const finalInfo = await browser.getPageInfo();
+    let finalScreenshot: Buffer;
+    let finalInfo: { url: string; title: string };
+    try {
+      finalScreenshot = await browser.screenshot();
+      finalInfo = await browser.getPageInfo();
+    } catch {
+      finalScreenshot = Buffer.alloc(0);
+      finalInfo = { url: "", title: "" };
+    }
 
     if (opts?.saveStorageState) {
       try {
@@ -320,6 +491,7 @@ export class BrowserAgent {
       finalScreenshot,
       durationMs: Date.now() - startTime,
       videoPath,
+      extractedContent,
     };
 
     if (this.memoryManager) {
@@ -354,69 +526,162 @@ export class BrowserAgent {
     return output;
   }
 
-  private async executeAction(browser: BrowserProvider, action: BrowserAction): Promise<void> {
-    try {
-      switch (action.action) {
-        case "click": {
-          // Prefer deterministic text-based click when the model's
-          // description includes a quoted target label. This dramatically
-          // improves accuracy on modern apps (custom React widgets, dense
-          // tab strips, dynamic prices) where coordinate clicks can drift
-          // by a few pixels and land on a sibling. Coordinates are used as
-          // a fallback when no usable keyword is present or the text
-          // locator fails.
-          const keyword = this.extractClickKeyword(action.description);
-          let clicked = false;
-          if (keyword) {
-            clicked = await browser.clickByText(keyword);
-            if (clicked) {
-              this.logger.debug("Clicked by text", { keyword });
-            }
-          }
-          if (!clicked) {
-            await browser.click(action.x, action.y);
-          }
-          break;
+  /**
+   * Execute a single action. Returns `{ output?, didNavigate? }` for the
+   * caller's state tracking. May throw — the loop handles failure-budget
+   * accounting in that case.
+   */
+  private async executeAction(
+    browser: BrowserProvider,
+    action: BrowserAction,
+    _actionHistory: string[],
+    extractedContent: string[],
+  ): Promise<{ output?: string; didNavigate?: boolean }> {
+    switch (action.action) {
+      case "click": {
+        // Indexed click is the most reliable path.
+        if (typeof action.index === "number") {
+          const ok = await browser.clickByIndex(action.index);
+          if (ok) return {};
         }
-
-        case "type": {
-          const resolvedText = this.credentials ? this.credentials.resolve(action.text) : action.text;
-
-          if (action.x != null && action.y != null) {
-            await browser.clickAndType(action.x, action.y, resolvedText);
-          } else {
-            await browser.type(resolvedText);
-          }
-          if (resolvedText.includes("\n")) {
-            await browser.pressKey("Enter");
-          }
-          break;
+        // Text-locator fallback from action.description.
+        const keyword = this.extractClickKeyword(action.description);
+        if (keyword && (await browser.clickByText(keyword))) {
+          this.logger.debug("Clicked by text", { keyword });
+          return {};
         }
-
-        case "scroll":
-          await browser.scroll(action.direction, action.amount);
-          break;
-
-        case "navigate":
-          await browser.navigate(action.url);
-          break;
-
-        case "back":
-          await browser.back();
-          break;
-
-        case "wait":
-          await this.sleep(Math.min(action.ms, 10_000));
-          break;
-
-        case "screenshot":
-          break;
-
-        default:
-          this.logger.warn("Unknown action", { action });
+        // Coordinate fallback.
+        if (typeof action.x === "number" && typeof action.y === "number") {
+          await browser.click(action.x, action.y);
+          return {};
+        }
+        throw new Error(`click action has no resolvable target (index/text/coordinates)`);
       }
-    } catch (error: any) {
-      this.logger.warn("Action execution failed", { action: action.action, error: error.message });
+
+      case "type": {
+        const resolvedText = this.credentials ? this.credentials.resolve(action.text) : action.text;
+        const submit = action.submit ?? resolvedText.includes("\n");
+        const cleanText = submit ? resolvedText.replace(/\n+$/, "") : resolvedText;
+
+        if (typeof action.index === "number") {
+          const ok = await browser.inputByIndex(action.index, cleanText, {
+            clear: action.clear,
+            submit,
+          });
+          if (ok) return {};
+        }
+        if (typeof action.x === "number" && typeof action.y === "number") {
+          await browser.clickAndType(action.x, action.y, cleanText);
+          if (submit) await browser.pressKey("Enter");
+          return {};
+        }
+        // No target: type into the currently focused element.
+        await browser.type(cleanText);
+        if (submit) await browser.pressKey("Enter");
+        return {};
+      }
+
+      case "scroll": {
+        if (typeof action.index === "number") {
+          await browser.scrollIntoViewByIndex(action.index);
+          return {};
+        }
+        await browser.scroll(action.direction, action.amount);
+        return {};
+      }
+
+      case "navigate": {
+        this.assertDomainAllowed(action.url);
+        await browser.navigate(action.url);
+        return { didNavigate: true };
+      }
+
+      case "back":
+        await browser.back();
+        return { didNavigate: true };
+
+      case "wait":
+        await this.sleep(Math.min(action.ms, 10_000));
+        return {};
+
+      case "screenshot":
+        // Handled by the main loop's vision logic — no-op here.
+        return {};
+
+      case "send_keys":
+        await browser.sendKeys(action.keys);
+        return {};
+
+      case "find_text":
+        await browser.findText(action.text);
+        return {};
+
+      case "evaluate": {
+        if (!this.allowEvaluate) {
+          throw new Error("evaluate is disabled. Set allowEvaluate: true on BrowserAgent to enable.");
+        }
+        const out = await browser.evaluate(action.code);
+        return { output: `evaluate → ${out}` };
+      }
+
+      case "dropdown_options": {
+        const options = await browser.dropdownOptions(action.index);
+        const formatted = options
+          .map((o, i) => `${i + 1}. "${o.label}" (value="${o.value}")${o.selected ? " [selected]" : ""}`)
+          .join("\n");
+        return { output: `Dropdown [${action.index}] options:\n${formatted || "(no options found)"}` };
+      }
+
+      case "select_dropdown": {
+        const ok = await browser.selectDropdown(action.index, action.text);
+        if (!ok) throw new Error(`Could not select "${action.text}" on dropdown [${action.index}]`);
+        return {};
+      }
+
+      case "upload_file": {
+        const ok = await browser.uploadFileByIndex(action.index, action.path);
+        if (!ok) throw new Error(`Could not upload "${action.path}" to [${action.index}]`);
+        return {};
+      }
+
+      case "extract": {
+        const pageText = await browser.pageText({ extractLinks: action.extractLinks });
+        const model = this.pageExtractionLLM ?? this.model;
+        const messages: ChatMessage[] = [
+          {
+            role: "system",
+            content:
+              "You extract information from web pages. Use ONLY the page content provided. If the requested information is not present, say so explicitly. Be concise and structured (lists/tables) when appropriate.",
+          },
+          {
+            role: "user",
+            content: `Query: ${action.query}\n\nPage content:\n${pageText}`,
+          },
+        ];
+        const response = await model.generate(messages, { temperature: 0.0, maxTokens: 2048 });
+        const out = typeof response.message.content === "string" ? response.message.content : "";
+        const masked = this.credentials ? this.credentials.mask(out) : out;
+        extractedContent.push(masked);
+        return { output: masked };
+      }
+
+      case "tool": {
+        const tool = this.tools.find((t) => t.name === action.name);
+        if (!tool) throw new Error(`Tool "${action.name}" is not registered on this BrowserAgent`);
+        const ctx = new RunContext({
+          sessionId: `browser_${this.name}_${Date.now()}`,
+          eventBus: this.eventBus,
+        });
+        const result = await tool.execute((action.args ?? {}) as Record<string, unknown>, ctx);
+        const out = typeof result === "string" ? result : JSON.stringify(result);
+        return { output: `${action.name} → ${out}` };
+      }
+
+      // `done` and `fail` are intercepted by the run loop before we get
+      // here. Listing them keeps the discriminated union exhaustive.
+      case "done":
+      case "fail":
+        return {};
     }
   }
 
@@ -426,20 +691,12 @@ export class BrowserAgent {
 
   /**
    * Parse a quoted target keyword from a click action's `description`.
-   *
-   * The system prompt asks the model to include the visible label of its
-   * click target in quotes (e.g. `"Click on 'Cheapest' tab"`). When a usable
-   * quoted phrase is present we return it so `executeAction` can try a
-   * deterministic Playwright text locator before falling back to
-   * coordinate clicking.
-   *
    * Returns `undefined` for generic / ambiguous labels (login buttons,
-   * close, OK, etc.) where a substring text match could trivially fire on
-   * the wrong element.
+   * close, OK, etc.) where a substring text match could fire on the
+   * wrong element.
    */
   private extractClickKeyword(description: string | undefined): string | undefined {
     if (!description) return undefined;
-    // Match content between any pair of straight or curly quotes.
     const match = description.match(/['"\u2018\u2019\u201C\u201D]([^'"\u2018\u2019\u201C\u201D]{1,80})['"\u2018\u2019\u201C\u201D]/);
     if (!match) return undefined;
     const keyword = match[1].trim();
@@ -471,4 +728,25 @@ export class BrowserAgent {
     if (skip.has(keyword.toLowerCase())) return undefined;
     return keyword;
   }
+}
+
+/**
+ * Domain wildcard matcher. Supports:
+ *   "example.com"       — exact match
+ *   "*.example.com"     — example.com and any subdomain
+ *   "*"                 — anything
+ * Case-insensitive.
+ */
+function matchDomain(host: string, pattern: string): boolean {
+  const h = host.toLowerCase();
+  // Strip protocol prefix from patterns like "http*://example.com" → "example.com"
+  let p = pattern.toLowerCase().replace(/^https?\*?:\/\//, "").replace(/^\/+/, "");
+  if (p.includes("/")) p = p.split("/")[0];
+  if (p === "*") return true;
+  if (p === h) return true;
+  if (p.startsWith("*.")) {
+    const base = p.slice(2);
+    return h === base || h.endsWith(`.${base}`);
+  }
+  return false;
 }

@@ -61,12 +61,28 @@ describe("buildUserMessage", () => {
 });
 
 describe("summarizeAction", () => {
-  it("summarizes click action", () => {
+  it("summarizes click action (coordinate)", () => {
     expect(summarizeAction({ action: "click", x: 100, y: 200, description: "button" })).toContain("Clicked");
   });
 
-  it("summarizes type action", () => {
-    expect(summarizeAction({ action: "type", text: "hello" })).toContain("hello");
+  it("summarizes click action (indexed)", () => {
+    const out = summarizeAction({ action: "click", index: 7, description: "the 'Cheapest' tab" });
+    expect(out).toContain("[7]");
+    expect(out).toContain("Cheapest");
+  });
+
+  it("summarizes type action (indexed)", () => {
+    const out = summarizeAction({ action: "type", index: 3, text: "hello" });
+    expect(out).toContain("[3]");
+    expect(out).toContain("hello");
+  });
+
+  it("summarizes find_text / send_keys / select_dropdown / extract / tool", () => {
+    expect(summarizeAction({ action: "find_text", text: "Annual" })).toContain("Annual");
+    expect(summarizeAction({ action: "send_keys", keys: "Tab Enter" })).toContain("Tab Enter");
+    expect(summarizeAction({ action: "select_dropdown", index: 2, text: "US" })).toContain('"US"');
+    expect(summarizeAction({ action: "extract", query: "prices" })).toContain("prices");
+    expect(summarizeAction({ action: "tool", name: "get_2fa" })).toContain("get_2fa");
   });
 
   it("summarizes done action", () => {
@@ -80,5 +96,59 @@ describe("summarizeAction", () => {
   it("falls back to JSON for unknown actions", () => {
     const result = summarizeAction({ action: "custom", data: 42 });
     expect(result).toContain("custom");
+  });
+});
+
+describe("buildSystemPrompt (new options)", () => {
+  it("advertises indexed click as preferred", () => {
+    const prompt = buildSystemPrompt({ width: 1280, height: 720 });
+    expect(prompt).toContain("click — by index (preferred)");
+    expect(prompt).toContain('"index"');
+  });
+
+  it("lists new actions: find_text, send_keys, select_dropdown, upload_file, extract", () => {
+    const prompt = buildSystemPrompt({ width: 1280, height: 720 });
+    expect(prompt).toContain("find_text");
+    expect(prompt).toContain("send_keys");
+    expect(prompt).toContain("select_dropdown");
+    expect(prompt).toContain("upload_file");
+    expect(prompt).toContain("extract");
+  });
+
+  it("includes evaluate action only when allowEvaluate is set", () => {
+    const off = buildSystemPrompt({ width: 1280, height: 720 });
+    expect(off).not.toContain("### evaluate");
+    const on = buildSystemPrompt({ width: 1280, height: 720 }, undefined, undefined, { allowEvaluate: true });
+    expect(on).toContain("### evaluate");
+  });
+
+  it("lists registered custom tools when provided", () => {
+    const prompt = buildSystemPrompt({ width: 1280, height: 720 }, undefined, undefined, {
+      tools: [
+        {
+          name: "get_2fa",
+          description: "Fetch the current 2FA code",
+          // biome-ignore lint/suspicious/noExplicitAny: test stub
+          parameters: { _def: {} } as any,
+          execute: async () => "123456",
+        },
+      ],
+    });
+    expect(prompt).toContain("get_2fa");
+    expect(prompt).toContain("Fetch the current 2FA code");
+  });
+
+  it("honors overrideSystemMessage but still appends credentials + format", () => {
+    const prompt = buildSystemPrompt({ width: 1280, height: 720 }, undefined, ["email"], {
+      overrideSystemMessage: "You are a TOTALLY CUSTOM agent.",
+    });
+    expect(prompt).toContain("You are a TOTALLY CUSTOM agent.");
+    expect(prompt).toContain("{{email}}");
+    expect(prompt).toContain("Response Format");
+  });
+
+  it("notes vision disabled when useVision=false", () => {
+    const prompt = buildSystemPrompt({ width: 1280, height: 720 }, undefined, undefined, { useVision: false });
+    expect(prompt.toLowerCase()).toContain("vision is disabled");
   });
 });
