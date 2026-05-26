@@ -84,29 +84,39 @@ export function getStealthScript(): string {
       };
     }
 
-    // ── Prevent iframe detection of automation ───────────────────────
-    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
-      get: function() {
-        return window;
-      },
-    });
-
-    // ── Remove "cdc_" Playwright/ChromeDriver markers from DOM ───────
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (node.nodeType === 1) {
-            const el = node;
-            for (const attr of [...el.attributes]) {
-              if (attr.name.startsWith('cdc_') || attr.name.startsWith('__playwright')) {
-                el.removeAttribute(attr.name);
+    // ── Remove "cdc_" Playwright/ChromeDriver markers from new elements ─
+    // Only watches childList additions, NOT every attribute mutation —
+    // attributes:true subtree:true is O(every DOM write) on heavy SPAs
+    // like FreightOS and noticeably slows the page.
+    try {
+      const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (node && node.nodeType === 1) {
+              const el = node;
+              if (!el.attributes) continue;
+              for (const attr of [...el.attributes]) {
+                if (attr.name.startsWith('cdc_') || attr.name.startsWith('__playwright')) {
+                  el.removeAttribute(attr.name);
+                }
               }
             }
           }
         }
+      });
+      if (document.documentElement) {
+        observer.observe(document.documentElement, { childList: true, subtree: true });
       }
-    });
-    observer.observe(document.documentElement, { attributes: true, childList: true, subtree: true });
+    } catch (_e) { /* never break the page over a stealth patch */ }
+
+    // NOTE on iframe.contentWindow:
+    //   We deliberately do NOT override HTMLIFrameElement.prototype.contentWindow.
+    //   An earlier version returned the parent window, which breaks legitimate
+    //   page JS on any site that uses iframes (checkout widgets, embedded
+    //   videos, A/B test scripts, analytics). The "anti-detection" value was
+    //   minimal — modern detectors don't rely on that property anyway — and
+    //   the breakage caused pages to fail to boot, leaving font-test residue
+    //   on screen.
   `;
 }
 

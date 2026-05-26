@@ -75,21 +75,37 @@ export class BrowserProvider {
 
     const stealthEnabled = !!opts?.stealth;
     const stealthCfg: StealthConfig = typeof opts?.stealth === "object" ? opts.stealth : {};
+    const headless = opts?.headless ?? true;
 
     // ── Launch options ─────────────────────────────────────────────
-    // NOTE: we intentionally do NOT pass `--window-size` here. Playwright's
-    // `viewport` (set on the context below) is the single source of truth
-    // for the rendering surface dimensions. See v2.0.7 commit for the
-    // full rationale.
-    const launchOpts: Record<string, unknown> = {
-      headless: opts?.headless ?? true,
-    };
+    // Window sizing is tricky:
+    //   - Headless: there is no OS window. Viewport emulation alone
+    //     governs the rendering surface. Don't pass --window-size.
+    //   - Headed:  Chromium opens an OS window at its own default size
+    //     (often 1920×1080+ on wide monitors). Our `viewport` emulates
+    //     the page at a smaller size (1280×720 by default), so the page
+    //     renders 1280px wide inside a 1920px window — leaving a blank
+    //     strip on the right ("half-screen zoom-out").
+    //
+    // In headed mode we pass --window-size matching the viewport, but
+    // pad the HEIGHT by ~140px to account for the title bar + tab strip
+    // + URL bar so the inner content area lines up exactly with the
+    // emulated viewport. (v2.0.6 forgot the padding and the page got
+    // zoomed-out because the inner area was shorter than the viewport.)
+    const launchOpts: Record<string, unknown> = { headless };
 
+    const args: string[] = [];
     if (stealthEnabled) {
-      const { args, proxy } = buildStealthLaunchArgs(stealthCfg);
-      launchOpts.args = args;
-      if (proxy) launchOpts.proxy = proxy;
+      const stealth = buildStealthLaunchArgs(stealthCfg);
+      args.push(...stealth.args);
+      if (stealth.proxy) launchOpts.proxy = stealth.proxy;
     }
+    if (!headless) {
+      const CHROME_VERTICAL_CHROME_PX = 140;
+      args.push(`--window-size=${this._viewport.width},${this._viewport.height + CHROME_VERTICAL_CHROME_PX}`);
+      args.push("--window-position=0,0");
+    }
+    if (args.length) launchOpts.args = args;
 
     this.browser = await chromium.launch(launchOpts);
 
