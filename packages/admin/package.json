@@ -1,6 +1,6 @@
 {
   "name": "@agentium/admin",
-  "version": "2.0.8",
+  "version": "2.1.0",
   "description": "Admin CRUD API for dynamically creating, updating, and deleting Agentium agents, teams, and workflows at runtime",
   "license": "MIT",
   "repository": {
@@ -42,7 +42,7 @@
     "typescript": "^5.6.0"
   },
   "peerDependencies": {
-    "@agentium/core": "^2.0.8",
+    "@agentium/core": "^2.1.0",
     "@types/express": "^4.0.0 || ^5.0.0",
     "express": "^4.0.0 || ^5.0.0",
     "socket.io": "^4.0.0"
