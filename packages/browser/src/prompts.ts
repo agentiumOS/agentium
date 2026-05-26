@@ -19,6 +19,7 @@ export function buildSystemPrompt(
     `### click`,
     `Click at a specific coordinate. Use for buttons, links, inputs, checkboxes, etc.`,
     `\`{ "action": "click", "x": <number>, "y": <number>, "description": "<what you are clicking>" }\``,
+    `IMPORTANT: when the target has visible text, ALWAYS put that text in single or double quotes inside the description, e.g. \`"description": "Click on 'Cheapest' tab"\` or \`"description": "Press the \\"Sign in\\" button"\`. The runtime uses the quoted phrase to do a deterministic DOM text-locator click and only falls back to (x,y) if no match is found, which dramatically improves accuracy on dynamic pages.`,
     ``,
     `### type`,
     `Type text. If x/y are provided, click that position first (to focus the input), then type. If omitted, types into the currently focused element. To press Enter after typing (e.g., to submit a search), append "\\n" to the text.`,

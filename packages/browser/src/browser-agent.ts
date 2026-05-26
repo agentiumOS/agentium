@@ -357,9 +357,27 @@ export class BrowserAgent {
   private async executeAction(browser: BrowserProvider, action: BrowserAction): Promise<void> {
     try {
       switch (action.action) {
-        case "click":
-          await browser.click(action.x, action.y);
+        case "click": {
+          // Prefer deterministic text-based click when the model's
+          // description includes a quoted target label. This dramatically
+          // improves accuracy on modern apps (custom React widgets, dense
+          // tab strips, dynamic prices) where coordinate clicks can drift
+          // by a few pixels and land on a sibling. Coordinates are used as
+          // a fallback when no usable keyword is present or the text
+          // locator fails.
+          const keyword = this.extractClickKeyword(action.description);
+          let clicked = false;
+          if (keyword) {
+            clicked = await browser.clickByText(keyword);
+            if (clicked) {
+              this.logger.debug("Clicked by text", { keyword });
+            }
+          }
+          if (!clicked) {
+            await browser.click(action.x, action.y);
+          }
           break;
+        }
 
         case "type": {
           const resolvedText = this.credentials ? this.credentials.resolve(action.text) : action.text;
@@ -404,5 +422,53 @@ export class BrowserAgent {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Parse a quoted target keyword from a click action's `description`.
+   *
+   * The system prompt asks the model to include the visible label of its
+   * click target in quotes (e.g. `"Click on 'Cheapest' tab"`). When a usable
+   * quoted phrase is present we return it so `executeAction` can try a
+   * deterministic Playwright text locator before falling back to
+   * coordinate clicking.
+   *
+   * Returns `undefined` for generic / ambiguous labels (login buttons,
+   * close, OK, etc.) where a substring text match could trivially fire on
+   * the wrong element.
+   */
+  private extractClickKeyword(description: string | undefined): string | undefined {
+    if (!description) return undefined;
+    // Match content between any pair of straight or curly quotes.
+    const match = description.match(/['"\u2018\u2019\u201C\u201D]([^'"\u2018\u2019\u201C\u201D]{1,80})['"\u2018\u2019\u201C\u201D]/);
+    if (!match) return undefined;
+    const keyword = match[1].trim();
+    if (!keyword || keyword.length < 2) return undefined;
+    const skip = new Set([
+      "log in",
+      "login",
+      "sign in",
+      "sign up",
+      "submit",
+      "close",
+      "ok",
+      "okay",
+      "cancel",
+      "yes",
+      "no",
+      "x",
+      "continue",
+      "next",
+      "back",
+      "accept",
+      "dismiss",
+      "got it",
+      "agree",
+      "i agree",
+      "allow",
+      "deny",
+    ]);
+    if (skip.has(keyword.toLowerCase())) return undefined;
+    return keyword;
   }
 }

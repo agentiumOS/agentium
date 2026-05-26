@@ -146,6 +146,13 @@ export interface StealthConfig {
   geolocation?: { latitude: number; longitude: number; accuracy?: number };
   /** Ignore HTTPS certificate errors. Default: false (secure). Only enable for local testing. */
   ignoreHTTPSErrors?: boolean;
+  /**
+   * `window.devicePixelRatio` to emulate. Default: `1`. Set to `2` to mimic
+   * a Retina display (sharper screenshots at 2× cost). Setting to 2 on a
+   * non-Retina host display can cause the headed window to look zoomed-out
+   * or stretched because the OS compositor downsamples a 2× surface.
+   */
+  deviceScaleFactor?: number;
   /** HTTP/SOCKS proxy. Format: "http://user:pass@host:port" */
   proxy?: { server: string; username?: string; password?: string };
 }

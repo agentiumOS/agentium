@@ -217,6 +217,8 @@ export class BrowserProvider {
     const elements: string = await this.page.evaluate((limit: number): string => {
       const doc = (globalThis as any).document;
       const win = (globalThis as any).window;
+
+      // Pass 1: semantic / ARIA / standard interactive selectors.
       const selectors = [
         "a[href]",
         "button",
@@ -236,7 +238,34 @@ export class BrowserProvider {
         "[contenteditable='true']",
         "[tabindex]:not([tabindex='-1'])",
       ];
-      const all = Array.from(doc.querySelectorAll(selectors.join(","))) as any[];
+      const semantic = Array.from(doc.querySelectorAll(selectors.join(","))) as any[];
+
+      // Pass 2: ANY element whose computed `cursor` is `pointer` and isn't
+      // already covered by the semantic pass. Modern React/Tailwind sites
+      // (FreightOS, Linear, Notion, etc.) wrap interactive widgets in plain
+      // `<div>` / `<span>` with no role, href, or onclick attribute — the
+      // only visual hint that they're clickable is the pointer cursor.
+      // Without this pass those elements are invisible to the agent.
+      // We cap the candidate pool to keep this affordable on large pages.
+      const POINTER_SCAN_CAP = 2000;
+      const pointerCandidates: any[] = [];
+      const allEls = doc.querySelectorAll("*") as ArrayLike<any>;
+      for (let i = 0; i < allEls.length && pointerCandidates.length < POINTER_SCAN_CAP; i++) {
+        const el = allEls[i];
+        if (!el) continue;
+        const tag = (el.tagName as string).toLowerCase();
+        if (tag === "html" || tag === "body" || tag === "head" || tag === "script" || tag === "style") continue;
+        // cheap pre-filter: element must have a layout box that's visible-ish
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) continue;
+        if (rect.bottom < 0 || rect.top > win.innerHeight) continue;
+        if (rect.right < 0 || rect.left > win.innerWidth) continue;
+        const style = win.getComputedStyle(el);
+        if (style.cursor !== "pointer") continue;
+        pointerCandidates.push(el);
+      }
+
+      const all = semantic.concat(pointerCandidates);
       const vh = win.innerHeight as number;
       const vw = win.innerWidth as number;
 
@@ -275,6 +304,9 @@ export class BrowserProvider {
           if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) {
             continue;
           }
+          // If a descendant of `el` is the actual hit target, mark it seen
+          // too so we don't list the same visual control twice.
+          if (hit && el.contains(hit)) seen.add(hit);
         } catch {
           // ignore hit-testing failures
         }
@@ -314,6 +346,30 @@ export class BrowserProvider {
     }, max);
 
     return elements;
+  }
+
+  /**
+   * Deterministic, DOM-based click using Playwright's text locator.
+   *
+   * Returns `true` if a matching, visible, clickable element was found and
+   * clicked within `timeout` ms; `false` otherwise (so the caller can fall
+   * back to coordinate clicking). Substring-matches by default — e.g.
+   * `clickByText("Cheapest")` matches "Cheapest · 23-28 days · $2,550".
+   *
+   * This is the same pattern browser-use uses in DOM-only mode and is far
+   * more reliable than coordinate clicks for text-bearing targets.
+   */
+  async clickByText(keyword: string, opts?: { timeout?: number }): Promise<boolean> {
+    this.ensurePage();
+    const timeout = opts?.timeout ?? 3000;
+    try {
+      const locator = this.page.locator(`text=${keyword}`).first();
+      await locator.click({ timeout });
+      await this.humanPause();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // ── Page Info ────────────────────────────────────────────────────────

@@ -123,7 +123,11 @@ export function buildStealthContextOpts(
     locale: config.locale ?? "en-US",
     timezoneId: config.timezone ?? "America/New_York",
     colorScheme: "light" as const,
-    deviceScaleFactor: 2,
+    // Default to 1 — matches the most common real-user setup and avoids
+    // visual zoom/stretch in headed mode on non-Retina displays (the host
+    // OS would downsample a 2× rendered surface). Users on Retina-only
+    // deployments can opt back into DPR=2 for sharper screenshots.
+    deviceScaleFactor: config.deviceScaleFactor ?? 1,
     hasTouch: false,
     javaScriptEnabled: true,
     ignoreHTTPSErrors: config.ignoreHTTPSErrors ?? false,
