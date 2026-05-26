@@ -1,5 +1,5 @@
 import { buildStealthContextOpts, buildStealthLaunchArgs, getStealthScript, pickUserAgent } from "./stealth.js";
-import type { DomElement, HumanizeConfig, PageInfo, StealthConfig } from "./types.js";
+import type { DomElement, DomScrollContext, DomSnapshot, HumanizeConfig, PageInfo, StealthConfig } from "./types.js";
 
 /**
  * Playwright wrapper with stealth anti-detection, human-like behavior,
@@ -524,162 +524,302 @@ export class BrowserProvider {
   /**
    * Snapshot the interactive elements visible in the viewport, tag each
    * with a `data-bua-idx="<n>"` attribute (used by indexed actions), and
-   * return BOTH a human-readable string (for the model) and the
-   * structured list (for the runtime).
+   * return:
+   *   - `text`: a human-readable string fed to the model
+   *   - `elements`: the structured list with stable indices
+   *   - `scroll`: spatial context (pages above/below, hidden interactive count)
    *
-   * Three properties matter for accuracy:
-   *  - Hit-tested: each listed coordinate / index actually reaches the
+   * Five properties matter for accuracy:
+   *  - **Hit-tested**: each listed coordinate / index actually reaches the
    *    labeled element (overlays / occlusion skip the entry).
-   *  - Visibility-filtered: invisible, zero-size, `pointer-events: none`,
-   *    and near-zero-opacity elements are excluded.
-   *  - `cursor: pointer` fallback pass: a second scan catches custom React
-   *    widgets that have no semantic role/href/onclick but are clickable.
+   *  - **Visibility filtered (with parent chain)**: an element is dropped
+   *    if itself OR any ancestor is `display:none`, `visibility:hidden`,
+   *    `pointer-events:none`, or near-zero opacity.
+   *  - **Shadow DOM piercing**: traverses open shadow roots so custom
+   *    elements / web components are visible to the agent.
+   *  - **Same-origin iframes**: walks into each accessible iframe and
+   *    includes its interactive elements (offset by the iframe's screen
+   *    position so the coordinates the model sees are still viewport-
+   *    relative).
+   *  - **`cursor: pointer` fallback pass**: catches custom React widgets
+   *    that have no semantic role/href/onclick but are clickable.
    */
-  async extractDOM(opts?: { maxElements?: number }): Promise<{ text: string; elements: DomElement[] }> {
+  async extractDOM(opts?: { maxElements?: number }): Promise<DomSnapshot> {
     this.ensurePage();
-    const max = opts?.maxElements ?? 120;
+    const max = opts?.maxElements ?? 200;
 
-    const raw: DomElement[] = await this.page.evaluate((limit: number): DomElement[] => {
-      const doc = (globalThis as any).document;
-      const win = (globalThis as any).window;
-
-      // Clear any markers left over from previous snapshots.
-      for (const stale of doc.querySelectorAll("[data-bua-idx]")) {
-        stale.removeAttribute("data-bua-idx");
-      }
-
-      const selectors = [
-        "a[href]",
-        "button",
-        "input",
-        "textarea",
-        "select",
-        "[role='button']",
-        "[role='link']",
-        "[role='tab']",
-        "[role='menuitem']",
-        "[role='checkbox']",
-        "[role='radio']",
-        "[role='switch']",
-        "[role='combobox']",
-        "[role='option']",
-        "[onclick]",
-        "[contenteditable='true']",
-        "[tabindex]:not([tabindex='-1'])",
-      ];
-      const semantic = Array.from(doc.querySelectorAll(selectors.join(","))) as any[];
-
-      // Second pass: anything whose computed cursor is `pointer`.
-      const POINTER_SCAN_CAP = 2000;
-      const pointerCandidates: any[] = [];
-      const allEls = doc.querySelectorAll("*") as ArrayLike<any>;
-      for (let i = 0; i < allEls.length && pointerCandidates.length < POINTER_SCAN_CAP; i++) {
-        const el = allEls[i];
-        if (!el) continue;
-        const tag = (el.tagName as string).toLowerCase();
-        if (tag === "html" || tag === "body" || tag === "head" || tag === "script" || tag === "style") continue;
-        const rect = el.getBoundingClientRect();
-        if (rect.width < 4 || rect.height < 4) continue;
-        if (rect.bottom < 0 || rect.top > win.innerHeight) continue;
-        if (rect.right < 0 || rect.left > win.innerWidth) continue;
-        const style = win.getComputedStyle(el);
-        if (style.cursor !== "pointer") continue;
-        pointerCandidates.push(el);
-      }
-
-      const all = semantic.concat(pointerCandidates);
-      const vh = win.innerHeight as number;
-      const vw = win.innerWidth as number;
-
-      const entries: Array<{ el: any; cx: number; cy: number }> = [];
-      const seen = new Set<any>();
-
-      for (const el of all) {
-        if (seen.has(el)) continue;
-
-        const rect = el.getBoundingClientRect();
-        if (rect.width < 4 || rect.height < 4) continue;
-        if (rect.bottom < 0 || rect.top > vh) continue;
-        if (rect.right < 0 || rect.left > vw) continue;
-
-        const style = win.getComputedStyle(el);
-        if (
-          style.visibility === "hidden" ||
-          style.display === "none" ||
-          style.pointerEvents === "none" ||
-          parseFloat(style.opacity || "1") < 0.1
-        ) {
-          continue;
-        }
-
-        const cx = Math.round(Math.max(0, Math.min(vw - 1, rect.left + rect.width / 2)));
-        const cy = Math.round(Math.max(0, Math.min(vh - 1, rect.top + rect.height / 2)));
-
-        try {
-          const hit = doc.elementFromPoint(cx, cy);
-          if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) {
-            continue;
-          }
-          if (hit && el.contains(hit)) seen.add(hit);
-        } catch {
-          // ignore hit-testing failures
-        }
-
-        seen.add(el);
-        entries.push({ el, cx, cy });
-      }
-
-      // Sort top-to-bottom, left-to-right.
-      entries.sort((a, b) => (a.cy === b.cy ? a.cx - b.cx : a.cy - b.cy));
-
-      const out: DomElement[] = [];
-      let idx = 1;
-      for (const { el, cx, cy } of entries) {
-        if (out.length >= limit) break;
-        const tag = (el.tagName as string).toLowerCase();
-        const role = el.getAttribute("role") || tag;
-        const type = el.getAttribute("type") || "";
-        const innerText = (el.innerText || el.textContent || "") as string;
-        const text = innerText.trim().replace(/\s+/g, " ").slice(0, 80);
-        const placeholder = el.getAttribute("placeholder") || "";
-        const ariaLabel = el.getAttribute("aria-label") || "";
-        const title = el.getAttribute("title") || "";
-        const name = el.getAttribute("name") || "";
-        const href = el.getAttribute("href") || "";
-        const value = (el.value || "") as string;
-
-        let label = ariaLabel || text || placeholder || title || value || name;
-        if (!label && href) label = href.slice(0, 60);
-        if (!label) label = `(${tag}${type ? ` type=${type}` : ""})`;
-
-        el.setAttribute("data-bua-idx", String(idx));
-
-        out.push({
-          index: idx,
-          cx,
-          cy,
-          role,
-          type: type || undefined,
-          label,
-          tag,
-          isInput: tag === "input" || tag === "textarea" || el.isContentEditable === true,
-          isSelect: tag === "select",
-          isFile: tag === "input" && type === "file",
-        });
-        idx++;
-      }
-
-      return out;
-    }, max);
-
-    this._lastDom = raw;
-
-    const lines = raw.map((e) => {
-      const typeSuffix = e.type ? `(${e.type})` : "";
-      return `[${e.index}] [${e.cx},${e.cy}] ${e.role}${typeSuffix}: "${e.label}"`;
+    // ── Main document pass (with shadow DOM piercing) ─────────────
+    const mainResult = await this.page.evaluate((limit: number) => {
+      return (globalThis as any).__buaExtract(limit, 0, 0, "main");
+    }, max).catch(async () => {
+      // First-time call: install the extractor as a per-page global and retry.
+      await this.installExtractorScript();
+      return await this.page.evaluate((limit: number) => {
+        return (globalThis as any).__buaExtract(limit, 0, 0, "main");
+      }, max);
     });
 
-    return { text: lines.join("\n"), elements: raw };
+    let collected: DomElement[] = mainResult.elements;
+    const scroll: DomScrollContext = mainResult.scroll;
+
+    // ── Same-origin iframe pass (best-effort) ─────────────────────
+    try {
+      const frames = this.page.frames();
+      for (const frame of frames) {
+        if (frame === this.page.mainFrame()) continue;
+        if (collected.length >= max) break;
+        let bbox: { x: number; y: number } | null = null;
+        try {
+          const owner = await frame.frameElement();
+          if (owner) {
+            const rect = await owner.boundingBox();
+            if (rect) bbox = { x: rect.x, y: rect.y };
+          }
+        } catch {
+          /* cross-origin or detached — skip */
+          continue;
+        }
+        if (!bbox) continue;
+        let iframeRes: { elements: DomElement[] } | null = null;
+        try {
+          iframeRes = await frame.evaluate(
+            (args: { limit: number; ox: number; oy: number; frame: string }) => {
+              return (globalThis as any).__buaExtract(args.limit, args.ox, args.oy, args.frame);
+            },
+            { limit: max - collected.length, ox: bbox.x, oy: bbox.y, frame: frame.url() || "(iframe)" },
+          );
+        } catch {
+          // Either cross-origin (we'd get a SecurityError) or the
+          // extractor isn't installed in that frame. Try to install &
+          // retry once.
+          try {
+            await frame.evaluate(this.extractorScriptSource());
+            iframeRes = await frame.evaluate(
+              (args: { limit: number; ox: number; oy: number; frame: string }) => {
+                return (globalThis as any).__buaExtract(args.limit, args.ox, args.oy, args.frame);
+              },
+              { limit: max - collected.length, ox: bbox.x, oy: bbox.y, frame: frame.url() || "(iframe)" },
+            );
+          } catch {
+            /* cross-origin — silently skip */
+          }
+        }
+        if (iframeRes?.elements?.length) {
+          // Reindex iframe entries to continue after the main doc's last index.
+          const offset = collected.length;
+          for (let i = 0; i < iframeRes.elements.length; i++) {
+            const e = iframeRes.elements[i];
+            e.index = offset + i + 1;
+            collected.push(e);
+            if (collected.length >= max) break;
+          }
+        }
+      }
+    } catch {
+      /* iframe traversal best-effort */
+    }
+
+    this._lastDom = collected;
+
+    const lines = collected.map((e) => {
+      const typeSuffix = e.type ? `(${e.type})` : "";
+      const frameSuffix = e.frame && e.frame !== "main" ? ` [frame]` : "";
+      return `[${e.index}] [${e.cx},${e.cy}] ${e.role}${typeSuffix}${frameSuffix}: "${e.label}"`;
+    });
+
+    // Preserve the legacy DomElement[] shape; old callers see what they always saw.
+    return { text: lines.join("\n"), elements: collected, scroll };
+  }
+
+  /**
+   * Install the `__buaExtract` global on the main page. Idempotent —
+   * subsequent calls are no-ops.
+   */
+  private async installExtractorScript(): Promise<void> {
+    if (!this.page) return;
+    await this.page.evaluate(this.extractorScriptSource());
+  }
+
+  /**
+   * The extractor source. Lives in its own method so we can also inject
+   * it into iframes that haven't yet had it loaded.
+   *
+   * This function intentionally runs entirely in the page context. It:
+   *   - traverses the regular DOM + open shadow roots (deep)
+   *   - applies a parent-chain visibility filter
+   *   - applies a `cursor:pointer` second pass for custom widgets
+   *   - hit-tests each candidate at its center to avoid overlay collisions
+   *   - returns scroll context (pages above/below, hidden counts)
+   *   - tags survivors with `data-bua-idx` for indexed actions
+   */
+  private extractorScriptSource(): string {
+    return /* js */ `
+      (function () {
+        if (typeof window.__buaExtract === "function") return;
+
+        function isAncestorVisible(el) {
+          let cur = el;
+          while (cur && cur !== document.body && cur !== document.documentElement) {
+            const s = window.getComputedStyle(cur);
+            if (!s) return false;
+            if (s.display === "none" || s.visibility === "hidden" || s.visibility === "collapse") return false;
+            if (parseFloat(s.opacity || "1") < 0.05) return false;
+            cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host) || null;
+          }
+          return true;
+        }
+
+        function collectSemantic(root, out) {
+          if (!root || !root.querySelectorAll) return;
+          var sel = [
+            "a[href]", "button", "input", "textarea", "select",
+            "[role='button']", "[role='link']", "[role='tab']",
+            "[role='menuitem']", "[role='checkbox']", "[role='radio']",
+            "[role='switch']", "[role='combobox']", "[role='option']",
+            "[onclick]", "[contenteditable='true']", "[tabindex]:not([tabindex='-1'])"
+          ].join(",");
+          var found = root.querySelectorAll(sel);
+          for (var i = 0; i < found.length; i++) out.push(found[i]);
+          // shadow DOM piercing
+          var all = root.querySelectorAll("*");
+          for (var j = 0; j < all.length; j++) {
+            var n = all[j];
+            if (n.shadowRoot) collectSemantic(n.shadowRoot, out);
+          }
+        }
+
+        function collectPointer(root, out, cap) {
+          if (!root || !root.querySelectorAll) return;
+          var all = root.querySelectorAll("*");
+          var vh = window.innerHeight, vw = window.innerWidth;
+          for (var i = 0; i < all.length && out.length < cap; i++) {
+            var el = all[i];
+            var tag = (el.tagName || "").toLowerCase();
+            if (!tag || tag === "html" || tag === "body" || tag === "head" || tag === "script" || tag === "style") continue;
+            var rect = el.getBoundingClientRect();
+            if (rect.width < 4 || rect.height < 4) continue;
+            if (rect.bottom < 0 || rect.top > vh) continue;
+            if (rect.right < 0 || rect.left > vw) continue;
+            var s = window.getComputedStyle(el);
+            if (s.cursor !== "pointer") continue;
+            out.push(el);
+            if (el.shadowRoot) collectPointer(el.shadowRoot, out, cap);
+          }
+        }
+
+        function countHiddenInteractive(root, vh, vw) {
+          if (!root || !root.querySelectorAll) return 0;
+          var sel = ["a[href]","button","input","textarea","select","[role='button']","[role='link']","[role='tab']","[role='menuitem']"].join(",");
+          var n = 0;
+          var found = root.querySelectorAll(sel);
+          for (var i = 0; i < found.length; i++) {
+            var r = found[i].getBoundingClientRect();
+            if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) n++;
+          }
+          return n;
+        }
+
+        window.__buaExtract = function (limit, offsetX, offsetY, frameName) {
+          // Clear stale markers each call.
+          var stale = document.querySelectorAll("[data-bua-idx]");
+          for (var s = 0; s < stale.length; s++) stale[s].removeAttribute("data-bua-idx");
+
+          var vh = window.innerHeight, vw = window.innerWidth;
+          var semantic = []; collectSemantic(document, semantic);
+          var pointer = []; collectPointer(document, pointer, 2000);
+          var all = semantic.concat(pointer);
+
+          var entries = [];
+          var seen = new Set();
+
+          for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            if (seen.has(el)) continue;
+            var rect = el.getBoundingClientRect();
+            if (rect.width < 4 || rect.height < 4) continue;
+            if (rect.bottom < 0 || rect.top > vh) continue;
+            if (rect.right < 0 || rect.left > vw) continue;
+
+            var style = window.getComputedStyle(el);
+            if (style.visibility === "hidden" || style.display === "none" ||
+                style.pointerEvents === "none" || parseFloat(style.opacity || "1") < 0.1) continue;
+            if (!isAncestorVisible(el)) continue;
+
+            var cx = Math.round(Math.max(0, Math.min(vw - 1, rect.left + rect.width / 2)));
+            var cy = Math.round(Math.max(0, Math.min(vh - 1, rect.top + rect.height / 2)));
+
+            try {
+              var hit = document.elementFromPoint(cx, cy);
+              if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) continue;
+              if (hit && el.contains(hit)) seen.add(hit);
+            } catch (_) {}
+            seen.add(el);
+            entries.push({ el: el, cx: cx, cy: cy });
+          }
+
+          entries.sort(function (a, b) { return a.cy === b.cy ? a.cx - b.cx : a.cy - b.cy; });
+
+          var out = [];
+          var idx = 1;
+          for (var k = 0; k < entries.length && out.length < limit; k++) {
+            var ent = entries[k];
+            var el = ent.el;
+            var tag = (el.tagName || "").toLowerCase();
+            var role = el.getAttribute("role") || tag;
+            var type = el.getAttribute("type") || "";
+            var innerText = (el.innerText || el.textContent || "");
+            var text = innerText.trim().replace(/\\s+/g, " ").slice(0, 80);
+            var placeholder = el.getAttribute("placeholder") || "";
+            var ariaLabel = el.getAttribute("aria-label") || "";
+            var title = el.getAttribute("title") || "";
+            var name = el.getAttribute("name") || "";
+            var href = el.getAttribute("href") || "";
+            var value = el.value || "";
+            var label = ariaLabel || text || placeholder || title || value || name;
+            if (!label && href) label = href.slice(0, 60);
+            if (!label) label = "(" + tag + (type ? (" type=" + type) : "") + ")";
+
+            el.setAttribute("data-bua-idx", String(idx));
+            out.push({
+              index: idx,
+              cx: ent.cx + offsetX,
+              cy: ent.cy + offsetY,
+              role: role,
+              type: type || undefined,
+              label: label,
+              tag: tag,
+              isInput: tag === "input" || tag === "textarea" || el.isContentEditable === true,
+              isSelect: tag === "select",
+              isFile: tag === "input" && type === "file",
+              frame: frameName,
+            });
+            idx++;
+          }
+
+          // Scroll context (only meaningful for the main frame; iframes pass through).
+          var doc = document.scrollingElement || document.documentElement || document.body;
+          var pagesAbove = 0, pagesBelow = 0;
+          if (doc && vh > 0) {
+            pagesAbove = Math.max(0, Math.round(doc.scrollTop / vh));
+            var below = Math.max(0, doc.scrollHeight - doc.scrollTop - vh);
+            pagesBelow = Math.round(below / vh);
+          }
+
+          // Hidden interactive count over the WHOLE document tree.
+          var hidden = countHiddenInteractive(document, vh, vw);
+
+          return {
+            elements: out,
+            scroll: {
+              pagesAbove: pagesAbove,
+              pagesBelow: pagesBelow,
+              totalInteractive: out.length + hidden,
+              hiddenInteractive: hidden,
+            },
+          };
+        };
+      })();
+    `;
   }
 
   // ── Page Info ────────────────────────────────────────────────────────

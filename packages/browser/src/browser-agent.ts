@@ -3,8 +3,17 @@ import { EventBus, Logger, MemoryManager, RunContext } from "@agentium/core";
 import { z } from "zod";
 import { BrowserProvider } from "./browser-provider.js";
 import type { CredentialVault } from "./credential-vault.js";
+import { LoopDetector, type LoopAdvice, fnvHash } from "./loop-detector.js";
 import { buildSystemPrompt, buildUserMessage, summarizeAction } from "./prompts.js";
-import type { BrowserAction, BrowserAgentConfig, BrowserRunOpts, BrowserRunOutput, BrowserStep } from "./types.js";
+import type {
+  AgentOutput,
+  BrowserAction,
+  BrowserAgentConfig,
+  BrowserRunOpts,
+  BrowserRunOutput,
+  BrowserStep,
+  DomScrollContext,
+} from "./types.js";
 
 export class BrowserAgent {
   readonly name: string;
@@ -12,6 +21,9 @@ export class BrowserAgent {
 
   private model: ModelProvider;
   private pageExtractionLLM: ModelProvider | null;
+  private fallbackModel: ModelProvider | null;
+  private useThinking: boolean;
+  private historyWindow: number;
   private instructions?: string;
   private extendSystemMessage?: string;
   private overrideSystemMessage?: string;
@@ -50,6 +62,9 @@ export class BrowserAgent {
     this.name = config.name;
     this.model = config.model;
     this.pageExtractionLLM = config.pageExtractionLLM ?? null;
+    this.fallbackModel = config.fallbackModel ?? null;
+    this.useThinking = config.useThinking ?? true;
+    this.historyWindow = Math.max(0, config.historyWindow ?? 6);
     this.instructions = config.instructions;
     this.extendSystemMessage = config.extendSystemMessage;
     this.overrideSystemMessage = config.overrideSystemMessage;
@@ -97,10 +112,20 @@ export class BrowserAgent {
     const actionHistory: string[] = [];
     const extractedContent: string[] = [];
     let lastExtractResult: string | undefined;
-    let failureCount = 0;
-    let lastActionKey = "";
-    let repeatCount = 0;
+    let consecutiveFailures = 0;
     let lastActionWasScreenshot = false;
+
+    const loop = new LoopDetector();
+    /**
+     * Rolling conversation history. Each entry stores the structured
+     * agent envelope so we can replay model_thoughts to the model on
+     * subsequent steps — this is what `historyWindow > 0` buys us.
+     */
+    const historyTurns: Array<{
+      userText: string;
+      hasScreenshot: boolean;
+      envelope: AgentOutput;
+    }> = [];
 
     // ── Compose instructions (memory + user-provided) ────────────────
     const baseExtra = [this.instructions, this.extendSystemMessage].filter(Boolean).join("\n\n");
@@ -121,6 +146,7 @@ export class BrowserAgent {
       tools: this.tools,
       useVision: this.useVision,
       useDOM: this.useDOM,
+      useThinking: this.useThinking,
     });
 
     try {
@@ -129,6 +155,7 @@ export class BrowserAgent {
         viewport: this.viewport,
         useDOM: this.useDOM,
         useVision: this.useVision,
+        useThinking: this.useThinking,
         cdpUrl: this.cdpUrl ?? undefined,
         recordVideo: !!this.recordVideo,
         stealth: !!this.stealth,
@@ -151,6 +178,7 @@ export class BrowserAgent {
         this.logger.info("Navigating to start URL", { url: startUrl });
         this.assertDomainAllowed(startUrl);
         await browser.navigate(startUrl);
+        await this.navigationHealthCheck(browser, startUrl);
       }
 
       // ── Run initialActions (no LLM cost) ───────────────────────
@@ -167,16 +195,41 @@ export class BrowserAgent {
       for (let step = 0; step < maxSteps; step++) {
         const pageInfo = await browser.getPageInfo();
 
+        // ── Build DOM snapshot + scroll context ────────────────
         let domSnapshot: string | undefined;
+        let scrollCtx: DomScrollContext | undefined;
         if (this.useDOM) {
           const dom = await browser.extractDOM();
           domSnapshot = dom.text;
+          scrollCtx = dom.scroll;
         }
 
-        // Decide whether to capture a screenshot this step.
+        // ── Page-stagnation detection ──────────────────────────
+        const pageAdvice = loop.recordPage({
+          url: pageInfo.url,
+          interactiveCount: scrollCtx?.totalInteractive ?? 0,
+          textHash: fnvHash(domSnapshot ?? ""),
+        });
+        if (pageAdvice.severity === "abort") {
+          return await this.finalize(browser, steps, startTime, opts, extractedContent, {
+            result: pageAdvice.message ?? "Auto-stopped: page is stagnant.",
+            success: false,
+          });
+        }
+
         const wantVision = this.shouldCaptureVision(step, lastActionWasScreenshot);
         const screenshot = wantVision ? await browser.screenshot() : Buffer.alloc(0);
         if (wantVision) this.eventBus.emit("browser.screenshot", { data: screenshot });
+
+        const isLastStep = step === maxSteps - 1;
+        const nudgeParts: string[] = [];
+        if (pageAdvice.severity !== "none" && pageAdvice.message) nudgeParts.push(pageAdvice.message);
+        if (isLastStep) {
+          nudgeParts.push(
+            "This is your FINAL step. Return a `done` action right now summarizing whatever you have, even if partial.",
+          );
+        }
+        const nudge = nudgeParts.length > 0 ? nudgeParts.join(" ") : undefined;
 
         const userText = buildUserMessage(
           task,
@@ -186,39 +239,23 @@ export class BrowserAgent {
           actionHistory,
           domSnapshot,
           lastExtractResult,
+          scrollCtx,
+          nudge,
+          { current: step, max: maxSteps },
         );
 
-        const content: any[] = [];
-        if (wantVision) {
-          content.push({ type: "image", data: screenshot.toString("base64"), mimeType: "image/png" });
-        }
-        content.push({ type: "text", text: userText });
-
-        const messages: ChatMessage[] = [
-          { role: "system", content: systemPrompt },
-          { role: "user", content },
-        ];
+        const messages = this.buildMessages(systemPrompt, historyTurns, userText, wantVision ? screenshot : null);
 
         this.logger.debug("Calling model", { step, url: pageInfo.url, vision: wantVision });
 
-        let response: any;
-        try {
-          response = await this.model.generate(messages, {
-            temperature: 0.1,
-            maxTokens: 1024,
-            apiKey: opts?.apiKey,
-            responseFormat: "json",
-          });
-        } catch (e: any) {
-          failureCount++;
-          this.logger.warn("Model call failed", { error: e?.message, failureCount });
-          if (failureCount > this.maxFailures) {
-            return await this.finalize(browser, steps, startTime, opts, extractedContent, {
-              result: `Model call failed ${failureCount} times: ${e?.message}`,
-              success: false,
-            });
+        // ── Model call (with fallback on transient errors) ────
+        const { response, modelUsed } = await this.callModelWithFallback(messages, opts?.apiKey);
+        if (!response) {
+          consecutiveFailures++;
+          actionHistory.push(`(model call failed — retrying, ${consecutiveFailures}/${this.maxFailures})`);
+          if (consecutiveFailures > this.maxFailures) {
+            return await this.forceDone(browser, steps, startTime, opts, extractedContent, actionHistory, "model");
           }
-          actionHistory.push(`(model call failed: ${e?.message ?? "unknown"} — retrying)`);
           continue;
         }
 
@@ -226,7 +263,7 @@ export class BrowserAgent {
           this.costTracker.track({
             runId: sessionId,
             agentName: this.name,
-            modelId: this.model.modelId,
+            modelId: modelUsed.modelId,
             usage: response.usage,
             sessionId,
             userId,
@@ -234,25 +271,30 @@ export class BrowserAgent {
         }
 
         const raw = typeof response.message.content === "string" ? response.message.content : "";
-
-        let parsed: BrowserAction | BrowserAction[];
-        try {
-          parsed = JSON.parse(raw) as BrowserAction | BrowserAction[];
-        } catch {
-          failureCount++;
-          this.logger.warn("Failed to parse model response as JSON", { raw, failureCount });
-          if (failureCount > this.maxFailures) {
-            return await this.finalize(browser, steps, startTime, opts, extractedContent, {
-              result: `Model returned invalid JSON ${failureCount} times. Last response: ${raw.slice(0, 200)}`,
-              success: false,
-            });
+        const envelope = this.parseEnvelope(raw);
+        if (!envelope) {
+          consecutiveFailures++;
+          this.logger.warn("Failed to parse model response", { raw: raw.slice(0, 200), consecutiveFailures });
+          if (consecutiveFailures > this.maxFailures) {
+            return await this.forceDone(browser, steps, startTime, opts, extractedContent, actionHistory, "parse");
           }
           actionHistory.push("(invalid JSON response — retrying)");
           continue;
         }
 
-        // Normalize to array and cap to maxActionsPerStep.
-        const actions: BrowserAction[] = (Array.isArray(parsed) ? parsed : [parsed]).slice(
+        // The model produced a parseable envelope; reset the failure counter.
+        consecutiveFailures = 0;
+
+        // Push this turn into the rolling history (for next step's context).
+        historyTurns.push({ userText, hasScreenshot: wantVision, envelope });
+        // Trim to the configured window. Older turns are summarized inline
+        // by `buildMessages` so they don't fall out of context entirely.
+        if (this.historyWindow > 0 && historyTurns.length > this.historyWindow) {
+          historyTurns.splice(0, historyTurns.length - this.historyWindow);
+        }
+
+        // Normalize action(s) to an array and cap to maxActionsPerStep.
+        const actions: BrowserAction[] = (Array.isArray(envelope.action) ? envelope.action : [envelope.action]).slice(
           0,
           this.maxActionsPerStep,
         );
@@ -267,37 +309,21 @@ export class BrowserAgent {
           let summary = summarizeAction(action as unknown as Record<string, unknown>);
           if (this.credentials) summary = this.credentials.mask(summary);
 
-          // ── Loop detection on every action ───────────────────
-          const actionKey = JSON.stringify(action);
-          if (actionKey === lastActionKey) {
-            repeatCount++;
-          } else {
-            lastActionKey = actionKey;
-            repeatCount = 1;
-          }
-          if (
-            repeatCount > this.maxRepeats &&
-            action.action !== "done" &&
-            action.action !== "fail"
-          ) {
-            this.logger.warn("Stuck in a loop — same action repeated", {
-              action: action.action,
-              repeats: repeatCount,
-              maxRepeats: this.maxRepeats,
-            });
-            actionHistory.push(
-              `⚠ LOOP DETECTED: "${summary}" repeated ${repeatCount} times. Auto-stopping.`,
-            );
+          // ── Loop detection ────────────────────────────────────
+          const advice: LoopAdvice = loop.recordAction(action);
+          if (advice.severity === "abort" && action.action !== "done" && action.action !== "fail") {
+            this.logger.warn("Loop detector aborting run", { advice });
+            actionHistory.push(`⚠ ${advice.message ?? "loop detected — auto-stopping"}`);
             didTerminate = {
-              result: `Stuck in a loop: "${summary}" was repeated ${repeatCount} times. The page may have a popup, consent banner, or unexpected state blocking progress.`,
+              result: advice.message ?? "Stuck in a loop — auto-stopped.",
               success: false,
             };
             break;
           }
+          // Softer severities are surfaced via the `nudge` next step (see above).
 
           actionHistory.push(summary);
           this.logger.info(`Step ${step + 1}.${ai + 1}: ${summary}`);
-
           this.eventBus.emit("browser.action", { action });
 
           // Terminal actions.
@@ -312,27 +338,26 @@ export class BrowserAgent {
             break;
           }
 
-          // Execute and track success/extract output.
+          // Execute and track.
           let stepOk = true;
           let stepOutput: string | undefined;
           try {
             const exec = await this.executeAction(browser, action, actionHistory, extractedContent);
             stepOutput = exec?.output;
-            if (exec?.didNavigate) didNavigate = true;
-            if (action.action === "extract" && exec?.output) {
-              lastExtractResult = exec.output;
+            if (exec?.didNavigate) {
+              didNavigate = true;
+              await this.navigationHealthCheck(browser, pageInfo.url);
             }
-            if (action.action === "screenshot") {
-              lastActionWasScreenshot = true;
-            }
+            if (action.action === "extract" && exec?.output) lastExtractResult = exec.output;
+            if (action.action === "screenshot") lastActionWasScreenshot = true;
           } catch (e: any) {
             stepOk = false;
-            failureCount++;
-            this.logger.warn("Action failed", { action: action.action, error: e?.message, failureCount });
+            consecutiveFailures++;
+            this.logger.warn("Action failed", { action: action.action, error: e?.message, consecutiveFailures });
             actionHistory.push(`(error: ${e?.message ?? "unknown"})`);
-            if (failureCount > this.maxFailures) {
+            if (consecutiveFailures > this.maxFailures) {
               didTerminate = {
-                result: `Action ${action.action} failed ${failureCount} times. Last error: ${e?.message}`,
+                result: `Action ${action.action} failed ${consecutiveFailures} times. Last error: ${e?.message}`,
                 success: false,
               };
               break;
@@ -349,6 +374,10 @@ export class BrowserAgent {
             dom: domSnapshot,
             output: stepOutput,
             ok: stepOk,
+            thinking: envelope.thinking,
+            evaluationPreviousGoal: envelope.evaluationPreviousGoal,
+            memory: envelope.memory,
+            nextGoal: envelope.nextGoal,
           });
 
           this.eventBus.emit("browser.step", {
@@ -359,8 +388,6 @@ export class BrowserAgent {
           });
 
           await this.sleep(this.waitAfterAction);
-
-          // If the action navigated, stop batching — the DOM snapshot is stale.
           if (didNavigate) break;
         }
 
@@ -369,12 +396,9 @@ export class BrowserAgent {
         }
       }
 
-      // Max steps exhausted
-      this.logger.warn("Max steps reached without completing task", { maxSteps });
-      return await this.finalize(browser, steps, startTime, opts, extractedContent, {
-        result: `Task not completed within ${maxSteps} steps. Last actions: ${actionHistory.slice(-3).join("; ")}`,
-        success: false,
-      });
+      // Max steps exhausted — force a salvage `done` rather than just bailing.
+      this.logger.warn("Max steps reached without explicit done", { maxSteps });
+      return await this.forceDone(browser, steps, startTime, opts, extractedContent, actionHistory, "max_steps");
     } catch (error: any) {
       this.logger.error("Browser agent error", { error: error.message });
       this.eventBus.emit("browser.error", { error });
@@ -447,6 +471,204 @@ export class BrowserAgent {
     if (this.prohibitedDomains?.length && this.prohibitedDomains.some((p) => matchDomain(host, p))) {
       throw new Error(`Navigation blocked: ${host} is in prohibitedDomains`);
     }
+  }
+
+  /**
+   * Build the message array sent to the model: system prompt + a compact
+   * summary of older turns (if any) + the most recent `historyWindow`
+   * turns verbatim + the current step's user message.
+   *
+   * Inspired by browser-use's history compaction. Keeps tokens bounded
+   * while giving the model meaningful context about what it already
+   * tried.
+   */
+  private buildMessages(
+    systemPrompt: string,
+    historyTurns: Array<{ userText: string; hasScreenshot: boolean; envelope: AgentOutput }>,
+    currentUserText: string,
+    currentScreenshot: Buffer | null,
+  ): ChatMessage[] {
+    const msgs: ChatMessage[] = [{ role: "system", content: systemPrompt }];
+
+    // If historyWindow is disabled, skip the entire conversation block.
+    if (this.historyWindow > 0 && historyTurns.length > 0) {
+      // Older turns get a single compacted summary message.
+      // (In v2.2 we keep this lightweight — just memory + a few thinking
+      //  lines. Later versions can compact via the pageExtractionLLM.)
+      for (const turn of historyTurns) {
+        // Replay just the model's structured response. We deliberately
+        // drop the user text here to keep token usage tight; the agent
+        // already saw it once.
+        const env = turn.envelope;
+        const replay: string[] = [];
+        if (env.thinking) replay.push(`thinking: ${env.thinking}`);
+        if (env.evaluationPreviousGoal) replay.push(`evaluation: ${env.evaluationPreviousGoal}`);
+        if (env.memory) replay.push(`memory: ${env.memory}`);
+        if (env.nextGoal) replay.push(`next_goal: ${env.nextGoal}`);
+        replay.push(`action: ${JSON.stringify(env.action)}`);
+        msgs.push({ role: "assistant", content: replay.join("\n") });
+      }
+    }
+
+    // Current step.
+    const content: any[] = [];
+    if (currentScreenshot && currentScreenshot.length > 0) {
+      content.push({
+        type: "image",
+        data: currentScreenshot.toString("base64"),
+        mimeType: "image/png",
+      });
+    }
+    content.push({ type: "text", text: currentUserText });
+    msgs.push({ role: "user", content });
+
+    return msgs;
+  }
+
+  /**
+   * Call the primary model, retrying once with `fallbackModel` on
+   * transient errors (5xx, 429, network). Returns the response or
+   * `null` if both models failed.
+   */
+  private async callModelWithFallback(
+    messages: ChatMessage[],
+    apiKey?: string,
+  ): Promise<{ response: any | null; modelUsed: ModelProvider }> {
+    const reqOpts = { temperature: 0.1, maxTokens: 1024, apiKey, responseFormat: "json" as const };
+    try {
+      const r = await this.model.generate(messages, reqOpts);
+      return { response: r, modelUsed: this.model };
+    } catch (e: any) {
+      if (this.fallbackModel && this.isTransientError(e)) {
+        this.logger.warn("Primary model failed; trying fallbackModel", {
+          error: e?.message,
+          primary: this.model.modelId,
+          fallback: this.fallbackModel.modelId,
+        });
+        try {
+          const r = await this.fallbackModel.generate(messages, reqOpts);
+          return { response: r, modelUsed: this.fallbackModel };
+        } catch (e2: any) {
+          this.logger.warn("Fallback model also failed", { error: e2?.message });
+          return { response: null, modelUsed: this.model };
+        }
+      }
+      this.logger.warn("Model call failed (no fallback configured)", { error: e?.message });
+      return { response: null, modelUsed: this.model };
+    }
+  }
+
+  private isTransientError(e: any): boolean {
+    const msg = String(e?.message ?? e).toLowerCase();
+    if (msg.includes("rate limit") || msg.includes("429")) return true;
+    if (msg.includes("timeout") || msg.includes("etimedout")) return true;
+    if (msg.includes("econnreset") || msg.includes("network")) return true;
+    if (/\b5\d\d\b/.test(msg)) return true;
+    if (msg.includes("401") || msg.includes("402") || msg.includes("auth")) return true;
+    return false;
+  }
+
+  /**
+   * Parse the model's raw response into an `AgentOutput`. Tolerant to
+   * three shapes:
+   *  - Full envelope: { thinking, evaluation_previous_goal, action, ... }
+   *  - Raw action object (legacy / `useThinking: false`)
+   *  - Raw action array
+   *
+   * Also strips ```json fences the model occasionally adds.
+   */
+  private parseEnvelope(raw: string): AgentOutput | null {
+    if (!raw) return null;
+    let s = raw.trim();
+    // Strip fenced code blocks.
+    const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+    if (fence) s = fence[1].trim();
+    let json: any;
+    try {
+      json = JSON.parse(s);
+    } catch {
+      // Tolerant pass — try to find the first { ... } or [ ... ] block.
+      const m = s.match(/[\[{][\s\S]*[\]}]/);
+      if (!m) return null;
+      try {
+        json = JSON.parse(m[0]);
+      } catch {
+        return null;
+      }
+    }
+    if (Array.isArray(json)) return { action: json as BrowserAction[] };
+    if (json && typeof json === "object" && typeof (json as any).action === "string") {
+      return { action: json as BrowserAction };
+    }
+    if (json && typeof json === "object" && "action" in json) {
+      // Full envelope. Accept both camelCase and snake_case field names.
+      const out: AgentOutput = { action: (json as any).action };
+      out.thinking = (json as any).thinking ?? (json as any).reasoning ?? undefined;
+      out.evaluationPreviousGoal =
+        (json as any).evaluationPreviousGoal ?? (json as any).evaluation_previous_goal ?? undefined;
+      out.memory = (json as any).memory ?? undefined;
+      out.nextGoal = (json as any).nextGoal ?? (json as any).next_goal ?? undefined;
+      return out;
+    }
+    return null;
+  }
+
+  /**
+   * Quick post-navigation health check. If the page came back blank
+   * (no body text and no interactive elements), reload once and wait
+   * for stable. This catches the "FreightOS half-loaded font test" class
+   * of failure before the LLM ever sees it.
+   */
+  private async navigationHealthCheck(browser: BrowserProvider, url: string): Promise<void> {
+    try {
+      const ok = await browser.pageText({ maxChars: 200 }).catch(() => "");
+      if (ok && ok.trim().length > 5) return;
+      // Empty body — try reload once.
+      this.logger.warn("Navigation produced an empty page; reloading once", { url });
+      await this.sleep(800);
+      try {
+        await browser.navigate(url);
+      } catch {
+        /* ignore */
+      }
+    } catch {
+      /* health check is best-effort */
+    }
+  }
+
+  /**
+   * Force-finalize the run with whatever partial data the agent has.
+   * Called when:
+   *   - `maxSteps` is exhausted without an explicit `done`,
+   *   - `maxFailures` is exceeded,
+   *   - the model can't produce parseable JSON enough times to make
+   *     forward progress.
+   * The result is composed from `extractedContent` + the last few
+   * action summaries so the caller gets something useful instead of
+   * just a one-line error.
+   */
+  private async forceDone(
+    browser: BrowserProvider,
+    steps: BrowserStep[],
+    startTime: number,
+    opts: BrowserRunOpts | undefined,
+    extractedContent: string[],
+    actionHistory: string[],
+    reason: "model" | "parse" | "max_steps",
+  ): Promise<BrowserRunOutput> {
+    const reasonLine =
+      reason === "model"
+        ? "Model call failed too many consecutive times."
+        : reason === "parse"
+          ? "Model produced invalid JSON too many times."
+          : "Max step budget exhausted before an explicit `done`.";
+    const tail = actionHistory.slice(-5).join(" → ");
+    const extracts = extractedContent.length > 0 ? `\n\nExtracts so far:\n${extractedContent.join("\n---\n")}` : "";
+    const result = `${reasonLine}\nLast actions: ${tail || "(none)"}${extracts}`;
+    return await this.finalize(browser, steps, startTime, opts, extractedContent, {
+      result,
+      success: false,
+    });
   }
 
   private async finalize(

@@ -3,12 +3,15 @@ export { BrowserProvider } from "./browser-provider.js";
 export { CredentialVault } from "./credential-vault.js";
 
 export type {
+  AgentOutput,
   BrowserAction,
   BrowserAgentConfig,
   BrowserRunOpts,
   BrowserRunOutput,
   BrowserStep,
   DomElement,
+  DomScrollContext,
+  DomSnapshot,
   HumanizeConfig,
   PageInfo,
   StealthConfig,

@@ -1,4 +1,5 @@
 import type { ToolDef } from "@agentium/core";
+import type { DomScrollContext } from "./types.js";
 
 export function buildSystemPrompt(
   viewport: { width: number; height: number },
@@ -11,12 +12,14 @@ export function buildSystemPrompt(
     tools?: ToolDef[];
     useVision?: boolean | "auto";
     useDOM?: boolean;
+    useThinking?: boolean;
   },
 ): string {
   const maxActions = options?.maxActionsPerStep ?? 3;
   const allowEvaluate = !!options?.allowEvaluate;
   const tools = options?.tools ?? [];
   const useVision = options?.useVision ?? "auto";
+  const useThinking = options?.useThinking ?? true;
 
   if (options?.overrideSystemMessage) {
     // Caller is taking full control. We still append the safety-critical
@@ -24,7 +27,7 @@ export function buildSystemPrompt(
     // holds.
     const lines = [options.overrideSystemMessage];
     appendCredentials(lines, credentialKeys);
-    lines.push("", "## Response Format", responseFormatLines(maxActions).join("\n"));
+    lines.push("", "## Response Format", responseFormatLines(maxActions, useThinking).join("\n"));
     return lines.join("\n");
   }
 
@@ -139,7 +142,7 @@ export function buildSystemPrompt(
     lines.push(``, `## Additional Instructions`, extraInstructions);
   }
 
-  lines.push(``, `## Response Format`, responseFormatLines(maxActions).join("\n"));
+  lines.push(``, `## Response Format`, responseFormatLines(maxActions, useThinking).join("\n"));
 
   return lines.join("\n");
 }
@@ -160,10 +163,30 @@ function appendCredentials(lines: string[], credentialKeys?: string[]): void {
   );
 }
 
-function responseFormatLines(maxActions: number): string[] {
+function responseFormatLines(maxActions: number, useThinking: boolean): string[] {
+  if (!useThinking) {
+    return [
+      `Respond with ONLY valid JSON. No markdown, no commentary.`,
+      `Either a single action object, or an array of up to ${maxActions} action objects to execute in order.`,
+    ];
+  }
   return [
-    `Respond with ONLY valid JSON. No markdown, no commentary.`,
-    `Either a single action object, or an array of up to ${maxActions} action objects to execute in order.`,
+    `Respond with ONLY a single valid JSON object. No markdown, no commentary.`,
+    ``,
+    `Use this exact shape:`,
+    "```json",
+    `{`,
+    `  "thinking": "Short chain-of-thought: what do I see, what's my plan?",`,
+    `  "evaluation_previous_goal": "Did the previous action succeed? success/partial/failure + 1 line",`,
+    `  "memory": "Compact bullet list of facts to remember across steps (URLs, found data, …)",`,
+    `  "next_goal": "What I want to accomplish in THIS step",`,
+    `  "action": <single action object OR array of up to ${maxActions} action objects>`,
+    `}`,
+    "```",
+    ``,
+    `On the very first step, set "evaluation_previous_goal" to "n/a — first step".`,
+    `Keep each text field to one short paragraph or a few lines. Be concrete.`,
+    `Only the "action" field is executed; the others help you self-correct over multiple steps.`,
   ];
 }
 
@@ -175,18 +198,42 @@ export function buildUserMessage(
   actionHistory: string[],
   domSnapshot?: string,
   lastExtract?: string,
+  scroll?: DomScrollContext,
+  nudge?: string,
+  stepBudget?: { current: number; max: number },
 ): string {
   const lines: string[] = [];
 
   lines.push(`**Task:** ${task}`);
   lines.push(`**Current URL:** ${pageUrl}`);
   if (pageTitle) lines.push(`**Page Title:** ${pageTitle}`);
-  lines.push(`**Step:** ${stepIndex + 1}`);
+  if (stepBudget) {
+    lines.push(`**Step:** ${stepIndex + 1} of ${stepBudget.max} (${stepBudget.max - stepIndex - 1} remaining)`);
+  } else {
+    lines.push(`**Step:** ${stepIndex + 1}`);
+  }
 
-  if (domSnapshot) {
-    lines.push(``);
-    lines.push(`**Interactive elements (format: [idx] [cx,cy] role: "label"):**`);
-    lines.push(domSnapshot);
+  // ── Page statistics & spatial context ────────────────────────────
+  if (scroll) {
+    const parts: string[] = [];
+    parts.push(`${scroll.totalInteractive} interactive elements (${scroll.hiddenInteractive} hidden)`);
+    if (scroll.pagesAbove > 0) parts.push(`${scroll.pagesAbove} page${scroll.pagesAbove === 1 ? "" : "s"} above`);
+    if (scroll.pagesBelow > 0) parts.push(`${scroll.pagesBelow} page${scroll.pagesBelow === 1 ? "" : "s"} below`);
+    if (scroll.pagesAbove === 0 && scroll.pagesBelow === 0) parts.push("fits in viewport");
+    lines.push(`**Page stats:** ${parts.join(" · ")}`);
+  }
+
+  if (domSnapshot !== undefined) {
+    if (domSnapshot.trim().length === 0) {
+      lines.push(``);
+      lines.push(
+        `**⚠ Empty page / no interactive elements detected.** The page may be blank, blocked by a captcha/anti-bot wall, mid-load, or rendered with shadow DOM in an unsupported way. Consider: \`wait\` + retry, \`navigate\` to a different URL, or \`fail\` if the site is blocking access.`,
+      );
+    } else {
+      lines.push(``);
+      lines.push(`**Interactive elements (format: [idx] [cx,cy] role: "label"):**`);
+      lines.push(domSnapshot);
+    }
   }
 
   if (lastExtract) {
@@ -201,6 +248,11 @@ export function buildUserMessage(
     for (const entry of actionHistory.slice(-10)) {
       lines.push(`- ${entry}`);
     }
+  }
+
+  if (nudge) {
+    lines.push(``);
+    lines.push(`**⚠ Runtime hint:** ${nudge}`);
   }
 
   lines.push(``);

@@ -151,4 +151,70 @@ describe("buildSystemPrompt (new options)", () => {
     const prompt = buildSystemPrompt({ width: 1280, height: 720 }, undefined, undefined, { useVision: false });
     expect(prompt.toLowerCase()).toContain("vision is disabled");
   });
+
+  it("requests the structured thinking envelope when useThinking=true (default)", () => {
+    const prompt = buildSystemPrompt({ width: 1280, height: 720 });
+    expect(prompt).toContain('"thinking"');
+    expect(prompt).toContain('"evaluation_previous_goal"');
+    expect(prompt).toContain('"memory"');
+    expect(prompt).toContain('"next_goal"');
+    expect(prompt).toContain('"action"');
+  });
+
+  it("requests raw-action format when useThinking=false (flash mode)", () => {
+    const prompt = buildSystemPrompt({ width: 1280, height: 720 }, undefined, undefined, { useThinking: false });
+    expect(prompt).not.toContain('"thinking"');
+    expect(prompt).not.toContain('"evaluation_previous_goal"');
+    expect(prompt).toContain("single action object");
+  });
+});
+
+describe("buildUserMessage (v2.2 additions)", () => {
+  it("includes scroll context (pages above/below, hidden interactive count)", () => {
+    const msg = buildUserMessage(
+      "task",
+      "https://x",
+      "Title",
+      0,
+      [],
+      "[1] [10,10] button: 'X'",
+      undefined,
+      { pagesAbove: 1, pagesBelow: 3, totalInteractive: 42, hiddenInteractive: 18 },
+    );
+    expect(msg).toContain("Page stats");
+    expect(msg).toContain("42 interactive elements");
+    expect(msg).toContain("18 hidden");
+    expect(msg).toContain("1 page above");
+    expect(msg).toContain("3 pages below");
+  });
+
+  it("flags an empty / blocked page when the DOM snapshot is empty", () => {
+    const msg = buildUserMessage("task", "https://x", "T", 0, [], "");
+    expect(msg).toContain("Empty page");
+  });
+
+  it("includes the runtime nudge when provided", () => {
+    const msg = buildUserMessage(
+      "task",
+      "https://x",
+      "T",
+      0,
+      [],
+      "[1] [10,10] button: 'X'",
+      undefined,
+      undefined,
+      "the page has not changed in 5 steps",
+    );
+    expect(msg).toContain("Runtime hint");
+    expect(msg).toContain("not changed");
+  });
+
+  it("emits a step budget when provided", () => {
+    const msg = buildUserMessage("task", "https://x", "T", 2, [], "x", undefined, undefined, undefined, {
+      current: 2,
+      max: 30,
+    });
+    expect(msg).toContain("Step:** 3 of 30");
+    expect(msg).toContain("27 remaining");
+  });
 });

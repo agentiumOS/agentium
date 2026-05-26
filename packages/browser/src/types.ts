@@ -98,6 +98,34 @@ export interface DomElement {
   isSelect: boolean;
   /** Whether it's an `<input type="file">`. */
   isFile: boolean;
+  /** Origin frame (`"main"` or the iframe `src`/path). */
+  frame?: string;
+}
+
+/**
+ * Scroll-context metadata returned alongside `DomElement[]`. Gives the
+ * model spatial awareness so it can decide when to scroll vs when more
+ * content is below / above the fold.
+ */
+export interface DomScrollContext {
+  /** Approximate viewports of scrollable content above the current view. */
+  pagesAbove: number;
+  /** Approximate viewports of scrollable content below the current view. */
+  pagesBelow: number;
+  /** Total interactive elements found (visible + hidden combined). */
+  totalInteractive: number;
+  /** Count of interactive elements that exist on the page but aren't in the viewport. */
+  hiddenInteractive: number;
+}
+
+/** Combined return value of `BrowserProvider.extractDOM()`. */
+export interface DomSnapshot {
+  /** Human-readable string fed to the model. */
+  text: string;
+  /** Structured list (stable indices) for runtime resolution. */
+  elements: DomElement[];
+  /** Spatial/scroll context. */
+  scroll: DomScrollContext;
 }
 
 // ── Config ───────────────────────────────────────────────────────────────
@@ -111,6 +139,27 @@ export interface BrowserAgentConfig {
    * action and other text-only sub-tasks. Falls back to `model`.
    */
   pageExtractionLLM?: ModelProvider;
+  /**
+   * Fallback model used automatically when the primary `model` returns a
+   * rate-limit / auth / 5xx error or fails to produce valid JSON several
+   * times in a row. Failure-budget aware. Leave unset to disable.
+   */
+  fallbackModel?: ModelProvider;
+  /**
+   * Ask the model to emit a structured thinking/evaluation/memory/next_goal
+   * envelope around its action(s). Significantly improves accuracy and
+   * self-correction on multi-step tasks. Default: `true`. Set `false` for
+   * a `flash_mode` that just returns the raw action(s) — useful for very
+   * fast / cheap models that are bad at long outputs.
+   */
+  useThinking?: boolean;
+  /**
+   * Maximum number of recent step turns kept verbatim in the conversation
+   * history sent to the model. Older turns are compacted into a single
+   * summary line. Default: 6. Set 0 to disable conversation history
+   * entirely (each step rebuilt from scratch — v2.0 behaviour).
+   */
+  historyWindow?: number;
   /** Extra instructions appended to the default system prompt. */
   instructions?: string;
   /**
@@ -301,6 +350,27 @@ export interface BrowserStep {
   output?: string;
   /** Whether this step succeeded (vs threw / failed locator). Default: true. */
   ok?: boolean;
+  /** Model's chain-of-thought reasoning (if `useThinking` was on). */
+  thinking?: string;
+  /** Model's evaluation of whether the previous action met its goal. */
+  evaluationPreviousGoal?: string;
+  /** Model's running memory of important state. */
+  memory?: string;
+  /** Model's stated next goal for this step. */
+  nextGoal?: string;
+}
+
+/**
+ * Structured envelope the model returns when `useThinking: true`. Inspired
+ * by browser-use's `AgentOutput`. Every field is optional from a runtime
+ * standpoint — only `action` is required for execution.
+ */
+export interface AgentOutput {
+  thinking?: string;
+  evaluationPreviousGoal?: string;
+  memory?: string;
+  nextGoal?: string;
+  action: BrowserAction | BrowserAction[];
 }
 
 // ── Stealth & Humanize ──────────────────────────────────────────────────
