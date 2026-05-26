@@ -43,7 +43,7 @@ export class BrowserAgent {
     this.defaultStartUrl = config.startUrl;
     this.waitAfterAction = config.waitAfterAction ?? 1500;
     this.maxRepeats = config.maxRepeats ?? 3;
-    this.useDOM = config.useDOM ?? false;
+    this.useDOM = config.useDOM ?? true;
     this.storageState = config.storageState;
     this.recordVideo = config.recordVideo;
     this.credentials = config.credentials;

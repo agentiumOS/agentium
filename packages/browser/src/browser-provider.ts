@@ -53,10 +53,17 @@ export class BrowserProvider {
       headless: opts?.headless ?? true,
     };
 
+    // Ensure the Chromium window itself matches the viewport so headed
+    // mode doesn't show a tiny default window around a 1280×720 page.
+    const windowSizeArg = `--window-size=${this._viewport.width},${this._viewport.height}`;
+    const windowPositionArg = "--window-position=0,0";
+
     if (stealthEnabled) {
       const { args, proxy } = buildStealthLaunchArgs(stealthCfg);
-      launchOpts.args = args;
+      launchOpts.args = [...args, windowSizeArg, windowPositionArg];
       if (proxy) launchOpts.proxy = proxy;
+    } else {
+      launchOpts.args = [windowSizeArg, windowPositionArg];
     }
 
     this.browser = await chromium.launch(launchOpts);
@@ -123,7 +130,21 @@ export class BrowserProvider {
 
   async screenshot(): Promise<Buffer> {
     this.ensurePage();
-    return await this.page.screenshot({ type: "png", fullPage: false });
+    // `scale: "css"` forces the screenshot to viewport (CSS pixel) dimensions
+    // regardless of the context's `deviceScaleFactor`. This keeps the image
+    // the vision model sees aligned 1:1 with the coordinate space used by
+    // `page.mouse.click(x, y)`, preventing the "clicks land on random
+    // elements" class of bugs when stealth (DPR=2) is enabled.
+    return await this.page.screenshot({
+      type: "png",
+      fullPage: false,
+      scale: "css",
+    });
+  }
+
+  /** Viewport size in CSS pixels (matches screenshot dimensions). */
+  get viewport(): { width: number; height: number } {
+    return this._viewport;
   }
 
   // ── Interaction (with optional humanize) ─────────────────────────────
@@ -131,7 +152,8 @@ export class BrowserProvider {
   async click(x: number, y: number): Promise<void> {
     this.ensurePage();
 
-    const [fx, fy] = this.jitter(x, y);
+    const [cx, cy] = this.clampToViewport(x, y);
+    const [fx, fy] = this.jitter(cx, cy);
 
     if (this._humanize?.mouseMovement) {
       await this.humanMouseMove(fx, fy);
@@ -149,9 +171,10 @@ export class BrowserProvider {
   }
 
   async clickAndType(x: number, y: number, text: string): Promise<void> {
-    await this.click(x, y);
+    const [cx, cy] = this.clampToViewport(x, y);
+    await this.click(cx, cy);
     await this.sleep(this._humanize ? this.randInt(150, 350) : 200);
-    const [fx, fy] = this.jitter(x, y);
+    const [fx, fy] = this.jitter(cx, cy);
     await this.page.mouse.click(fx, fy, { clickCount: 3 });
     await this.sleep(this._humanize ? this.randInt(80, 200) : 100);
     await this.type(text);
@@ -186,9 +209,11 @@ export class BrowserProvider {
 
   async extractDOM(opts?: { maxElements?: number }): Promise<string> {
     this.ensurePage();
-    const max = opts?.maxElements ?? 80;
+    const max = opts?.maxElements ?? 120;
 
     const elements: string = await this.page.evaluate((limit: number): string => {
+      const doc = (globalThis as any).document;
+      const win = (globalThis as any).window;
       const selectors = [
         "a[href]",
         "button",
@@ -199,42 +224,90 @@ export class BrowserProvider {
         "[role='link']",
         "[role='tab']",
         "[role='menuitem']",
+        "[role='checkbox']",
+        "[role='radio']",
+        "[role='switch']",
+        "[role='combobox']",
+        "[role='option']",
         "[onclick]",
         "[contenteditable='true']",
+        "[tabindex]:not([tabindex='-1'])",
       ];
-      const all = (globalThis as any).document.querySelectorAll(selectors.join(","));
-      const lines: string[] = [];
-      let count = 0;
-      const vh = (globalThis as any).window.innerHeight;
-      const vw = (globalThis as any).window.innerWidth;
+      const all = Array.from(doc.querySelectorAll(selectors.join(","))) as any[];
+      const vh = win.innerHeight as number;
+      const vw = win.innerWidth as number;
+
+      const entries: { cx: number; cy: number; line: string }[] = [];
+      const seen = new Set<any>();
 
       for (const el of all) {
-        if (count >= limit) break;
+        if (seen.has(el)) continue;
+
         const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
+        if (rect.width < 4 || rect.height < 4) continue;
         if (rect.bottom < 0 || rect.top > vh) continue;
         if (rect.right < 0 || rect.left > vw) continue;
 
-        const tag = el.tagName.toLowerCase();
+        const style = win.getComputedStyle(el);
+        if (
+          style.visibility === "hidden" ||
+          style.display === "none" ||
+          style.pointerEvents === "none" ||
+          parseFloat(style.opacity || "1") < 0.1
+        ) {
+          continue;
+        }
+
+        const cx = Math.round(Math.max(0, Math.min(vw - 1, rect.left + rect.width / 2)));
+        const cy = Math.round(Math.max(0, Math.min(vh - 1, rect.top + rect.height / 2)));
+
+        // Hit-test the element at its visual center. If a click at (cx, cy)
+        // would actually land on a completely unrelated element (overlay,
+        // sibling) instead of this one, skip this entry — it would mislead
+        // the model into producing coordinates that don't hit the labeled
+        // element. This is the single biggest source of "clicked the wrong
+        // thing" errors.
+        try {
+          const hit = doc.elementFromPoint(cx, cy);
+          if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) {
+            continue;
+          }
+        } catch {
+          // ignore hit-testing failures
+        }
+
+        seen.add(el);
+
+        const tag = (el.tagName as string).toLowerCase();
         const role = el.getAttribute("role") || tag;
         const type = el.getAttribute("type") || "";
-        const text = (el.textContent || "").trim().slice(0, 80);
+        const innerText = (el.innerText || el.textContent || "") as string;
+        const text = innerText.trim().replace(/\s+/g, " ").slice(0, 80);
         const placeholder = el.getAttribute("placeholder") || "";
         const ariaLabel = el.getAttribute("aria-label") || "";
+        const title = el.getAttribute("title") || "";
+        const name = el.getAttribute("name") || "";
         const href = el.getAttribute("href") || "";
-        const value = el.value || "";
+        const value = (el.value || "") as string;
 
-        const cx = Math.round(rect.left + rect.width / 2);
-        const cy = Math.round(rect.top + rect.height / 2);
-
-        let label = ariaLabel || text || placeholder || value;
+        let label = ariaLabel || text || placeholder || title || value || name;
         if (!label && href) label = href.slice(0, 60);
         if (!label) label = `(${tag}${type ? ` type=${type}` : ""})`;
 
-        lines.push(`[${cx},${cy}] ${role}${type ? `(${type})` : ""}: "${label}"`);
-        count++;
+        entries.push({
+          cx,
+          cy,
+          line: `[${cx},${cy}] ${role}${type ? `(${type})` : ""}: "${label}"`,
+        });
       }
-      return lines.join("\n");
+
+      // Sort top-to-bottom, then left-to-right for stable ordering.
+      entries.sort((a, b) => (a.cy === b.cy ? a.cx - b.cx : a.cy - b.cy));
+
+      return entries
+        .slice(0, limit)
+        .map((e) => e.line)
+        .join("\n");
     }, max);
 
     return elements;
@@ -361,6 +434,19 @@ export class BrowserProvider {
     if (!this._humanize) return [x, y];
     const j = this._humanize.clickJitter;
     return [x + this.randInt(-j, j), y + this.randInt(-j, j)];
+  }
+
+  /**
+   * Safety net: clamp coordinates returned by the vision model to the actual
+   * viewport. If a model occasionally returns image-space coordinates from a
+   * 2x screenshot (despite our `scale: "css"` fix), this prevents Playwright
+   * from clicking at e.g. (2200, 1300) and either erroring or landing on a
+   * random off-screen element.
+   */
+  private clampToViewport(x: number, y: number): [number, number] {
+    const cx = Math.max(0, Math.min(this._viewport.width - 1, Math.round(x)));
+    const cy = Math.max(0, Math.min(this._viewport.height - 1, Math.round(y)));
+    return [cx, cy];
   }
 
   /**

@@ -35,8 +35,10 @@ export interface BrowserAgentConfig {
   /** Max consecutive identical actions before the agent auto-fails. Default: 3 */
   maxRepeats?: number;
   /**
-   * Include a simplified DOM/accessibility tree alongside the screenshot.
-   * Helps the model target elements more accurately. Default: false
+   * Include a simplified DOM/accessibility tree (each interactive element
+   * tagged with its exact center coordinates) alongside the screenshot.
+   * Dramatically improves click accuracy — strongly recommended.
+   * Default: true
    */
   useDOM?: boolean;
   /**
