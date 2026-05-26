@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  # Allow manually re-firing this workflow (e.g. when GitHub silently
+  # drops the tag-push trigger, as happened for v2.2.0). The input is
+  # the tag name to publish — must already exist on the repo.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v2.2.1). Tag must already exist on the repo.'
+        required: true
+        type: string
 
 jobs:
   publish:
@@ -14,6 +23,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # When triggered manually via workflow_dispatch, check out the
+          # supplied tag. On the normal tag-push trigger, GitHub already
+          # checks out the tag's SHA, so `ref` is empty / ignored.
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
@@ -80,13 +94,16 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "VERSION=${TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: Agentium v${{ steps.version.outputs.VERSION }}
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.version.outputs.TAG }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
