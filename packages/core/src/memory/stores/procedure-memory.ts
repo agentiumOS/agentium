@@ -7,7 +7,25 @@ import type { ToolDef } from "../../tools/types.js";
 
 const NS = "memory:procedures";
 
-const nsFor = (userId?: string) => (userId ? `${NS}:user:${userId}` : NS);
+/**
+ * Procedure scope — same hierarchy as LearnedKnowledge.
+ * Auto-extracted procedures default to "user". The agent can use scope="agent"
+ * for shared workflow templates (e.g. "invoice reconciliation").
+ */
+export type ProcedureScope = "user" | "agent" | "tenant" | "global";
+
+/**
+ * Namespace key for a given scope. Per-scope partitioning keeps storage
+ * queries cheap — we never have to scan everything to find the right scope.
+ */
+const nsFor = (scope: ProcedureScope, owner?: string): string => {
+  if (scope === "global") return `${NS}:global`;
+  if (!owner) throw new Error(`ProcedureMemory: scope=${scope} requires an owner identifier`);
+  return `${NS}:${scope}:${owner}`;
+};
+
+/** Legacy compat: pre-v2.3 callers passed a userId directly. */
+const nsForUser = (userId?: string) => (userId ? nsFor("user", userId) : NS);
 
 export interface ProcedureStep {
   toolName: string;
@@ -23,6 +41,14 @@ export interface Procedure {
   successCount: number;
   lastUsed: Date;
   createdAt: Date;
+  /** Defaults to "user" when omitted (backward-compat for pre-v2.3 data). */
+  scope?: ProcedureScope;
+  /** Set when scope === "user". */
+  userId?: string;
+  /** Set when scope === "agent". */
+  agentName?: string;
+  /** Set when scope === "tenant". */
+  tenantId?: string;
 }
 
 export interface ProcedureMemoryConfig {
@@ -56,21 +82,63 @@ export class ProcedureMemory {
     this.maxProcedures = config?.maxProcedures ?? 50;
   }
 
-  async getProcedures(userId?: string): Promise<Procedure[]> {
-    const entries = await this.storage.list<Procedure>(nsFor(userId));
-    return entries.map((e) => e.value).sort((a, b) => b.successCount - a.successCount);
+  /**
+   * Return every procedure visible to the caller — the union of their personal
+   * scope, the procedures saved against their current agent, and the tenant's
+   * shared procedures.
+   */
+  async getProcedures(caller?: {
+    userId?: string;
+    agentName?: string;
+    tenantId?: string;
+  }): Promise<Procedure[]> {
+    if (!caller) {
+      // Legacy path used only by the curator for global maintenance reads.
+      const entries = await this.storage.list<Procedure>(NS);
+      return entries.map((e) => e.value).sort((a, b) => b.successCount - a.successCount);
+    }
+    const results: Procedure[] = [];
+    if (caller.userId) {
+      const e = await this.storage.list<Procedure>(nsFor("user", caller.userId));
+      results.push(...e.map((x) => x.value));
+    }
+    if (caller.agentName) {
+      const e = await this.storage.list<Procedure>(nsFor("agent", caller.agentName));
+      results.push(...e.map((x) => x.value));
+    }
+    if (caller.tenantId) {
+      const e = await this.storage.list<Procedure>(nsFor("tenant", caller.tenantId));
+      results.push(...e.map((x) => x.value));
+    }
+    const globalEntries = await this.storage.list<Procedure>(nsFor("global"));
+    results.push(...globalEntries.map((x) => x.value));
+    return results.sort((a, b) => b.successCount - a.successCount);
   }
 
-  async getProcedure(userId: string | undefined, id: string): Promise<Procedure | null> {
-    return this.storage.get<Procedure>(nsFor(userId), id);
+  async getProcedure(scope: ProcedureScope, owner: string | undefined, id: string): Promise<Procedure | null> {
+    return this.storage.get<Procedure>(nsFor(scope, owner), id);
   }
 
+  /**
+   * Save a procedure at the chosen scope. The caller is responsible for
+   * supplying the right owner identifier for that scope.
+   */
   async saveProcedure(
-    userId: string | undefined,
     proc: Omit<Procedure, "id" | "createdAt" | "successCount" | "lastUsed">,
   ): Promise<Procedure> {
-    const ns = nsFor(userId);
-    const existing = await this.getProcedures(userId);
+    const scope: ProcedureScope = proc.scope ?? "user";
+    const owner =
+      scope === "user" ? proc.userId
+      : scope === "agent" ? proc.agentName
+      : scope === "tenant" ? proc.tenantId
+      : undefined;
+    if (scope !== "global" && !owner) {
+      throw new Error(`ProcedureMemory.saveProcedure: scope=${scope} requires the matching owner field.`);
+    }
+    const ns = nsFor(scope, owner);
+
+    // Dedup against everything VISIBLE to this owner at this scope.
+    const existing = (await this.storage.list<Procedure>(ns)).map((e) => e.value);
     const similar = existing.find((p) => p.trigger.toLowerCase() === proc.trigger.toLowerCase());
 
     if (similar) {
@@ -84,6 +152,7 @@ export class ProcedureMemory {
 
     const entry: Procedure = {
       ...proc,
+      scope,
       id: uuidv4(),
       successCount: 1,
       lastUsed: new Date(),
@@ -103,8 +172,11 @@ export class ProcedureMemory {
     return entry;
   }
 
-  async suggestProcedure(userId: string | undefined, input: string): Promise<Procedure | null> {
-    const all = await this.getProcedures(userId);
+  async suggestProcedure(
+    caller: { userId?: string; agentName?: string; tenantId?: string },
+    input: string,
+  ): Promise<Procedure | null> {
+    const all = await this.getProcedures(caller);
     if (all.length === 0) return null;
 
     const inputLower = input.toLowerCase();
@@ -136,16 +208,21 @@ export class ProcedureMemory {
     return bestScore >= 3 ? best : null;
   }
 
-  async getContextString(currentInput?: string, userId?: string): Promise<string> {
-    if (!currentInput || !userId) return ""; // refuse to surface unscoped procedures
+  async getContextString(
+    currentInput?: string,
+    caller?: { userId?: string; agentName?: string; tenantId?: string },
+  ): Promise<string> {
+    if (!currentInput) return "";
+    if (!caller?.userId && !caller?.agentName && !caller?.tenantId) return "";
 
-    const suggestion = await this.suggestProcedure(userId, currentInput);
+    const suggestion = await this.suggestProcedure(caller, currentInput);
     if (!suggestion) return "";
 
     // Don't dump raw argsSnapshot (often PII) into the prompt — surface only the tool name.
     const stepsStr = suggestion.steps.map((s, i) => `  ${i + 1}. ${s.toolName}() → ${s.resultSummary}`).join("\n");
 
-    return `Suggested procedure (used ${suggestion.successCount}x): ${suggestion.trigger}\n${stepsStr}`;
+    const scopeTag = suggestion.scope && suggestion.scope !== "user" ? ` [${suggestion.scope}]` : "";
+    return `Suggested procedure${scopeTag} (used ${suggestion.successCount}x): ${suggestion.trigger}\n${stepsStr}`;
   }
 
   async extractProcedures(
@@ -153,6 +230,7 @@ export class ProcedureMemory {
     messages: ChatMessage[],
     fallbackModel?: ModelProvider,
   ): Promise<void> {
+    // Auto-extraction has no informed consent to share — always save user-scoped.
     if (!userId) return;
     const model = this.model ?? fallbackModel;
     if (!model) return;
@@ -182,7 +260,9 @@ export class ProcedureMemory {
         for (const item of parsed) {
           if (!item?.trigger || !item?.steps || !Array.isArray(item.steps) || item.steps.length < 2) continue;
 
-          await this.saveProcedure(userId, {
+          await this.saveProcedure({
+            scope: "user",
+            userId,
             trigger: item.trigger,
             description: item.description ?? item.trigger,
             steps: item.steps.map((s: any) => ({
@@ -203,27 +283,50 @@ export class ProcedureMemory {
       {
         name: "recall_procedure",
         description:
-          "Search for a known multi-step workflow that matches the current task. Returns the suggested sequence of tool calls.",
+          "Search for a known multi-step workflow that matches the current task. " +
+          "Searches across personal procedures, agent-wide workflows (e.g. shared invoice " +
+          "reconciliation steps), and tenant-level org procedures.",
         parameters: z.object({
           task: z.string().describe("Description of the task to find a procedure for"),
         }),
         execute: async (args, ctx) => {
-          if (!ctx.userId) return "No user identified for this session.";
-          const suggestion = await this.suggestProcedure(ctx.userId, args.task as string);
+          const agentName = typeof ctx.metadata?.agentName === "string" ? ctx.metadata.agentName : undefined;
+          const tenantId = typeof ctx.metadata?.tenantId === "string" ? ctx.metadata.tenantId : undefined;
+          const suggestion = await this.suggestProcedure(
+            { userId: ctx.userId, agentName, tenantId },
+            args.task as string,
+          );
           if (!suggestion) return "No matching procedure found. You may need to figure out the steps yourself.";
           const stepsStr = suggestion.steps.map((s, i) => `${i + 1}. ${s.toolName} → ${s.resultSummary}`).join("\n");
-          return `Procedure: ${suggestion.trigger} (used ${suggestion.successCount}x)\n${stepsStr}`;
+          const scopeTag = suggestion.scope && suggestion.scope !== "user" ? ` [${suggestion.scope}]` : "";
+          return `Procedure${scopeTag}: ${suggestion.trigger} (used ${suggestion.successCount}x)\n${stepsStr}`;
         },
       },
     ];
   }
 
-  async clear(userId?: string): Promise<void> {
-    const ns = nsFor(userId);
-    const all = await this.storage.list<Procedure>(ns);
-    for (const entry of all) {
-      await this.storage.delete(ns, entry.key);
+  /**
+   * Clear procedures. With no `caller` provided this wipes the legacy
+   * unscoped namespace only — used by curator maintenance. To wipe a
+   * specific scope, pass `{ scope, owner }`.
+   */
+  async clear(opts?: { scope?: ProcedureScope; owner?: string } | string): Promise<void> {
+    // Back-compat: old callers passed a userId string directly.
+    if (typeof opts === "string") {
+      const ns = nsForUser(opts);
+      const all = await this.storage.list<Procedure>(ns);
+      for (const entry of all) await this.storage.delete(ns, entry.key);
+      return;
     }
+    if (opts?.scope) {
+      const ns = nsFor(opts.scope, opts.owner);
+      const all = await this.storage.list<Procedure>(ns);
+      for (const entry of all) await this.storage.delete(ns, entry.key);
+      return;
+    }
+    // No scope: legacy unscoped namespace.
+    const all = await this.storage.list<Procedure>(NS);
+    for (const entry of all) await this.storage.delete(NS, entry.key);
   }
 }
 

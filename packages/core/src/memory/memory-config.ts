@@ -142,6 +142,13 @@ export interface UnifiedMemoryConfig {
   timezone?: string;
 
   /**
+   * Tenant identifier — when set, learnings and procedures saved with
+   * `scope: "tenant"` are visible to every user/agent under this tenant.
+   * Required for tenant-scoped reads to return anything.
+   */
+  tenantId?: string;
+
+  /**
    * Optional event bus — when supplied, memory extraction failures and
    * other framework events are emitted here so they can be wired into
    * observability (OpenTelemetry, Langfuse, Prometheus, etc.).

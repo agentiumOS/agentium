@@ -8,6 +8,21 @@ import type { VectorStore } from "../../vector/types.js";
 
 const NS = "memory:learnings";
 
+/**
+ * Scope of a stored learning — controls who can read it back.
+ *
+ * - `"user"`    (default) only the user that saved it sees it.
+ * - `"agent"`   every user of this agent / role sees it. Use for workflow knowledge
+ *               like "invoice reconciliation patterns" or "common refund triggers".
+ * - `"tenant"`  every user/agent in the tenant sees it. Org-wide policies.
+ * - `"global"`  truly cross-tenant (rare — usually only for built-in defaults).
+ *
+ * When searching, the caller passes the scope identifiers they're authorized
+ * for (their `userId`, current `agentName`, current `tenantId`) and the union
+ * of accessible scopes is returned.
+ */
+export type LearningScope = "user" | "agent" | "tenant" | "global";
+
 export interface Learning {
   id: string;
   title: string;
@@ -16,7 +31,11 @@ export interface Learning {
   tags: string[];
   namespace: string;
   importance?: number;
+  /** Defaults to "user" when omitted (backward-compat for pre-v2.3 data). */
+  scope?: LearningScope;
   userId?: string;
+  agentName?: string;
+  tenantId?: string;
   createdAt: Date;
 }
 
@@ -70,8 +89,23 @@ export class LearnedKnowledge {
   async saveLearning(learning: Omit<Learning, "id" | "createdAt">): Promise<Learning> {
     await this.ensureInit();
 
+    // Default to user scope for backward-compat and safety.
+    const scope: LearningScope = learning.scope ?? "user";
+
+    // Validate that the chosen scope has its identifier — fail loud, not silent.
+    if (scope === "user" && !learning.userId) {
+      throw new Error("LearnedKnowledge.saveLearning: scope='user' requires a userId");
+    }
+    if (scope === "agent" && !learning.agentName) {
+      throw new Error("LearnedKnowledge.saveLearning: scope='agent' requires an agentName");
+    }
+    if (scope === "tenant" && !learning.tenantId) {
+      throw new Error("LearnedKnowledge.saveLearning: scope='tenant' requires a tenantId");
+    }
+
     const entry: Learning = {
       ...learning,
+      scope,
       id: uuidv4(),
       createdAt: new Date(),
     };
@@ -84,7 +118,10 @@ export class LearnedKnowledge {
         context: entry.context,
         tags: entry.tags,
         namespace: entry.namespace,
+        scope: entry.scope,
         userId: entry.userId,
+        agentName: entry.agentName,
+        tenantId: entry.tenantId,
       },
     });
 
@@ -92,20 +129,62 @@ export class LearnedKnowledge {
     return entry;
   }
 
-  async searchLearnings(query: string, topK?: number, userId?: string): Promise<Learning[]> {
+  /**
+   * Visibility predicate: is the caller authorized to read this learning?
+   *
+   * Returns true if any one of these matches:
+   *   - scope=global
+   *   - scope=tenant AND caller's tenantId matches
+   *   - scope=agent  AND caller's agentName matches
+   *   - scope=user   AND caller's userId matches
+   *
+   * Pre-v2.3 data without a `scope` field is treated as user-scoped
+   * (the safe default).
+   */
+  private canSee(
+    learning: Learning,
+    caller: { userId?: string; agentName?: string; tenantId?: string },
+  ): boolean {
+    const scope: LearningScope = learning.scope ?? "user";
+    if (scope === "global") return true;
+    if (scope === "tenant") return !!caller.tenantId && caller.tenantId === learning.tenantId;
+    if (scope === "agent") return !!caller.agentName && caller.agentName === learning.agentName;
+    return !!caller.userId && caller.userId === learning.userId;
+  }
+
+  /**
+   * Search learnings visible to the caller. Vector matches are post-filtered
+   * by `canSee()` — vector backends don't all support metadata predicates, so
+   * we over-fetch and filter in-process.
+   */
+  async searchLearnings(
+    query: string,
+    opts?: {
+      topK?: number;
+      userId?: string;
+      agentName?: string;
+      tenantId?: string;
+    },
+  ): Promise<Learning[]> {
     await this.ensureInit();
 
-    // Over-fetch when filtering by userId — vector stores don't all support
-    // metadata predicates, so we re-filter after the fetch.
-    const want = topK ?? this.topK;
-    const fetchK = userId ? want * 4 : want;
+    const want = opts?.topK ?? this.topK;
+    // Over-fetch generously when filtering — multiple scopes mean many candidates.
+    const hasFilter = !!(opts?.userId || opts?.agentName || opts?.tenantId);
+    const fetchK = hasFilter ? want * 5 : want;
     const results = await this.vectorStore.search(this.collection, query, { topK: fetchK });
+
+    const caller = {
+      userId: opts?.userId,
+      agentName: opts?.agentName,
+      tenantId: opts?.tenantId,
+    };
 
     const learnings: Learning[] = [];
     for (const result of results) {
       const full = await this.storage.get<Learning>(NS, result.id);
       if (!full) continue;
-      if (userId && full.userId !== userId) continue; // strict user isolation
+      if (hasFilter && !this.canSee(full, caller)) continue;
       learnings.push(full);
       if (learnings.length >= want) break;
     }
@@ -123,17 +202,26 @@ export class LearnedKnowledge {
     await this.storage.delete(NS, id);
   }
 
-  async getContextString(currentInput?: string, userId?: string): Promise<string> {
+  async getContextString(
+    currentInput?: string,
+    opts?: { userId?: string; agentName?: string; tenantId?: string },
+  ): Promise<string> {
     if (!currentInput) return "";
-    // Without a userId we can't safely scope — refuse to surface anything
-    // rather than risk leaking another user's learnings.
-    if (!userId) return "";
+    // Without ANY scope identifier we can't safely surface anything — refuse
+    // rather than risk leaking another user's / tenant's learnings.
+    if (!opts?.userId && !opts?.agentName && !opts?.tenantId) return "";
 
     try {
-      const learnings = await this.searchLearnings(currentInput, undefined, userId);
+      const learnings = await this.searchLearnings(currentInput, opts);
       if (learnings.length === 0) return "";
 
-      const lines = learnings.map((l) => `- ${l.title}: ${l.content} (applies when: ${l.context})`);
+      // Annotate each line with its scope so the model can reason about whether
+      // a learning is personal or organizational.
+      const lines = learnings.map((l) => {
+        const scope = l.scope ?? "user";
+        const tag = scope === "user" ? "" : ` [${scope}]`;
+        return `- ${l.title}${tag}: ${l.content} (applies when: ${l.context})`;
+      });
 
       return `Relevant learnings:\n${lines.join("\n")}`;
     } catch {
@@ -145,40 +233,67 @@ export class LearnedKnowledge {
     return [
       {
         name: "save_learning",
-        description: "Save a reusable insight or learning discovered during this conversation for future reference.",
+        description:
+          "Save a reusable insight discovered during this conversation. Scope controls who can see it: " +
+          '"user" (default — only the current user), "agent" (the whole workflow / team using this agent), ' +
+          '"tenant" (whole organization). Use "agent" for workflow patterns like invoice-reconciliation rules; ' +
+          'use "user" for personal preferences.',
         parameters: z.object({
           title: z.string().describe("Short title for the learning"),
           content: z.string().describe("The insight or knowledge to save"),
           context: z.string().describe("When this learning applies"),
           tags: z.array(z.string()).optional().describe("Tags for categorization"),
+          scope: z
+            .enum(["user", "agent", "tenant"])
+            .optional()
+            .describe('Default "user". Use "agent" for shared workflow knowledge.'),
         }),
         execute: async (args, ctx) => {
+          const scope = (args.scope as LearningScope | undefined) ?? "user";
+          const agentName = typeof ctx.metadata?.agentName === "string" ? ctx.metadata.agentName : undefined;
+          const tenantId = typeof ctx.metadata?.tenantId === "string" ? ctx.metadata.tenantId : undefined;
+
+          // Reject scopes the caller can't anchor — the framework can't fall
+          // back to "agent" if no agentName is in context.
+          if (scope === "agent" && !agentName) return "Cannot save with scope='agent': no agentName in context.";
+          if (scope === "tenant" && !tenantId) return "Cannot save with scope='tenant': no tenantId in context.";
+          if (scope === "user" && !ctx.userId) return "Cannot save with scope='user': no userId for this session.";
+
           const entry = await this.saveLearning({
             title: args.title as string,
             content: args.content as string,
             context: args.context as string,
             tags: (args.tags as string[]) ?? [],
             namespace: "global",
-            userId: ctx.userId,
+            scope,
+            userId: scope === "user" ? ctx.userId : undefined,
+            agentName: scope === "agent" ? agentName : undefined,
+            tenantId: scope === "tenant" ? tenantId : undefined,
           });
-          return `Learning saved: "${entry.title}" (${entry.id})`;
+          return `Learning saved with scope='${scope}': "${entry.title}" (${entry.id})`;
         },
       },
       {
         name: "search_learnings",
-        description: "Search previously saved insights and learnings by query.",
+        description:
+          "Search saved insights visible to the current user, agent, and tenant (union of all accessible scopes).",
         parameters: z.object({
           query: z.string().describe("What to search for"),
           limit: z.number().optional().describe("Max results (default 5)"),
         }),
         execute: async (args, ctx) => {
-          const results = await this.searchLearnings(
-            args.query as string,
-            (args.limit as number) ?? 5,
-            ctx.userId, // scope retrieval to the calling user
-          );
+          const agentName = typeof ctx.metadata?.agentName === "string" ? ctx.metadata.agentName : undefined;
+          const tenantId = typeof ctx.metadata?.tenantId === "string" ? ctx.metadata.tenantId : undefined;
+          const results = await this.searchLearnings(args.query as string, {
+            topK: (args.limit as number) ?? 5,
+            userId: ctx.userId,
+            agentName,
+            tenantId,
+          });
           if (results.length === 0) return "No matching learnings found.";
-          return results.map((l) => `[${l.id}] ${l.title}: ${l.content}`).join("\n\n");
+          return results
+            .map((l) => `[${l.id}] [${l.scope ?? "user"}] ${l.title}: ${l.content}`)
+            .join("\n\n");
         },
       },
     ];
@@ -187,6 +302,10 @@ export class LearnedKnowledge {
   async extractLearnings(messages: ChatMessage[], fallbackModel?: ModelProvider, userId?: string): Promise<void> {
     const model = this.model ?? fallbackModel;
     if (!model) return;
+    // Auto-extraction has no informed consent to promote a learning to a wider
+    // scope — always save as user-scoped. Users can explicitly promote via
+    // the `save_learning` tool with `scope: "agent"`.
+    if (!userId) return;
 
     try {
       const conversationStr = messages
@@ -217,6 +336,7 @@ export class LearnedKnowledge {
           content: item.content as string,
           context: (item.context as string) ?? "",
           tags: (item.tags as string[]) ?? [],
+          scope: "user",
           namespace: "global",
           userId,
         });

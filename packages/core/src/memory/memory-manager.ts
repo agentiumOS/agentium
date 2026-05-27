@@ -217,12 +217,20 @@ export class MemoryManager {
     }
 
     if (this.learnedKnowledge && currentInput) {
-      const ctx = await this.learnedKnowledge.getContextString(currentInput, userId);
+      const ctx = await this.learnedKnowledge.getContextString(currentInput, {
+        userId,
+        agentName,
+        tenantId: this.config.tenantId,
+      });
       if (ctx) sections.push({ key: "learnings", content: ctx, priority: priorities.learnings ?? 0.05 });
     }
 
     if (this.procedureMemory && currentInput) {
-      const ctx = await this.procedureMemory.getContextString(currentInput, userId);
+      const ctx = await this.procedureMemory.getContextString(currentInput, {
+        userId,
+        agentName,
+        tenantId: this.config.tenantId,
+      });
       if (ctx) sections.push({ key: "procedures", content: ctx, priority: priorities.procedures ?? 0.05 });
     }
 
@@ -486,7 +494,11 @@ export class MemoryManager {
 
     if (this.learnedKnowledge) {
       try {
-        const learnings = await this.learnedKnowledge.searchLearnings(query, topK);
+        const learnings = await this.learnedKnowledge.searchLearnings(query, {
+          topK,
+          userId: opts?.userId,
+          tenantId: this.config.tenantId,
+        });
         for (const l of learnings) {
           results.push({
             content: `${l.title}: ${l.content}`,
