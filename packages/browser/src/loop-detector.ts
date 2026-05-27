@@ -81,15 +81,13 @@ export class LoopDetector {
     if (count >= this.actionThresholds.abort) {
       return {
         severity: "abort",
-        message:
-          `Auto-stopped: the action "${key}" has been repeated ${count} times in the last ${this.actionWindow.length} steps with no apparent progress.`,
+        message: `Auto-stopped: the action "${key}" has been repeated ${count} times in the last ${this.actionWindow.length} steps with no apparent progress.`,
       };
     }
     if (count >= this.actionThresholds.escalate) {
       return {
         severity: "escalate",
-        message:
-          `You have repeated essentially the same action ${count} times. The current approach is NOT working — pick a different strategy: scroll, navigate elsewhere, dismiss a popup, or use "fail" if the task truly cannot be done.`,
+        message: `You have repeated essentially the same action ${count} times. The current approach is NOT working — pick a different strategy: scroll, navigate elsewhere, dismiss a popup, or use "fail" if the task truly cannot be done.`,
       };
     }
     if (count >= this.actionThresholds.warn) {
@@ -113,11 +111,7 @@ export class LoopDetector {
     let stagnantCount = 1;
     for (let i = this.pageHistory.length - 2; i >= 0; i--) {
       const prev = this.pageHistory[i];
-      if (
-        prev.url === fp.url &&
-        prev.interactiveCount === fp.interactiveCount &&
-        prev.textHash === fp.textHash
-      ) {
+      if (prev.url === fp.url && prev.interactiveCount === fp.interactiveCount && prev.textHash === fp.textHash) {
         stagnantCount++;
       } else {
         break;
@@ -133,8 +127,7 @@ export class LoopDetector {
     if (stagnantCount >= this.pageThresholds.escalate) {
       return {
         severity: "escalate",
-        message:
-          `The page has not changed in ${stagnantCount} steps. Something is blocking progress — try dismissing popups, navigating elsewhere, or scrolling.`,
+        message: `The page has not changed in ${stagnantCount} steps. Something is blocking progress — try dismissing popups, navigating elsewhere, or scrolling.`,
       };
     }
     if (stagnantCount >= this.pageThresholds.warn) {

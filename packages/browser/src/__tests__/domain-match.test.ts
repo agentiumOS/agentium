@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 // without spinning up a BrowserAgent (which needs Playwright).
 function matchDomain(host: string, pattern: string): boolean {
   const h = host.toLowerCase();
-  let p = pattern.toLowerCase().replace(/^https?\*?:\/\//, "").replace(/^\/+/, "");
+  let p = pattern
+    .toLowerCase()
+    .replace(/^https?\*?:\/\//, "")
+    .replace(/^\/+/, "");
   if (p.includes("/")) p = p.split("/")[0];
   if (p === "*") return true;
   if (p === h) return true;

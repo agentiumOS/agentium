@@ -46,9 +46,7 @@ export function buildSystemPrompt(
       `- A PNG screenshot of the same viewport at exactly ${viewport.width}×${viewport.height} pixels. Use it for visual context (layout, icons, charts) when the DOM snapshot is ambiguous.`,
     );
   } else {
-    lines.push(
-      `- (Vision is disabled — no screenshot. Rely entirely on the DOM snapshot and page text.)`,
-    );
+    lines.push(`- (Vision is disabled — no screenshot. Rely entirely on the DOM snapshot and page text.)`);
   }
 
   lines.push(

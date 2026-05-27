@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LoopDetector, fnvHash, normalizeAction } from "../loop-detector.js";
+import { fnvHash, LoopDetector, normalizeAction } from "../loop-detector.js";
 
 describe("normalizeAction", () => {
   it("collapses different descriptions for the same indexed click", () => {
@@ -21,12 +21,8 @@ describe("normalizeAction", () => {
   });
 
   it("buckets wait durations into 1s bands", () => {
-    expect(normalizeAction({ action: "wait", ms: 1100 })).toBe(
-      normalizeAction({ action: "wait", ms: 1400 }),
-    );
-    expect(normalizeAction({ action: "wait", ms: 1100 })).not.toBe(
-      normalizeAction({ action: "wait", ms: 3000 }),
-    );
+    expect(normalizeAction({ action: "wait", ms: 1100 })).toBe(normalizeAction({ action: "wait", ms: 1400 }));
+    expect(normalizeAction({ action: "wait", ms: 1100 })).not.toBe(normalizeAction({ action: "wait", ms: 3000 }));
   });
 });
 

@@ -3,7 +3,7 @@ import { EventBus, Logger, MemoryManager, RunContext } from "@agentium/core";
 import { z } from "zod";
 import { BrowserProvider } from "./browser-provider.js";
 import type { CredentialVault } from "./credential-vault.js";
-import { LoopDetector, type LoopAdvice, fnvHash } from "./loop-detector.js";
+import { fnvHash, type LoopAdvice, LoopDetector } from "./loop-detector.js";
 import { buildSystemPrompt, buildUserMessage, summarizeAction } from "./prompts.js";
 import type {
   AgentOutput,
@@ -588,7 +588,7 @@ export class BrowserAgent {
       json = JSON.parse(s);
     } catch {
       // Tolerant pass — try to find the first { ... } or [ ... ] block.
-      const m = s.match(/[\[{][\s\S]*[\]}]/);
+      const m = s.match(/[[{][\s\S]*[\]}]/);
       if (!m) return null;
       try {
         json = JSON.parse(m[0]);
@@ -919,7 +919,9 @@ export class BrowserAgent {
    */
   private extractClickKeyword(description: string | undefined): string | undefined {
     if (!description) return undefined;
-    const match = description.match(/['"\u2018\u2019\u201C\u201D]([^'"\u2018\u2019\u201C\u201D]{1,80})['"\u2018\u2019\u201C\u201D]/);
+    const match = description.match(
+      /['"\u2018\u2019\u201C\u201D]([^'"\u2018\u2019\u201C\u201D]{1,80})['"\u2018\u2019\u201C\u201D]/,
+    );
     if (!match) return undefined;
     const keyword = match[1].trim();
     if (!keyword || keyword.length < 2) return undefined;
@@ -962,7 +964,10 @@ export class BrowserAgent {
 function matchDomain(host: string, pattern: string): boolean {
   const h = host.toLowerCase();
   // Strip protocol prefix from patterns like "http*://example.com" → "example.com"
-  let p = pattern.toLowerCase().replace(/^https?\*?:\/\//, "").replace(/^\/+/, "");
+  let p = pattern
+    .toLowerCase()
+    .replace(/^https?\*?:\/\//, "")
+    .replace(/^\/+/, "");
   if (p.includes("/")) p = p.split("/")[0];
   if (p === "*") return true;
   if (p === h) return true;

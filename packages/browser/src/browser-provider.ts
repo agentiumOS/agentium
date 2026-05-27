@@ -63,8 +63,7 @@ export class BrowserProvider {
       this._attached = true;
       // Reuse the first existing context if any, else create one.
       const contexts = this.browser.contexts();
-      this.context =
-        contexts.length > 0 ? contexts[0] : await this.browser.newContext({ viewport: this._viewport });
+      this.context = contexts.length > 0 ? contexts[0] : await this.browser.newContext({ viewport: this._viewport });
       const existingPages = this.context.pages();
       this.page = existingPages.length > 0 ? existingPages[0] : await this.context.newPage();
       this.tabCounter = 0;
@@ -549,17 +548,19 @@ export class BrowserProvider {
     const max = opts?.maxElements ?? 200;
 
     // ── Main document pass (with shadow DOM piercing) ─────────────
-    const mainResult = await this.page.evaluate((limit: number) => {
-      return (globalThis as any).__buaExtract(limit, 0, 0, "main");
-    }, max).catch(async () => {
-      // First-time call: install the extractor as a per-page global and retry.
-      await this.installExtractorScript();
-      return await this.page.evaluate((limit: number) => {
+    const mainResult = await this.page
+      .evaluate((limit: number) => {
         return (globalThis as any).__buaExtract(limit, 0, 0, "main");
-      }, max);
-    });
+      }, max)
+      .catch(async () => {
+        // First-time call: install the extractor as a per-page global and retry.
+        await this.installExtractorScript();
+        return await this.page.evaluate((limit: number) => {
+          return (globalThis as any).__buaExtract(limit, 0, 0, "main");
+        }, max);
+      });
 
-    let collected: DomElement[] = mainResult.elements;
+    const collected: DomElement[] = mainResult.elements;
     const scroll: DomScrollContext = mainResult.scroll;
 
     // ── Same-origin iframe pass (best-effort) ─────────────────────

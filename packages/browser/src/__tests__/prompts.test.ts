@@ -128,7 +128,6 @@ describe("buildSystemPrompt (new options)", () => {
         {
           name: "get_2fa",
           description: "Fetch the current 2FA code",
-          // biome-ignore lint/suspicious/noExplicitAny: test stub
           parameters: { _def: {} } as any,
           execute: async () => "123456",
         },
@@ -171,16 +170,12 @@ describe("buildSystemPrompt (new options)", () => {
 
 describe("buildUserMessage (v2.2 additions)", () => {
   it("includes scroll context (pages above/below, hidden interactive count)", () => {
-    const msg = buildUserMessage(
-      "task",
-      "https://x",
-      "Title",
-      0,
-      [],
-      "[1] [10,10] button: 'X'",
-      undefined,
-      { pagesAbove: 1, pagesBelow: 3, totalInteractive: 42, hiddenInteractive: 18 },
-    );
+    const msg = buildUserMessage("task", "https://x", "Title", 0, [], "[1] [10,10] button: 'X'", undefined, {
+      pagesAbove: 1,
+      pagesBelow: 3,
+      totalInteractive: 42,
+      hiddenInteractive: 18,
+    });
     expect(msg).toContain("Page stats");
     expect(msg).toContain("42 interactive elements");
     expect(msg).toContain("18 hidden");

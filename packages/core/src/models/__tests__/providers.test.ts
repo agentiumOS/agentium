@@ -160,7 +160,7 @@ describe("OpenAIProvider", () => {
       expect(callArgs.max_tokens).toBeUndefined();
     });
 
-    it("uses max_tokens for non-o-series models", async () => {
+    it("uses max_completion_tokens for non-o-series models too (current OpenAI API accepts it for all chat models)", async () => {
       const successResponse = {
         choices: [{ message: { content: "hi", tool_calls: [] }, finish_reason: "stop" }],
         usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
@@ -171,8 +171,11 @@ describe("OpenAIProvider", () => {
       await provider.generate([{ role: "user", content: "test" }], { maxTokens: 1000 });
 
       const callArgs = mockCreate.mock.calls[0][0];
-      expect(callArgs.max_tokens).toBe(1000);
-      expect(callArgs.max_completion_tokens).toBeUndefined();
+      // Provider deliberately always uses the new max_completion_tokens
+      // parameter (see openai.ts) because the legacy max_tokens is rejected
+      // by reasoning models and the new name works for all chat models.
+      expect(callArgs.max_completion_tokens).toBe(1000);
+      expect(callArgs.max_tokens).toBeUndefined();
     });
   });
 
