@@ -1,6 +1,6 @@
 {
   "name": "@agentium/eval",
-  "version": "2.2.3",
+  "version": "2.3.0",
   "description": "Evaluation framework for testing and scoring Agentium agents",
   "license": "MIT",
   "repository": {
@@ -37,7 +37,7 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "@agentium/core": "^2.2.3"
+    "@agentium/core": "^2.3.0"
   },
   "devDependencies": {
     "@types/node": "^25.3.1",
