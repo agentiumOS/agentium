@@ -1,6 +1,6 @@
 {
   "name": "@agentium/core",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "Core framework for building AI agents with tools, memory, and multi-model support",
   "license": "MIT",
   "repository": {
