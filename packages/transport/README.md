@@ -39,7 +39,11 @@ app.listen(3000);
 
 ## Documentation
 
-Full docs at [agentium.mintlify.dev](https://agentium.mintlify.dev)
+Full docs at [docs.agentium.in](https://docs.agentium.in)
+
+## Community
+
+Join the conversation on [Discord](https://discord.gg/T86SJshP).
 
 ## License
 
