@@ -187,7 +187,7 @@ export class MemoryManager {
     const priorities = { ...defaultPriorities, ...this.contextBudget?.priorities };
 
     if (this.summaries) {
-      const ctx = await this.summaries.getContextString(sessionId);
+      const ctx = await this.summaries.getContextString(sessionId, currentInput);
       if (ctx) sections.push({ key: "summaries", content: ctx, priority: priorities.summaries ?? 0.25 });
     }
 
@@ -202,38 +202,49 @@ export class MemoryManager {
     }
 
     if (this.entityMemory) {
-      const ctx = await this.entityMemory.getContextString(currentInput);
+      const ctx = await this.entityMemory.getContextString(userId, currentInput);
       if (ctx) sections.push({ key: "entities", content: ctx, priority: priorities.entities ?? 0.15 });
     }
 
     if (this.graphMemory) {
-      const ctx = await this.graphMemory.getContextString(currentInput);
+      const ctx = await this.graphMemory.getContextString(currentInput, userId);
       if (ctx) sections.push({ key: "graph", content: ctx, priority: priorities.graph ?? 0.1 });
     }
 
     if (this.decisionLog && agentName) {
-      const ctx = await this.decisionLog.getContextString(agentName);
+      const ctx = await this.decisionLog.getContextString(agentName, sessionId);
       if (ctx) sections.push({ key: "decisions", content: ctx, priority: priorities.decisions ?? 0.1 });
     }
 
     if (this.learnedKnowledge && currentInput) {
-      const ctx = await this.learnedKnowledge.getContextString(currentInput);
+      const ctx = await this.learnedKnowledge.getContextString(currentInput, userId);
       if (ctx) sections.push({ key: "learnings", content: ctx, priority: priorities.learnings ?? 0.05 });
     }
 
     if (this.procedureMemory && currentInput) {
-      const ctx = await this.procedureMemory.getContextString(currentInput);
+      const ctx = await this.procedureMemory.getContextString(currentInput, userId);
       if (ctx) sections.push({ key: "procedures", content: ctx, priority: priorities.procedures ?? 0.05 });
     }
 
     if (sections.length === 0) return "";
 
     const maxBudget = this.contextBudget?.maxTokens;
-    if (!maxBudget) {
-      return sections.map((s) => s.content).join("\n\n");
-    }
+    const assembled = maxBudget ? this.allocateBudget(sections, maxBudget) : this.assemble(sections);
+    return assembled;
+  }
 
-    return this.allocateBudget(sections, maxBudget);
+  /**
+   * Wraps each section in an explicit scope marker so the LLM doesn't
+   * conflate different memory sources or treat other-user/other-session data
+   * as authoritative for the current turn.
+   */
+  private assemble(sections: Array<{ key: string; content: string; priority: number }>): string {
+    // Stable, priority-desc order so dev (no budget) and prod (with budget)
+    // produce the same prompt layout.
+    const ordered = [...sections].sort((a, b) => b.priority - a.priority);
+    return ordered
+      .map((s) => `<memory section="${s.key}" scope="current_user">\n${s.content}\n</memory>`)
+      .join("\n\n");
   }
 
   private allocateBudget(
@@ -263,22 +274,42 @@ export class MemoryManager {
         included.push(section);
         remaining -= section.tokens;
       } else if (remaining > 50) {
+        // For time-ordered sections (summaries, decisions, entity lists),
+        // keeping the FIRST lines drops the freshest content. Walk from the
+        // bottom (most recent) instead so we keep the latest info first.
         const lines = section.content.split("\n");
-        let trimmed = "";
-        for (const line of lines) {
-          const candidate = trimmed ? `${trimmed}\n${line}` : line;
-          if (countTokens(candidate) > remaining) break;
-          trimmed = candidate;
+        // The header (first non-bullet line, e.g. "Recent decisions:") should
+        // always be kept; trim from the bottom of the data lines.
+        const headerLines: string[] = [];
+        let i = 0;
+        while (i < lines.length && !lines[i].trimStart().startsWith("- ")) {
+          headerLines.push(lines[i]);
+          i++;
         }
-        if (trimmed) {
+        const dataLines = lines.slice(i);
+        const headerStr = headerLines.join("\n");
+        const headerTokens = countTokens(headerStr);
+        let trimmed = headerStr;
+        let used = headerTokens;
+        // Walk newest-first (assuming the list is oldest→newest, reverse).
+        for (const line of [...dataLines].reverse()) {
+          const candidate = trimmed ? `${trimmed}\n${line}` : line;
+          const tk = countTokens(candidate);
+          if (tk > remaining) break;
+          trimmed = candidate;
+          used = tk;
+        }
+        if (trimmed && trimmed !== headerStr) {
           included.push({ ...section, content: trimmed });
-          remaining -= countTokens(trimmed);
+          remaining -= used;
         }
       }
     }
 
     included.sort((a, b) => b.priority - a.priority);
-    return included.map((s) => s.content).join("\n\n");
+    return included
+      .map((s) => `<memory section="${s.key}" scope="current_user">\n${s.content}\n</memory>`)
+      .join("\n\n");
   }
 
   // ── After-run extraction (fire-and-forget) ────────────────────────────
@@ -296,56 +327,59 @@ export class MemoryManager {
     userId: string | undefined,
     messages: ChatMessage[],
     agentModel?: import("../models/provider.js").ModelProvider,
-    _agentName?: string,
+    agentName?: string,
+    /** IANA timezone for date-anchored extraction. Falls back to UTC. */
+    timezone?: string,
   ): Promise<void> {
     const model = this.config.model ?? agentModel;
     const tasks: Promise<unknown>[] = [];
+    const tz = timezone ?? this.config.timezone;
+    const eventBus = this.config.eventBus;
+    const emitError = (store: string, error: unknown) => {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.warn(`[MemoryManager] ${store} extraction failed:`, err.message);
+      // Surface the failure to observability — silent failures are how memory
+      // appears empty after a turn that should have written facts.
+      eventBus?.emit("memory.error", { store, error: err, agentName: agentName ?? "" });
+    };
 
     if (this.userFacts && userId) {
       tasks.push(
-        this.userFacts
-          .extractAndStore(userId, messages, model)
-          .catch((e) => console.warn("[MemoryManager] UserFacts extraction failed:", e)),
+        this.userFacts.extractAndStore(userId, messages, model, tz).catch((e) => emitError("userFacts", e)),
       );
     }
 
     if (this.userProfile && userId) {
       tasks.push(
-        this.userProfile
-          .extractAndUpdate(userId, messages, model)
-          .catch((e) => console.warn("[MemoryManager] UserProfile extraction failed:", e)),
+        this.userProfile.extractAndUpdate(userId, messages, model).catch((e) => emitError("userProfile", e)),
       );
     }
 
     if (this.entityMemory) {
       tasks.push(
-        this.entityMemory
-          .extractEntities(messages, model)
-          .catch((e) => console.warn("[MemoryManager] Entity extraction failed:", e)),
+        this.entityMemory.extractEntities(userId, messages, model).catch((e) => emitError("entityMemory", e)),
       );
     }
 
     if (this.learnedKnowledge) {
       tasks.push(
-        this.learnedKnowledge
-          .extractLearnings(messages, model, userId)
-          .catch((e) => console.warn("[MemoryManager] Learning extraction failed:", e)),
+        this.learnedKnowledge.extractLearnings(messages, model, userId).catch((e) => emitError("learnedKnowledge", e)),
       );
     }
 
     if (this.graphMemory) {
       tasks.push(
         this.graphMemory
-          .extractFromConversation(messages, model)
-          .catch((e) => console.warn("[MemoryManager] Graph extraction failed:", e)),
+          .extractFromConversation(userId, messages, model)
+          .catch((e) => emitError("graphMemory", e)),
       );
     }
 
     if (this.procedureMemory) {
       tasks.push(
         this.procedureMemory
-          .extractProcedures(messages, model)
-          .catch((e) => console.warn("[MemoryManager] Procedure extraction failed:", e)),
+          .extractProcedures(userId, messages, model)
+          .catch((e) => emitError("procedureMemory", e)),
       );
     }
 
@@ -400,8 +434,8 @@ export class MemoryManager {
       return;
     }
 
-    if (this.entityMemory) {
-      await this.entityMemory.addFact("_manual", content);
+    if (this.entityMemory && opts?.userId) {
+      await this.entityMemory.addFact(opts.userId, "_manual", content);
     }
   }
 
@@ -431,8 +465,8 @@ export class MemoryManager {
       }
     }
 
-    if (this.entityMemory) {
-      const entities = await this.entityMemory.listEntities();
+    if (this.entityMemory && opts?.userId) {
+      const entities = await this.entityMemory.listEntities(opts.userId);
       for (const e of entities) {
         const qLower = query.toLowerCase();
         const nameMatch = e.name.toLowerCase().includes(qLower);
@@ -503,8 +537,8 @@ export class MemoryManager {
       removed++;
     }
 
-    if (opts.entityId && this.entityMemory) {
-      await this.entityMemory.deleteEntity(opts.entityId);
+    if (opts.entityId && opts.userId && this.entityMemory) {
+      await this.entityMemory.deleteEntity(opts.userId, opts.entityId);
       removed++;
     }
 

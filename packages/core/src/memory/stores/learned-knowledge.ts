@@ -92,17 +92,22 @@ export class LearnedKnowledge {
     return entry;
   }
 
-  async searchLearnings(query: string, topK?: number): Promise<Learning[]> {
+  async searchLearnings(query: string, topK?: number, userId?: string): Promise<Learning[]> {
     await this.ensureInit();
 
-    const results = await this.vectorStore.search(this.collection, query, {
-      topK: topK ?? this.topK,
-    });
+    // Over-fetch when filtering by userId — vector stores don't all support
+    // metadata predicates, so we re-filter after the fetch.
+    const want = topK ?? this.topK;
+    const fetchK = userId ? want * 4 : want;
+    const results = await this.vectorStore.search(this.collection, query, { topK: fetchK });
 
     const learnings: Learning[] = [];
     for (const result of results) {
       const full = await this.storage.get<Learning>(NS, result.id);
-      if (full) learnings.push(full);
+      if (!full) continue;
+      if (userId && full.userId !== userId) continue; // strict user isolation
+      learnings.push(full);
+      if (learnings.length >= want) break;
     }
 
     return learnings;
@@ -118,11 +123,14 @@ export class LearnedKnowledge {
     await this.storage.delete(NS, id);
   }
 
-  async getContextString(currentInput?: string): Promise<string> {
+  async getContextString(currentInput?: string, userId?: string): Promise<string> {
     if (!currentInput) return "";
+    // Without a userId we can't safely scope — refuse to surface anything
+    // rather than risk leaking another user's learnings.
+    if (!userId) return "";
 
     try {
-      const learnings = await this.searchLearnings(currentInput);
+      const learnings = await this.searchLearnings(currentInput, undefined, userId);
       if (learnings.length === 0) return "";
 
       const lines = learnings.map((l) => `- ${l.title}: ${l.content} (applies when: ${l.context})`);
@@ -163,8 +171,12 @@ export class LearnedKnowledge {
           query: z.string().describe("What to search for"),
           limit: z.number().optional().describe("Max results (default 5)"),
         }),
-        execute: async (args) => {
-          const results = await this.searchLearnings(args.query as string, (args.limit as number) ?? 5);
+        execute: async (args, ctx) => {
+          const results = await this.searchLearnings(
+            args.query as string,
+            (args.limit as number) ?? 5,
+            ctx.userId, // scope retrieval to the calling user
+          );
           if (results.length === 0) return "No matching learnings found.";
           return results.map((l) => `[${l.id}] ${l.title}: ${l.content}`).join("\n\n");
         },

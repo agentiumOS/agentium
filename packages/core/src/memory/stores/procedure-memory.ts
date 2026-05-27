@@ -7,6 +7,8 @@ import type { ToolDef } from "../../tools/types.js";
 
 const NS = "memory:procedures";
 
+const nsFor = (userId?: string) => (userId ? `${NS}:user:${userId}` : NS);
+
 export interface ProcedureStep {
   toolName: string;
   argsSnapshot: Record<string, unknown>;
@@ -54,17 +56,21 @@ export class ProcedureMemory {
     this.maxProcedures = config?.maxProcedures ?? 50;
   }
 
-  async getProcedures(): Promise<Procedure[]> {
-    const entries = await this.storage.list<Procedure>(NS);
+  async getProcedures(userId?: string): Promise<Procedure[]> {
+    const entries = await this.storage.list<Procedure>(nsFor(userId));
     return entries.map((e) => e.value).sort((a, b) => b.successCount - a.successCount);
   }
 
-  async getProcedure(id: string): Promise<Procedure | null> {
-    return this.storage.get<Procedure>(NS, id);
+  async getProcedure(userId: string | undefined, id: string): Promise<Procedure | null> {
+    return this.storage.get<Procedure>(nsFor(userId), id);
   }
 
-  async saveProcedure(proc: Omit<Procedure, "id" | "createdAt" | "successCount" | "lastUsed">): Promise<Procedure> {
-    const existing = await this.getProcedures();
+  async saveProcedure(
+    userId: string | undefined,
+    proc: Omit<Procedure, "id" | "createdAt" | "successCount" | "lastUsed">,
+  ): Promise<Procedure> {
+    const ns = nsFor(userId);
+    const existing = await this.getProcedures(userId);
     const similar = existing.find((p) => p.trigger.toLowerCase() === proc.trigger.toLowerCase());
 
     if (similar) {
@@ -72,7 +78,7 @@ export class ProcedureMemory {
       similar.lastUsed = new Date();
       similar.steps = proc.steps;
       similar.description = proc.description;
-      await this.storage.set(NS, similar.id, similar);
+      await this.storage.set(ns, similar.id, similar);
       return similar;
     }
 
@@ -84,21 +90,21 @@ export class ProcedureMemory {
       createdAt: new Date(),
     };
 
-    await this.storage.set(NS, entry.id, entry);
+    await this.storage.set(ns, entry.id, entry);
 
     if (existing.length >= this.maxProcedures) {
       const sorted = existing.sort((a, b) => new Date(a.lastUsed).getTime() - new Date(b.lastUsed).getTime());
       const toRemove = sorted.slice(0, existing.length - this.maxProcedures + 1);
       for (const p of toRemove) {
-        await this.storage.delete(NS, p.id);
+        await this.storage.delete(ns, p.id);
       }
     }
 
     return entry;
   }
 
-  async suggestProcedure(input: string): Promise<Procedure | null> {
-    const all = await this.getProcedures();
+  async suggestProcedure(userId: string | undefined, input: string): Promise<Procedure | null> {
+    const all = await this.getProcedures(userId);
     if (all.length === 0) return null;
 
     const inputLower = input.toLowerCase();
@@ -130,20 +136,24 @@ export class ProcedureMemory {
     return bestScore >= 3 ? best : null;
   }
 
-  async getContextString(currentInput?: string): Promise<string> {
-    if (!currentInput) return "";
+  async getContextString(currentInput?: string, userId?: string): Promise<string> {
+    if (!currentInput || !userId) return ""; // refuse to surface unscoped procedures
 
-    const suggestion = await this.suggestProcedure(currentInput);
+    const suggestion = await this.suggestProcedure(userId, currentInput);
     if (!suggestion) return "";
 
-    const stepsStr = suggestion.steps
-      .map((s, i) => `  ${i + 1}. ${s.toolName}(${JSON.stringify(s.argsSnapshot).slice(0, 80)}) → ${s.resultSummary}`)
-      .join("\n");
+    // Don't dump raw argsSnapshot (often PII) into the prompt — surface only the tool name.
+    const stepsStr = suggestion.steps.map((s, i) => `  ${i + 1}. ${s.toolName}() → ${s.resultSummary}`).join("\n");
 
     return `Suggested procedure (used ${suggestion.successCount}x): ${suggestion.trigger}\n${stepsStr}`;
   }
 
-  async extractProcedures(messages: ChatMessage[], fallbackModel?: ModelProvider): Promise<void> {
+  async extractProcedures(
+    userId: string | undefined,
+    messages: ChatMessage[],
+    fallbackModel?: ModelProvider,
+  ): Promise<void> {
+    if (!userId) return;
     const model = this.model ?? fallbackModel;
     if (!model) return;
 
@@ -172,7 +182,7 @@ export class ProcedureMemory {
         for (const item of parsed) {
           if (!item?.trigger || !item?.steps || !Array.isArray(item.steps) || item.steps.length < 2) continue;
 
-          await this.saveProcedure({
+          await this.saveProcedure(userId, {
             trigger: item.trigger,
             description: item.description ?? item.trigger,
             steps: item.steps.map((s: any) => ({
@@ -197,8 +207,9 @@ export class ProcedureMemory {
         parameters: z.object({
           task: z.string().describe("Description of the task to find a procedure for"),
         }),
-        execute: async (args) => {
-          const suggestion = await this.suggestProcedure(args.task as string);
+        execute: async (args, ctx) => {
+          if (!ctx.userId) return "No user identified for this session.";
+          const suggestion = await this.suggestProcedure(ctx.userId, args.task as string);
           if (!suggestion) return "No matching procedure found. You may need to figure out the steps yourself.";
           const stepsStr = suggestion.steps.map((s, i) => `${i + 1}. ${s.toolName} → ${s.resultSummary}`).join("\n");
           return `Procedure: ${suggestion.trigger} (used ${suggestion.successCount}x)\n${stepsStr}`;
@@ -207,10 +218,11 @@ export class ProcedureMemory {
     ];
   }
 
-  async clear(): Promise<void> {
-    const all = await this.storage.list<Procedure>(NS);
+  async clear(userId?: string): Promise<void> {
+    const ns = nsFor(userId);
+    const all = await this.storage.list<Procedure>(ns);
     for (const entry of all) {
-      await this.storage.delete(NS, entry.key);
+      await this.storage.delete(ns, entry.key);
     }
   }
 }

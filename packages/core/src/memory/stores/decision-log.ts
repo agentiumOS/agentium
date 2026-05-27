@@ -58,17 +58,18 @@ export class DecisionLog {
     await this.storage.set(NS, key, decision);
   }
 
-  async getDecisions(agentName: string, limit?: number): Promise<Decision[]> {
-    const entries = await this.storage.list<Decision>(NS, agentName);
-    const sorted = entries
+  async getDecisions(agentName: string, limit?: number, sessionId?: string): Promise<Decision[]> {
+    // Use a key-separator-terminated prefix so "agent" doesn't match "agent-pro".
+    const entries = await this.storage.list<Decision>(NS, `${agentName}:`);
+    let sorted = entries
       .map((e) => e.value)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
+    if (sessionId) sorted = sorted.filter((d) => d.sessionId === sessionId);
     return limit ? sorted.slice(0, limit) : sorted;
   }
 
-  async searchDecisions(agentName: string, query: string): Promise<Decision[]> {
-    const all = await this.getDecisions(agentName);
+  async searchDecisions(agentName: string, query: string, sessionId?: string): Promise<Decision[]> {
+    const all = await this.getDecisions(agentName, undefined, sessionId);
     const q = query.toLowerCase();
     return all.filter(
       (d) =>
@@ -79,14 +80,16 @@ export class DecisionLog {
   }
 
   async clear(agentName: string): Promise<void> {
-    const entries = await this.storage.list<Decision>(NS, agentName);
+    const entries = await this.storage.list<Decision>(NS, `${agentName}:`);
     for (const entry of entries) {
       await this.storage.delete(NS, entry.key);
     }
   }
 
-  async getContextString(agentName: string): Promise<string> {
-    const decisions = await this.getDecisions(agentName, this.maxContextDecisions);
+  async getContextString(agentName: string, sessionId?: string): Promise<string> {
+    // Scope by session so other users' / other conversations' decisions never
+    // leak into this turn's context.
+    const decisions = await this.getDecisions(agentName, this.maxContextDecisions, sessionId);
     if (decisions.length === 0) return "";
 
     const lines = decisions.map((d) => {
@@ -96,7 +99,7 @@ export class DecisionLog {
       return line;
     });
 
-    return `Recent decisions:\n${lines.join("\n")}`;
+    return `Recent decisions in this session:\n${lines.join("\n")}`;
   }
 
   getTools(): ToolDef[] {

@@ -195,7 +195,9 @@ export class Agent {
     this.eventBus = config.eventBus ?? new EventBus();
 
     if (config.memory) {
-      this.memoryManager = new MemoryManager(config.memory);
+      // Pass the agent's eventBus down so memory extraction errors etc.
+      // surface in observability rather than being silently console.warned.
+      this.memoryManager = new MemoryManager({ ...config.memory, eventBus: config.memory.eventBus ?? this.eventBus });
     } else {
       const storage = new InMemoryStorage();
       this.fallbackSessionManager = new SessionManager(storage);
@@ -534,7 +536,11 @@ export class Agent {
         await this.memoryManager.appendMessages(sessionId, newMessages, this.config.model);
         await this.memoryManager.updateState(sessionId, ctx.sessionState);
 
-        this.memoryManager.afterRun(sessionId, userId, newMessages, this.config.model, this.name);
+        // Pass the LAST 6 turns (history tail + current exchange) so the
+        // extractor can resolve referents like "that one" or "today".
+        const tail = messages.slice(-4).filter((m) => m.role === "user" || m.role === "assistant");
+        const extractionWindow: ChatMessage[] = [...tail, ...newMessages];
+        this.memoryManager.afterRun(sessionId, userId, extractionWindow, this.config.model, this.name);
 
         this.eventBus.emit("memory.extract", { sessionId, userId, agentName: this.name });
       } else {
@@ -766,7 +772,10 @@ export class Agent {
           await this.memoryManager.appendMessages(sessionId, newMessages, this.config.model);
           await this.memoryManager.updateState(sessionId, ctx.sessionState);
 
-          this.memoryManager.afterRun(sessionId, userId, newMessages, this.config.model, this.name);
+          // Same as run(): give the extractor a window of recent turns.
+          const tail = (streamMessages ?? []).slice(-4).filter((m) => m.role === "user" || m.role === "assistant");
+          const extractionWindow: ChatMessage[] = [...tail, ...newMessages];
+          this.memoryManager.afterRun(sessionId, userId, extractionWindow, this.config.model, this.name);
         } else {
           await this.fallbackSessionManager!.appendMessages(sessionId, newMessages);
           await this.fallbackSessionManager!.updateState(sessionId, ctx.sessionState);

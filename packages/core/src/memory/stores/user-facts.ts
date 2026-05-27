@@ -25,21 +25,31 @@ export interface UserFact {
   importance?: number;
   /** When this fact became valid. */
   validFrom: Date;
-  /** Set when a newer fact supersedes this one. */
+  /** Set when this fact was invalidated (either superseded or forgotten). */
   invalidatedAt?: Date;
+  /**
+   * Why this fact was invalidated:
+   *   - "superseded": a newer fact about the same subject replaced it (auto or explicit). It is just outdated.
+   *   - "forgotten":  the user explicitly asked to delete it. It must never be restated.
+   * Undefined on legacy data — `getContextString` uses a subject-based heuristic as a fallback.
+   */
+  invalidationReason?: "superseded" | "forgotten";
   createdAt: Date;
   source: "auto" | "manual";
 }
 
 const EXTRACTION_PROMPT = `You are a memory extraction assistant. Decide which facts to ADD, FORGET, or REPLACE based on this turn.
 
-Today's date is {today}.
+Today's date is {today} (in the user's local timezone — assume this is correct).
 
 Date handling rules — read carefully:
 - Resolve TRUE relative references ("today", "yesterday", "tomorrow", "last Monday", "next week", "in 3 days") to absolute YYYY-MM-DD dates using {today} as the anchor.
-- For RECURRING annual events (birthday, anniversary, founding date of a company already in operation), DO NOT invent a year. If the user says "my birthday is April 11" or "11th April", store the fact as "User's birthday is April 11" (no year). Only include a year if the user EXPLICITLY mentioned one (e.g. "my birthday is April 11, 1995").
-- For one-off events that need a year for clarity ("I joined Acme last Tuesday"), resolve to the absolute YYYY-MM-DD.
-- Never store the literal words "today", "yesterday", "tomorrow", "next week", etc.
+- For RECURRING annual events (birthday, anniversary), NEVER include a year. The correct format is the month and day only:
+    "User's birthday is April 11."   ✓
+    "User's birthday is 2026-04-11." ✗ (wrong — never include the year)
+  Only include a year if the user EXPLICITLY mentioned a specific birth year (e.g. "my birthday is April 11, 1995" → "User was born on April 11, 1995.").
+- For ONE-OFF dated events ("I joined Acme last Tuesday"), resolve to an absolute YYYY-MM-DD.
+- Never store the literal words "today", "yesterday", "tomorrow", "next week" — always resolve them.
 
 Return ONLY a JSON object with this exact shape:
 {
@@ -92,13 +102,22 @@ User-initiated deletions (put into "forget"):
 - "I no longer work at Acme."            → forget the matching existing fact
 - "Don't remember my birthday."          → forget the matching existing fact
 
+Subject-of-fact rule (CRITICAL — about identity, not vocabulary):
+- Every extracted fact MUST be about the USER themselves, not about people, companies, or events they mention.
+- If the user says "my wife Priya loves sci-fi" — that is a fact about Priya, not about the user. SKIP it.
+- If the user says "my coworker Bob is hilarious" — fact about Bob, not the user. SKIP it.
+- If the user says "Acme bought a startup last week" — fact about Acme, not the user. SKIP it.
+- The ONLY exception: facts about the user's RELATIONSHIP to a third party — "User is married to Priya." or "User's manager is Bob." — are allowed because the subject is still the user.
+- NEVER extract facts about the assistant ("Assistant prefers Markdown.", "You said X.")
+- Every fact you emit must start with "User" or "The user". Examples that DO NOT start that way must be rejected.
+
 Contradictions / updates (put into "add" with "supersedes"):
-- Existing: "Akash's birthday is 2026-05-24."
-  User says: "Actually my birthday is today." (and today is 2026-05-23)
-  → "add": [{"fact": "Akash's birthday is 2026-05-23.", "supersedes": "Akash's birthday is 2026-05-24.", ...}]
-- Existing: "Akash lives in Mumbai."
+- Existing: "User's favourite colour is blue."
+  User says: "Actually my favourite colour is green now."
+  → "add": [{"fact": "User's favourite colour is green.", "supersedes": "User's favourite colour is blue.", "subject": "favorite:colour", ...}]
+- Existing: "User lives in Mumbai."
   User says: "I just moved to Bangalore."
-  → "add": [{"fact": "Akash lives in Bangalore.", "supersedes": "Akash lives in Mumbai.", ...}]
+  → "add": [{"fact": "User lives in Bangalore.", "supersedes": "User lives in Mumbai.", "subject": "location", ...}]
 
 Importance scoring: 1.0 = critical identity (name, birthday); 0.5 = preferences; 0.1 = minor.
 
@@ -156,38 +175,59 @@ export class UserFacts {
   ): Promise<void> {
     return this.withLock(userId, async () => {
       const existing = await this.getFacts(userId);
-      const existingSet = new Set(existing.map((f) => f.fact.toLowerCase()));
+      // Canonicalise: lowercase + collapse whitespace + strip terminal punctuation
+      // so trivial drift ("User loves coffee" vs "User loves coffee.") doesn't dupe.
+      const canon = (s: string) => s.toLowerCase().trim().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
+      const activeMap = new Map<string, UserFact>();
+      const invalidatedMap = new Map<string, UserFact>();
+      for (const ex of existing) {
+        const key = canon(ex.fact);
+        if (ex.invalidatedAt) invalidatedMap.set(key, ex);
+        else activeMap.set(key, ex);
+      }
 
       const newFacts: UserFact[] = [];
       for (const f of facts) {
         const normalized = f.fact.trim();
-        if (!normalized || existingSet.has(normalized.toLowerCase())) continue;
+        const key = canon(normalized);
+        if (!normalized) continue;
+        // Already active → skip silently.
+        if (activeMap.has(key)) continue;
+        // Re-stating a previously-forgotten/superseded fact reactivates it
+        // instead of being silently dropped (the user clearly wants it back).
+        const tombstone = invalidatedMap.get(key);
+        if (tombstone) {
+          tombstone.invalidatedAt = undefined;
+          tombstone.invalidationReason = undefined;
+          tombstone.validFrom = new Date();
+          activeMap.set(key, tombstone);
+          continue;
+        }
 
-        // Explicit "supersedes" reference from the LLM.
+        // Auto-subject is a FALLBACK for when the LLM forgot to set supersedes.
+        // If supersedes IS set, trust it exclusively — don't also auto-invalidate
+        // by subject, otherwise a wrong-target supersedes from the LLM can wipe
+        // out two unrelated facts.
         if (f.supersedes) {
           const supersededLower = f.supersedes.toLowerCase().trim();
           for (const ex of existing) {
             if (ex.fact.toLowerCase().trim() === supersededLower && !ex.invalidatedAt) {
               ex.invalidatedAt = new Date();
+              ex.invalidationReason = "superseded";
             }
           }
-        }
-
-        // Safety net: even when the LLM forgets to set "supersedes",
-        // auto-invalidate any prior active fact with the same canonical
-        // subject. This makes corrections like "actually my birthday is
-        // tomorrow" work reliably even with weaker extractor models.
-        if (f.subject) {
+        } else if (f.subject) {
           const subjectLower = f.subject.toLowerCase().trim();
           for (const ex of existing) {
             if (ex.invalidatedAt) continue;
             if ((ex.subject ?? "").toLowerCase().trim() === subjectLower) {
               ex.invalidatedAt = new Date();
+              ex.invalidationReason = "superseded";
             }
           }
         }
 
-        newFacts.push({
+        const fresh: UserFact = {
           id: uuidv4(),
           fact: normalized,
           subject: f.subject,
@@ -197,8 +237,9 @@ export class UserFacts {
           validFrom: new Date(),
           createdAt: new Date(),
           source,
-        });
-        existingSet.add(normalized.toLowerCase());
+        };
+        newFacts.push(fresh);
+        activeMap.set(key, fresh);
       }
 
       if (newFacts.length === 0) {
@@ -211,7 +252,12 @@ export class UserFacts {
       if (updated.length > this.maxFacts) {
         const active = updated.filter((f) => !f.invalidatedAt);
         const invalidated = updated.filter((f) => f.invalidatedAt);
-        updated = [...invalidated.slice(-Math.floor(this.maxFacts * 0.1)), ...active.slice(-this.maxFacts)];
+        // Reserve ~10% for tombstones; never `slice(-0)` which keeps everything.
+        const invalidatedKeep = Math.max(0, Math.floor(this.maxFacts * 0.1));
+        const activeKeep = Math.max(0, this.maxFacts - invalidatedKeep);
+        const keptInvalidated = invalidatedKeep === 0 ? [] : invalidated.slice(-invalidatedKeep);
+        const keptActive = activeKeep === 0 ? [] : active.slice(-activeKeep);
+        updated = [...keptInvalidated, ...keptActive];
       }
 
       await this.storage.set(NS, userId, updated);
@@ -239,6 +285,7 @@ export class UserFacts {
         if (ex.invalidatedAt) continue;
         if (targets.has(ex.fact.toLowerCase().trim())) {
           ex.invalidatedAt = new Date();
+          ex.invalidationReason = "forgotten";
           count += 1;
         }
       }
@@ -251,24 +298,69 @@ export class UserFacts {
     await this.storage.delete(NS, userId);
   }
 
-  async getContextString(userId: string): Promise<string> {
+  /**
+   * @param userId
+   * @param maxFacts soft cap on facts surfaced in the prompt (default 20).
+   *   Excess facts are dropped from the bottom after sorting by (importance, recency).
+   */
+  async getContextString(userId: string, maxFacts = 20): Promise<string> {
     const all = await this.getFacts(userId);
     const active = all.filter((f) => !f.invalidatedAt);
     const invalidated = all.filter((f) => f.invalidatedAt);
 
+    const activeSubjects = new Set(
+      active.map((f) => (f.subject ?? "").toLowerCase().trim()).filter(Boolean),
+    );
+
+    const userForgotten = invalidated.filter((f) => {
+      if (f.invalidationReason === "superseded") return false;
+      if (f.invalidationReason === "forgotten") return true;
+      const subj = (f.subject ?? "").toLowerCase().trim();
+      if (!subj) return true;
+      return !activeSubjects.has(subj);
+    });
+
+    // Rank: high-importance + recent first. Cap to avoid blowing prompt budget.
+    const ranked = [...active].sort((a, b) => {
+      const impA = a.importance ?? 0.4;
+      const impB = b.importance ?? 0.4;
+      if (impA !== impB) return impB - impA;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+    const shown = ranked.slice(0, maxFacts);
+    const overflowCount = Math.max(0, ranked.length - shown.length);
+
+    // Partition by source so the LLM can distinguish user-stated (high confidence)
+    // from auto-extracted (verify before stating).
+    const manual = shown.filter((f) => f.source === "manual");
+    const auto = shown.filter((f) => f.source !== "manual");
+
     const blocks: string[] = [];
 
-    if (active.length > 0) {
-      const factList = active.map((f) => `- ${f.fact}`).join("\n");
-      blocks.push(`What you know about this user:\n${factList}`);
+    if (manual.length > 0 || auto.length > 0) {
+      const parts: string[] = ["What you know about this user:"];
+      if (manual.length > 0) {
+        parts.push("Facts the user told you directly (high confidence):");
+        for (const f of manual) parts.push(`- ${f.fact}`);
+      }
+      if (auto.length > 0) {
+        if (manual.length > 0) parts.push("");
+        parts.push("Facts inferred from prior conversations (verify before stating as certain):");
+        for (const f of auto) parts.push(`- ${f.fact}`);
+      }
+      if (overflowCount > 0) {
+        parts.push(`- … and ${overflowCount} more (use recall_user_facts to retrieve)`);
+      }
+      blocks.push(parts.join("\n"));
     }
 
-    if (invalidated.length > 0) {
-      const forgottenList = invalidated.map((f) => `- ${f.fact}`).join("\n");
+    if (userForgotten.length > 0) {
+      const forgottenList = userForgotten.map((f) => `- ${f.fact}`).join("\n");
       blocks.push(
-        `IMPORTANT — the user has explicitly asked you to forget the following facts. ` +
-          `Do NOT recall, mention, or restate them even if earlier messages in the chat history reference them. ` +
-          `If asked about them, say you do not have that information.\n${forgottenList}`,
+        `The user has previously asked you to forget the following specific facts. ` +
+          `Treat them as deleted: do not restate them, even if older messages in the chat history reference them. ` +
+          `This restriction applies ONLY to these exact facts. ` +
+          `Continue to use every active fact above to help the user with their current question.\n${forgottenList}`,
       );
     }
 
@@ -290,22 +382,30 @@ export class UserFacts {
       execute: async (_args, ctx) => {
         const uid = ctx.userId;
         if (!uid) return "No user identified for this session.";
-        const facts = await this.getFacts(uid);
+        const facts = await this.getActiveFacts(uid);
         if (facts.length === 0) return "No stored facts about this user yet.";
         return facts.map((f) => `- ${f.fact}`).join("\n");
       },
     };
   }
 
-  async extractAndStore(userId: string, messages: ChatMessage[], fallbackModel?: ModelProvider): Promise<void> {
+  async extractAndStore(
+    userId: string,
+    messages: ChatMessage[],
+    fallbackModel?: ModelProvider,
+    /** IANA timezone of the user, e.g. "Asia/Kolkata". Falls back to UTC. */
+    timezone?: string,
+  ): Promise<void> {
     const model = this.model ?? fallbackModel;
     if (!model) return;
 
     try {
       const existing = await this.getFacts(userId);
       const active = existing.filter((f) => !f.invalidatedAt);
+      // Strip the [subject=…] prefix from existing-facts listing — the LLM was
+      // copying it verbatim into "supersedes" and breaking matches.
       const existingStr =
-        active.length > 0 ? active.map((f) => `- [subject=${f.subject ?? "?"}] ${f.fact}`).join("\n") : "(none)";
+        active.length > 0 ? active.map((f) => `- ${f.fact}`).join("\n") : "(none)";
 
       const conversationStr = messages
         .filter((m) => m.role === "user" || m.role === "assistant")
@@ -318,9 +418,8 @@ export class UserFacts {
       const lastUserMsg = messages.filter((m) => m.role === "user").pop();
       const inputStr = lastUserMsg && typeof lastUserMsg.content === "string" ? lastUserMsg.content : undefined;
 
-      const today = new Date().toISOString().slice(0, 10);
-      const prompt = EXTRACTION_PROMPT.replace("{today}", today)
-        .replace("{today}", today) // appears twice in the template
+      const today = todayInTimezone(timezone);
+      const prompt = EXTRACTION_PROMPT.replaceAll("{today}", today)
         .replace("{existingFacts}", existingStr)
         .replace("{conversation}", conversationStr);
 
@@ -395,6 +494,20 @@ function parseExtractionResponse(text: string): {
     .map((x) => x.trim());
 
   return { add, forget };
+}
+
+/**
+ * Format today's date in YYYY-MM-DD for a given IANA timezone. Falls back to UTC.
+ * Critical for date-anchored extraction near midnight boundaries.
+ */
+function todayInTimezone(timezone?: string): string {
+  if (!timezone) return new Date().toISOString().slice(0, 10);
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" })
+      .format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
 }
 
 function extractJsonObject(text: string): string {

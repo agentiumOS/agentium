@@ -68,7 +68,7 @@ describe("DecisionLog", () => {
       decisionType: "tool_selection",
     });
     const ctx = await log.getContextString("agent");
-    expect(ctx).toContain("Recent decisions:");
+    expect(ctx).toContain("Recent decisions");
     expect(ctx).toContain("Chose tool X");
   });
 

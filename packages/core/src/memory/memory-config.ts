@@ -133,4 +133,18 @@ export interface UnifiedMemoryConfig {
    * Falls back to the agent's primary model if not set.
    */
   model?: ModelProvider;
+
+  /**
+   * IANA timezone (e.g. "Asia/Kolkata") used to anchor date-relative extraction
+   * ("today", "yesterday"). Falls back to UTC when omitted. Always set this in
+   * production — otherwise users near midnight get wrong dates extracted.
+   */
+  timezone?: string;
+
+  /**
+   * Optional event bus — when supplied, memory extraction failures and
+   * other framework events are emitted here so they can be wired into
+   * observability (OpenTelemetry, Langfuse, Prometheus, etc.).
+   */
+  eventBus?: import("../events/event-bus.js").EventBus;
 }

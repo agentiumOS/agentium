@@ -64,7 +64,8 @@ export class Summaries {
 
     await this.storage.set(NS, entry.key, entry);
 
-    const all = await this.storage.list<SummaryEntry>(NS, sessionId);
+    // Terminate prefix with ':' so sessionId "abc" doesn't match "abc123:..."
+    const all = await this.storage.list<SummaryEntry>(NS, `${sessionId}:`);
     if (all.length > this.maxCount) {
       const sorted = all.sort((a, b) => new Date(a.value.createdAt).getTime() - new Date(b.value.createdAt).getTime());
       const toDelete = sorted.slice(0, all.length - this.maxCount);
@@ -75,30 +76,53 @@ export class Summaries {
   }
 
   async getSummaries(sessionId: string): Promise<string[]> {
-    const entries = await this.storage.list<SummaryEntry>(NS, sessionId);
+    const entries = await this.storage.list<SummaryEntry>(NS, `${sessionId}:`);
     return entries
       .sort((a, b) => new Date(a.value.createdAt).getTime() - new Date(b.value.createdAt).getTime())
       .map((e) => e.value.summary);
   }
 
-  async getContextString(sessionId: string): Promise<string> {
+  /**
+   * Returns the most recent summaries within the token budget. The newest
+   * summaries carry the most context for the current turn — older ones drop off
+   * first. Pass `currentInput` to opportunistically boost summaries that share
+   * keywords with the user's message (cheap relevance heuristic).
+   */
+  async getContextString(sessionId: string, currentInput?: string): Promise<string> {
     const summaries = await this.getSummaries(sessionId);
     if (summaries.length === 0) return "";
 
-    let text = "";
+    // Newest-first ranking, with a tiny boost for summaries whose text overlaps
+    // with the current input. Avoids forever re-injecting stale session-start
+    // material on long conversations.
+    const tokens = currentInput
+      ? new Set(currentInput.toLowerCase().split(/\W+/).filter((t) => t.length > 3))
+      : new Set<string>();
+    const scored = summaries.map((s, i) => {
+      const overlap = tokens.size > 0 ? Array.from(tokens).filter((t) => s.toLowerCase().includes(t)).length : 0;
+      // Recency weight dominates; relevance is a tie-breaker.
+      return { s, score: i + overlap * 0.1, recency: i };
+    });
+    scored.sort((a, b) => b.recency - a.recency); // newest first
+    if (currentInput) {
+      // Within the same recency bucket, prefer higher overlap. Stable sort means
+      // we apply a secondary sort by score descending.
+      scored.sort((a, b) => b.score - a.score);
+    }
 
-    for (const s of summaries) {
-      const candidate = text ? `${text}\n${s}` : s;
+    let text = "";
+    for (const { s } of scored) {
+      const candidate = text ? `${s}\n${text}` : s;
       if (countTokens(candidate) > this.maxTokens) break;
       text = candidate;
     }
 
     if (!text) return "";
-    return `Previous conversation context:\n${text}`;
+    return `Previous conversation context (most recent first):\n${text}`;
   }
 
   async clear(sessionId: string): Promise<void> {
-    const entries = await this.storage.list<SummaryEntry>(NS, sessionId);
+    const entries = await this.storage.list<SummaryEntry>(NS, `${sessionId}:`);
     for (const entry of entries) {
       await this.storage.delete(NS, entry.key);
     }

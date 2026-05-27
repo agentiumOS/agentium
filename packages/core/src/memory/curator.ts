@@ -160,12 +160,11 @@ export class Curator {
     if (options.userId) {
       if (this.stores.userFacts) await this.stores.userFacts.clear(options.userId);
       if (this.stores.userProfile) await this.stores.userProfile.clear(options.userId);
+      // Only this user's entities — never wipe everyone's (#30 in audit).
+      if (this.stores.entityMemory) await this.stores.entityMemory.clear(options.userId);
     }
     if (options.agentName && this.stores.decisionLog) {
       await this.stores.decisionLog.clear(options.agentName);
-    }
-    if (this.stores.entityMemory) {
-      await this.stores.entityMemory.clear();
     }
   }
 }

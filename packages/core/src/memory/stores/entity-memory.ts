@@ -83,22 +83,31 @@ export class EntityMemory {
     this.namespace = config?.namespace ?? "global";
   }
 
-  private ns(): string {
-    return `${NS_PREFIX}:${this.namespace}`;
+  /**
+   * Per-user storage namespace. Entities and their facts are user-scoped so that
+   * Alice's "Acme" facts never leak into Bob's prompt or tool results.
+   * When userId is omitted, the legacy global scope is used (deprecated).
+   */
+  private ns(userId?: string): string {
+    const base = `${NS_PREFIX}:${this.namespace}`;
+    return userId ? `${base}:user:${userId}` : base;
   }
 
-  async getEntity(entityId: string): Promise<Entity | null> {
-    return this.storage.get<Entity>(this.ns(), entityId);
+  async getEntity(userId: string, entityId: string): Promise<Entity | null> {
+    return this.storage.get<Entity>(this.ns(userId), entityId);
   }
 
-  async listEntities(): Promise<Entity[]> {
-    const entries = await this.storage.list<Entity>(this.ns());
+  async listEntities(userId: string): Promise<Entity[]> {
+    const entries = await this.storage.list<Entity>(this.ns(userId));
     return entries.map((e) => e.value);
   }
 
-  async upsertEntity(entity: Partial<Entity> & { name: string; entityType: string }): Promise<Entity> {
+  async upsertEntity(
+    userId: string,
+    entity: Partial<Entity> & { name: string; entityType: string },
+  ): Promise<Entity> {
     const entityId = entity.entityId ?? entity.name.toLowerCase().replace(/\s+/g, "_");
-    const existing = await this.getEntity(entityId);
+    const existing = await this.getEntity(userId, entityId);
 
     const dedup = (arr: any[], key: string, max: number) => {
       const seen = new Set<string>();
@@ -126,43 +135,44 @@ export class EntityMemory {
       updatedAt: new Date(),
     };
 
-    await this.storage.set(this.ns(), entityId, updated);
+    await this.storage.set(this.ns(userId), entityId, updated);
     return updated;
   }
 
-  async addFact(entityId: string, fact: string): Promise<void> {
-    const entity = await this.getEntity(entityId);
+  async addFact(userId: string, entityId: string, fact: string): Promise<void> {
+    const entity = await this.getEntity(userId, entityId);
     if (!entity) return;
 
     const now = new Date();
     entity.facts.push({ id: uuidv4(), fact, validFrom: now, createdAt: now });
     entity.updatedAt = now;
-    await this.storage.set(this.ns(), entityId, entity);
+    await this.storage.set(this.ns(userId), entityId, entity);
   }
 
-  async addEvent(entityId: string, event: string, date?: string): Promise<void> {
-    const entity = await this.getEntity(entityId);
+  async addEvent(userId: string, entityId: string, event: string, date?: string): Promise<void> {
+    const entity = await this.getEntity(userId, entityId);
     if (!entity) return;
 
     const now = new Date();
     entity.events.push({ id: uuidv4(), event, date, validFrom: now, createdAt: now });
     entity.updatedAt = new Date();
-    await this.storage.set(this.ns(), entityId, entity);
+    await this.storage.set(this.ns(userId), entityId, entity);
   }
 
-  async deleteEntity(entityId: string): Promise<void> {
-    await this.storage.delete(this.ns(), entityId);
+  async deleteEntity(userId: string, entityId: string): Promise<void> {
+    await this.storage.delete(this.ns(userId), entityId);
   }
 
-  async clear(): Promise<void> {
-    const entities = await this.listEntities();
+  async clear(userId: string): Promise<void> {
+    const entities = await this.listEntities(userId);
     for (const entity of entities) {
-      await this.storage.delete(this.ns(), entity.entityId);
+      await this.storage.delete(this.ns(userId), entity.entityId);
     }
   }
 
-  async getContextString(currentInput?: string): Promise<string> {
-    const entities = await this.listEntities();
+  async getContextString(userId: string | undefined, currentInput?: string): Promise<string> {
+    if (!userId) return "";
+    const entities = await this.listEntities(userId);
     if (entities.length === 0) return "";
 
     let relevant = entities;
@@ -204,8 +214,9 @@ export class EntityMemory {
           query: z.string().optional().describe("Search term"),
           entityType: z.string().optional().describe("Filter by type: company, person, project, product"),
         }),
-        execute: async (args) => {
-          let entities = await this.listEntities();
+        execute: async (args, ctx) => {
+          if (!ctx.userId) return "No user identified for this session.";
+          let entities = await this.listEntities(ctx.userId);
           if (args.entityType) {
             entities = entities.filter((e) => e.entityType === args.entityType);
           }
@@ -233,8 +244,9 @@ export class EntityMemory {
           description: z.string().optional().describe("Brief description"),
           facts: z.array(z.string()).optional().describe("Facts about this entity"),
         }),
-        execute: async (args) => {
-          const entity = await this.upsertEntity({
+        execute: async (args, ctx) => {
+          if (!ctx.userId) return "No user identified for this session.";
+          const entity = await this.upsertEntity(ctx.userId, {
             name: args.name as string,
             entityType: args.entityType as string,
             description: args.description as string | undefined,
@@ -251,12 +263,13 @@ export class EntityMemory {
     ];
   }
 
-  async extractEntities(messages: ChatMessage[], fallbackModel?: ModelProvider): Promise<void> {
+  async extractEntities(userId: string | undefined, messages: ChatMessage[], fallbackModel?: ModelProvider): Promise<void> {
+    if (!userId) return;
     const model = this.model ?? fallbackModel;
     if (!model) return;
 
     try {
-      const existing = await this.listEntities();
+      const existing = await this.listEntities(userId);
       const knownStr = existing.length > 0 ? existing.map((e) => `- ${e.name} (${e.entityType})`).join("\n") : "(none)";
 
       const conversationStr = messages
@@ -287,7 +300,7 @@ export class EntityMemory {
         for (const item of parsed) {
           if (!item?.name || !item?.entityType) continue;
 
-          await this.upsertEntity({
+          await this.upsertEntity(userId, {
             name: item.name,
             entityType: item.entityType,
             facts: (item.facts ?? []).map((f: string) => ({
