@@ -1,6 +1,6 @@
 {
   "name": "@agentium/queue",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Background job processing for Agentium agents using BullMQ",
   "license": "MIT",
   "repository": {
@@ -42,7 +42,7 @@
     "typescript": "^5.6.0"
   },
   "peerDependencies": {
-    "@agentium/core": "^2.3.0",
+    "@agentium/core": "^2.3.1",
     "bullmq": "^5.0.0",
     "ioredis": "^5.0.0"
   },
