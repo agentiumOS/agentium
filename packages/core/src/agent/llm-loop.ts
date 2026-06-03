@@ -292,8 +292,11 @@ export class LLMLoop {
             const jsonStr = this.extractJson(text);
             const parsed = JSON.parse(jsonStr);
             output.structured = this.structuredOutput.parse(parsed);
-          } catch {
+          } catch (e) {
             // structured parsing failed, raw text is still available
+            this.logger?.warn?.(
+              `Structured output parsing failed, falling back to raw text: ${(e as Error)?.message}`,
+            );
           }
         }
 
