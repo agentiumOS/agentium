@@ -17,6 +17,12 @@ export interface AgentMetrics {
   toolUsageFrequency: Record<string, number>;
   errorRate: number;
   tokensPerRun: number;
+  /** Total human corrections recorded against this agent's output. */
+  correctionsTotal: number;
+  /** Corrections per run — the inverse of first-pass accuracy. */
+  correctionRate: number;
+  /** Average self-critique score (0-1) from reflection, if enabled. */
+  avgCritiqueScore?: number;
   /** Estimated total KV cache memory (GB) across all sessions. Requires capacity module. */
   estimatedKvCacheGb?: number;
   /** Average context length (tokens) per run. */
@@ -59,6 +65,8 @@ export class MetricsExporter {
   private maxRecords = 50_000;
   private sessionCategories: Record<string, number> = {};
   private estimatedKvCacheGb?: number;
+  private corrections: Record<string, number> = {};
+  private critiqueScores: Record<string, number[]> = {};
 
   attach(eventBus: EventBus): void {
     const on = (event: string, handler: (data: any) => void) => {
@@ -159,6 +167,22 @@ export class MetricsExporter {
         this.estimatedKvCacheGb = data.estimatedKvGb;
       }
     });
+
+    on("memory.correction.recorded", (data: { correctionId: string; agentName: string; entityKey?: string }) => {
+      this.corrections[data.agentName] = (this.corrections[data.agentName] ?? 0) + 1;
+      this.emit({
+        type: "correction.recorded",
+        agentName: data.agentName,
+        timestamp: Date.now(),
+        data: { correctionId: data.correctionId, entityKey: data.entityKey },
+      });
+    });
+
+    on("reflection.critique", (data: { runId: string; pass: boolean; score: number }) => {
+      const agentName = this.runStartTimes.get(data.runId)?.agentName ?? "unknown";
+      if (!this.critiqueScores[agentName]) this.critiqueScores[agentName] = [];
+      this.critiqueScores[agentName].push(data.score);
+    });
   }
 
   detach(eventBus: EventBus): void {
@@ -216,6 +240,13 @@ export class MetricsExporter {
 
     const avgContextLength = successful.length > 0 ? Math.round(promptTokens / successful.length) : 0;
 
+    const correctionsTotal = agentName
+      ? (this.corrections[agentName] ?? 0)
+      : Object.values(this.corrections).reduce((s, c) => s + c, 0);
+
+    const scores = agentName ? (this.critiqueScores[agentName] ?? []) : Object.values(this.critiqueScores).flat();
+    const avgCritiqueScore = scores.length > 0 ? scores.reduce((s, v) => s + v, 0) / scores.length : undefined;
+
     return {
       runs: totalRuns,
       errors,
@@ -233,6 +264,9 @@ export class MetricsExporter {
       toolUsageFrequency: toolFreq,
       errorRate: totalRuns > 0 ? errors / totalRuns : 0,
       tokensPerRun: successful.length > 0 ? Math.round(totalTokens / successful.length) : 0,
+      correctionsTotal,
+      correctionRate: totalRuns > 0 ? correctionsTotal / totalRuns : 0,
+      avgCritiqueScore,
       avgContextLength,
       sessionCategories: this.sessionCategories,
       estimatedKvCacheGb: this.estimatedKvCacheGb,
@@ -241,7 +275,7 @@ export class MetricsExporter {
 
   toPrometheus(): string {
     const lines: string[] = [];
-    const allAgents = new Set(this.runs.map((r) => r.agentName));
+    const allAgents = new Set([...this.runs.map((r) => r.agentName), ...Object.keys(this.corrections)]);
 
     lines.push("# HELP agentium_agent_runs_total Total agent runs");
     lines.push("# TYPE agentium_agent_runs_total counter");
@@ -292,6 +326,30 @@ export class MetricsExporter {
       lines.push(`agentium_agent_tool_calls_total{agent="${agent}"} ${m.toolCallCount}`);
     }
 
+    lines.push("# HELP agentium_agent_corrections_total Total human corrections recorded");
+    lines.push("# TYPE agentium_agent_corrections_total counter");
+    for (const agent of allAgents) {
+      const m = this.getMetrics(agent);
+      lines.push(`agentium_agent_corrections_total{agent="${agent}"} ${m.correctionsTotal}`);
+    }
+
+    lines.push("# HELP agentium_agent_correction_rate Corrections per run (inverse of first-pass accuracy)");
+    lines.push("# TYPE agentium_agent_correction_rate gauge");
+    for (const agent of allAgents) {
+      const m = this.getMetrics(agent);
+      lines.push(`agentium_agent_correction_rate{agent="${agent}"} ${m.correctionRate}`);
+    }
+
+    const agentsWithCritiques = [...allAgents].filter((a) => (this.critiqueScores[a] ?? []).length > 0);
+    if (agentsWithCritiques.length > 0) {
+      lines.push("# HELP agentium_agent_critique_score_avg Average reflection self-critique score (0-1)");
+      lines.push("# TYPE agentium_agent_critique_score_avg gauge");
+      for (const agent of agentsWithCritiques) {
+        const m = this.getMetrics(agent);
+        lines.push(`agentium_agent_critique_score_avg{agent="${agent}"} ${m.avgCritiqueScore}`);
+      }
+    }
+
     if (this.estimatedKvCacheGb !== undefined) {
       lines.push("# HELP agentium_kv_cache_estimated_gb Estimated KV cache size in GB");
       lines.push("# TYPE agentium_kv_cache_estimated_gb gauge");
@@ -316,7 +374,7 @@ export class MetricsExporter {
   }
 
   toJSON(): object {
-    const allAgents = new Set(this.runs.map((r) => r.agentName));
+    const allAgents = new Set([...this.runs.map((r) => r.agentName), ...Object.keys(this.corrections)]);
     const byAgent: Record<string, AgentMetrics> = {};
     for (const agent of allAgents) {
       byAgent[agent] = this.getMetrics(agent);
@@ -360,5 +418,7 @@ export class MetricsExporter {
     this.toolUsage = {};
     this.runStartTimes.clear();
     this.runToolCounts.clear();
+    this.corrections = {};
+    this.critiqueScores = {};
   }
 }

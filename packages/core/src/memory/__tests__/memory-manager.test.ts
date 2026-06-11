@@ -1,6 +1,16 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { EventBus } from "../../events/event-bus.js";
+import type { EmbeddingProvider } from "../../index.js";
 import { InMemoryStorage } from "../../storage/in-memory.js";
+import { InMemoryVectorStore } from "../../vector/in-memory.js";
 import { MemoryManager } from "../memory-manager.js";
+
+const makeFlatEmbedder = (): EmbeddingProvider => ({
+  dimensions: 3,
+  supportsMultimodal: false,
+  embed: async () => [1, 0, 0],
+  embedBatch: async (texts) => texts.map(() => [1, 0, 0]),
+});
 
 describe("MemoryManager", () => {
   let storage: InMemoryStorage;
@@ -43,6 +53,54 @@ describe("MemoryManager", () => {
   it("disables summaries when set to false", () => {
     const mm = new MemoryManager({ storage, summaries: false });
     expect(mm.getSummaries()).toBeNull();
+  });
+
+  it("enables corrections when configured with a vectorStore", () => {
+    const vectorStore = new InMemoryVectorStore(makeFlatEmbedder());
+    const mm = new MemoryManager({ storage, corrections: { vectorStore } });
+    expect(mm.getCorrectionStore()).not.toBeNull();
+  });
+
+  it("recordCorrection throws when corrections are not enabled", async () => {
+    const mm = new MemoryManager({ storage });
+    await expect(mm.recordCorrection({ agentName: "bot", originalValue: "a", correctedValue: "b" })).rejects.toThrow(
+      "corrections are not enabled",
+    );
+  });
+
+  it("recordCorrection stores, emits an event, and surfaces in buildContext", async () => {
+    const vectorStore = new InMemoryVectorStore(makeFlatEmbedder());
+    const eventBus = new EventBus();
+    const events: unknown[] = [];
+    eventBus.on("memory.correction.recorded", (e) => events.push(e));
+
+    const mm = new MemoryManager({ storage, summaries: false, corrections: { vectorStore }, eventBus });
+
+    const correction = await mm.recordCorrection({
+      agentName: "ap-reconciler",
+      field: "chargeCode",
+      originalValue: "THC",
+      correctedValue: "DTHC",
+      reason: "Vendor X convention",
+      entityKey: "vendor-x",
+    });
+
+    expect(correction.id).toBeTruthy();
+    expect(events).toHaveLength(1);
+    expect((events[0] as any).agentName).toBe("ap-reconciler");
+    expect((events[0] as any).correctionId).toBe(correction.id);
+
+    const ctx = await mm.buildContext("s1", undefined, "reconcile vendor-x invoice", "ap-reconciler");
+    expect(ctx).toContain('<memory section="corrections"');
+    expect(ctx).toContain('"THC" was corrected to "DTHC"');
+  });
+
+  it("exposes correction tools via getTools when enabled", () => {
+    const vectorStore = new InMemoryVectorStore(makeFlatEmbedder());
+    const mm = new MemoryManager({ storage, corrections: { vectorStore } });
+    const names = mm.getTools().map((t) => t.name);
+    expect(names).toContain("record_correction");
+    expect(names).toContain("search_corrections");
   });
 
   it("manages sessions", async () => {

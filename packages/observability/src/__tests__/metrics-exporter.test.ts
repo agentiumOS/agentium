@@ -51,6 +51,58 @@ describe("MetricsExporter", () => {
     expect(metrics.toolUsageFrequency.calculate).toBe(1);
   });
 
+  it("tracks corrections and computes correction rate", () => {
+    bus.emit("run.start", { runId: "r10", agentName: "ap-reconciler", input: "x" });
+    bus.emit("run.complete", {
+      runId: "r10",
+      output: { text: "y", toolCalls: [], usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } },
+    });
+    bus.emit("run.start", { runId: "r11", agentName: "ap-reconciler", input: "x" });
+    bus.emit("run.complete", {
+      runId: "r11",
+      output: { text: "y", toolCalls: [], usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } },
+    });
+    bus.emit("memory.correction.recorded", {
+      correctionId: "c1",
+      agentName: "ap-reconciler",
+      entityKey: "vendor-x",
+    });
+
+    const metrics = exporter.getMetrics("ap-reconciler");
+    expect(metrics.correctionsTotal).toBe(1);
+    expect(metrics.correctionRate).toBe(0.5);
+  });
+
+  it("tracks reflection critique scores per agent", () => {
+    bus.emit("run.start", { runId: "r12", agentName: "bot", input: "x" });
+    bus.emit("reflection.critique", { runId: "r12", pass: true, score: 0.8, feedback: "good" });
+    bus.emit("reflection.critique", { runId: "r12", pass: false, score: 0.4, feedback: "meh" });
+    bus.emit("run.complete", {
+      runId: "r12",
+      output: { text: "y", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } },
+    });
+
+    const metrics = exporter.getMetrics("bot");
+    expect(metrics.avgCritiqueScore).toBeCloseTo(0.6);
+  });
+
+  it("exposes corrections in Prometheus output even without runs", () => {
+    bus.emit("memory.correction.recorded", { correctionId: "c2", agentName: "offline-agent" });
+
+    const prom = exporter.toPrometheus();
+    expect(prom).toContain('agentium_agent_corrections_total{agent="offline-agent"} 1');
+    expect(prom).toContain("agentium_agent_correction_rate");
+  });
+
+  it("emits correction.recorded metric events to stream subscribers", async () => {
+    const iterator = exporter.stream()[Symbol.asyncIterator]();
+    const next = iterator.next();
+    bus.emit("memory.correction.recorded", { correctionId: "c3", agentName: "bot" });
+    const { value } = await next;
+    expect(value.type).toBe("correction.recorded");
+    expect(value.agentName).toBe("bot");
+  });
+
   it("produces Prometheus format", () => {
     bus.emit("run.start", { runId: "r4", agentName: "my-agent", input: "test" });
     bus.emit("run.complete", {

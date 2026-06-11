@@ -278,8 +278,8 @@ export class GraphMemory {
         }),
         execute: async (args, ctx) => {
           if (!ctx.userId) return "No user identified for this session.";
-          const src = (args.sourceId as string);
-          const tgt = (args.targetId as string);
+          const src = args.sourceId as string;
+          const tgt = args.targetId as string;
           const scopedSrc = src.startsWith(`${ctx.userId}:`) ? src : `${ctx.userId}:${src}`;
           const scopedTgt = tgt.startsWith(`${ctx.userId}:`) ? tgt : `${ctx.userId}:${tgt}`;
           const edge = await this.graphStore.addEdge({

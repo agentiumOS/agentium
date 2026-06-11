@@ -1,4 +1,4 @@
-import type { Agent, Registry, Servable, Team, ToolDef, Toolkit, Workflow } from "@agentium/core";
+import type { Agent, Registry, Servable, ServableAgent, Team, ToolDef, Toolkit, Workflow } from "@agentium/core";
 import type { FileUploadOptions } from "./file-upload.js";
 import type { MCPManager } from "./mcp-manager.js";
 
@@ -40,7 +40,7 @@ export interface RouterOptions {
    * Each item is classified by its `.kind` and keyed by `.name`.
    */
   serve?: Servable[];
-  agents?: Record<string, Agent>;
+  agents?: Record<string, Agent | ServableAgent>;
   teams?: Record<string, Team>;
   workflows?: Record<string, Workflow<any>>;
   middleware?: any[];

@@ -188,6 +188,11 @@ export class Agent {
     return this.memoryManager;
   }
 
+  /** Access the CheckpointManager (if checkpointing is configured). */
+  get checkpointManager() {
+    return (this.config as any)._checkpointManager ?? null;
+  }
+
   constructor(config: AgentConfig) {
     this.config = config;
     this.name = config.name;

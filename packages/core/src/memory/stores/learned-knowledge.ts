@@ -141,10 +141,7 @@ export class LearnedKnowledge {
    * Pre-v2.3 data without a `scope` field is treated as user-scoped
    * (the safe default).
    */
-  private canSee(
-    learning: Learning,
-    caller: { userId?: string; agentName?: string; tenantId?: string },
-  ): boolean {
+  private canSee(learning: Learning, caller: { userId?: string; agentName?: string; tenantId?: string }): boolean {
     const scope: LearningScope = learning.scope ?? "user";
     if (scope === "global") return true;
     if (scope === "tenant") return !!caller.tenantId && caller.tenantId === learning.tenantId;
@@ -291,9 +288,7 @@ export class LearnedKnowledge {
             tenantId,
           });
           if (results.length === 0) return "No matching learnings found.";
-          return results
-            .map((l) => `[${l.id}] [${l.scope ?? "user"}] ${l.title}: ${l.content}`)
-            .join("\n\n");
+          return results.map((l) => `[${l.id}] [${l.scope ?? "user"}] ${l.title}: ${l.content}`).join("\n\n");
         },
       },
     ];

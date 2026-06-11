@@ -96,7 +96,12 @@ export class Summaries {
     // with the current input. Avoids forever re-injecting stale session-start
     // material on long conversations.
     const tokens = currentInput
-      ? new Set(currentInput.toLowerCase().split(/\W+/).filter((t) => t.length > 3))
+      ? new Set(
+          currentInput
+            .toLowerCase()
+            .split(/\W+/)
+            .filter((t) => t.length > 3),
+        )
       : new Set<string>();
     const scored = summaries.map((s, i) => {
       const overlap = tokens.size > 0 ? Array.from(tokens).filter((t) => s.toLowerCase().includes(t)).length : 0;

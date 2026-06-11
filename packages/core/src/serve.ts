@@ -1,11 +1,48 @@
 import type { Agent } from "./agent/agent.js";
+import type { RunOpts, RunOutput } from "./agent/types.js";
+import type { EventBus } from "./events/event-bus.js";
+import type { MessageContent, StreamChunk } from "./models/types.js";
 import type { Team } from "./team/team.js";
 import type { Workflow } from "./workflow/workflow.js";
 
-export type Servable = Agent | Team | Workflow<any>;
+/**
+ * The minimal contract an agent must satisfy to be served by Agentium's
+ * runtime (registry, Express/Socket.IO gateways, queue workers, observability).
+ *
+ * The first-party `Agent` class satisfies this structurally, but so can any
+ * external implementation — a LangGraph graph, a Claude Agent SDK agent, or
+ * plain custom code. Use `defineExternalAgent()` for a convenient way to wrap
+ * custom run logic into this shape.
+ *
+ * Optional metadata fields light up extra runtime features when present
+ * (provider-specific API key routing, swagger docs, approval endpoints,
+ * checkpoint endpoints, correction capture).
+ */
+export interface ServableAgent {
+  readonly kind: "agent";
+  readonly name: string;
+  run(input: MessageContent, opts?: RunOpts): Promise<RunOutput>;
+  stream(input: MessageContent, opts?: RunOpts): AsyncIterable<StreamChunk>;
+  /** Event bus for observability (tracing, metrics, approval streams). */
+  readonly eventBus?: EventBus;
+  readonly modelId?: string;
+  readonly providerId?: string;
+  readonly tools?: ReadonlyArray<{ name: string; description?: string }>;
+  readonly instructions?: unknown;
+  readonly hasStructuredOutput?: boolean;
+  readonly structuredOutputSchema?: unknown;
+  /** MemoryManager (or compatible) — enables the corrections endpoint. */
+  readonly memory?: unknown;
+  /** HITL approval manager — enables the approval endpoints. */
+  readonly approvalManager?: unknown;
+  /** Checkpoint manager — enables the checkpoint endpoints. */
+  readonly checkpointManager?: unknown;
+}
+
+export type Servable = Agent | ServableAgent | Team | Workflow<any>;
 
 export interface ClassifiedServables {
-  agents: Record<string, Agent>;
+  agents: Record<string, ServableAgent>;
   teams: Record<string, Team>;
   workflows: Record<string, Workflow<any>>;
 }
@@ -31,7 +68,7 @@ export interface ClassifiedServables {
  * ```
  */
 export class Registry {
-  readonly agents = new Map<string, Agent>();
+  readonly agents = new Map<string, ServableAgent>();
   readonly teams = new Map<string, Team>();
   readonly workflows = new Map<string, Workflow<any>>();
 
@@ -45,7 +82,7 @@ export class Registry {
 
     switch (kind) {
       case "agent":
-        this.agents.set(name, item as Agent);
+        this.agents.set(name, item as ServableAgent);
         break;
       case "team":
         this.teams.set(name, item as Team);
@@ -74,7 +111,7 @@ export class Registry {
     }
   }
 
-  getAgent(name: string): Agent | undefined {
+  getAgent(name: string): ServableAgent | undefined {
     return this.agents.get(name);
   }
 
@@ -151,7 +188,7 @@ export class Registry {
     return [...this.agents.keys()].map((name) => this.getAgentCard(name)).filter(Boolean) as object[];
   }
 
-  private extractDescription(agent: Agent): string | undefined {
+  private extractDescription(agent: ServableAgent): string | undefined {
     const instructions = (agent as any).instructions;
     if (!instructions) return undefined;
     const text = typeof instructions === "function" ? undefined : instructions;
@@ -160,7 +197,7 @@ export class Registry {
     return firstSentence || undefined;
   }
 
-  private detectCapabilities(agent: Agent): string[] {
+  private detectCapabilities(agent: ServableAgent): string[] {
     const caps: string[] = [];
     if ((agent as any).memory) caps.push("memory");
     if (((agent as any).tools ?? []).length > 0) caps.push("tools");
@@ -208,7 +245,7 @@ export function classifyServables(items: Servable[]): ClassifiedServables {
 
     switch (kind) {
       case "agent":
-        result.agents[name] = item as Agent;
+        result.agents[name] = item as ServableAgent;
         break;
       case "team":
         result.teams[name] = item as Team;

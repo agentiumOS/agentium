@@ -55,6 +55,95 @@ describe("createAgentRouter", () => {
     const postPaths = (router.post as any).mock.calls.map(([path]: any) => path);
     expect(postPaths).toContain("/agents/bot/run");
     expect(postPaths).toContain("/agents/bot/stream");
+    expect(postPaths).toContain("/agents/bot/corrections");
+  });
+
+  describe("corrections endpoint", () => {
+    function makeRes() {
+      const res: any = {
+        statusCode: 200,
+        body: undefined,
+        status: vi.fn().mockImplementation((code: number) => {
+          res.statusCode = code;
+          return res;
+        }),
+        json: vi.fn().mockImplementation((payload: unknown) => {
+          res.body = payload;
+          return res;
+        }),
+      };
+      return res;
+    }
+
+    function getCorrectionsHandler(router: any): (req: any, res: any) => Promise<void> {
+      const call = router.post.mock.calls.find(([path]: any) => path === "/agents/bot/corrections");
+      return call[call.length - 1];
+    }
+
+    it("returns 404 when corrections are not enabled on the agent", async () => {
+      const fakeAgent = { providerId: "test", run: vi.fn(), stream: vi.fn(), memory: null };
+      const router = createAgentRouter({ agents: { bot: fakeAgent as any }, registry: false });
+
+      const res = makeRes();
+      await getCorrectionsHandler(router)({ body: { originalValue: "a", correctedValue: "b" }, headers: {} }, res);
+
+      expect(res.statusCode).toBe(404);
+      expect(res.body.error).toContain("not enabled");
+    });
+
+    it("records a correction and returns 201", async () => {
+      const recordCorrection = vi.fn().mockResolvedValue({ id: "c1", originalValue: "a", correctedValue: "b" });
+      const fakeAgent = {
+        providerId: "test",
+        run: vi.fn(),
+        stream: vi.fn(),
+        memory: { getCorrectionStore: () => ({}), recordCorrection },
+      };
+      const router = createAgentRouter({ agents: { bot: fakeAgent as any }, registry: false });
+
+      const res = makeRes();
+      await getCorrectionsHandler(router)(
+        {
+          body: {
+            originalValue: "THC",
+            correctedValue: "DTHC",
+            field: "chargeCode",
+            entityKey: "vendor-x",
+            reason: "vendor convention",
+          },
+          headers: {},
+        },
+        res,
+      );
+
+      expect(res.statusCode).toBe(201);
+      expect(res.body.id).toBe("c1");
+      expect(recordCorrection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentName: "bot",
+          originalValue: "THC",
+          correctedValue: "DTHC",
+          field: "chargeCode",
+          entityKey: "vendor-x",
+        }),
+      );
+    });
+
+    it("returns 400 when required fields are missing", async () => {
+      const fakeAgent = {
+        providerId: "test",
+        run: vi.fn(),
+        stream: vi.fn(),
+        memory: { getCorrectionStore: () => ({}), recordCorrection: vi.fn() },
+      };
+      const router = createAgentRouter({ agents: { bot: fakeAgent as any }, registry: false });
+
+      const res = makeRes();
+      await getCorrectionsHandler(router)({ body: { originalValue: "only-one" }, headers: {} }, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error).toContain("correctedValue");
+    });
   });
 
   it("creates routes for teams", () => {

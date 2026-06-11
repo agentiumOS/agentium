@@ -87,11 +87,7 @@ export class ProcedureMemory {
    * scope, the procedures saved against their current agent, and the tenant's
    * shared procedures.
    */
-  async getProcedures(caller?: {
-    userId?: string;
-    agentName?: string;
-    tenantId?: string;
-  }): Promise<Procedure[]> {
+  async getProcedures(caller?: { userId?: string; agentName?: string; tenantId?: string }): Promise<Procedure[]> {
     if (!caller) {
       // Legacy path used only by the curator for global maintenance reads.
       const entries = await this.storage.list<Procedure>(NS);
@@ -123,15 +119,16 @@ export class ProcedureMemory {
    * Save a procedure at the chosen scope. The caller is responsible for
    * supplying the right owner identifier for that scope.
    */
-  async saveProcedure(
-    proc: Omit<Procedure, "id" | "createdAt" | "successCount" | "lastUsed">,
-  ): Promise<Procedure> {
+  async saveProcedure(proc: Omit<Procedure, "id" | "createdAt" | "successCount" | "lastUsed">): Promise<Procedure> {
     const scope: ProcedureScope = proc.scope ?? "user";
     const owner =
-      scope === "user" ? proc.userId
-      : scope === "agent" ? proc.agentName
-      : scope === "tenant" ? proc.tenantId
-      : undefined;
+      scope === "user"
+        ? proc.userId
+        : scope === "agent"
+          ? proc.agentName
+          : scope === "tenant"
+            ? proc.tenantId
+            : undefined;
     if (scope !== "global" && !owner) {
       throw new Error(`ProcedureMemory.saveProcedure: scope=${scope} requires the matching owner field.`);
     }

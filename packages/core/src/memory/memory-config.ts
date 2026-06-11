@@ -41,6 +41,15 @@ export interface LearningsConfig {
   topK?: number;
 }
 
+export interface CorrectionsConfig {
+  /** Vector store for semantic search over past corrections. Required. */
+  vectorStore: VectorStore;
+  /** Collection name in the vector store. Default: "agentium_corrections" */
+  collection?: string;
+  /** Number of relevant corrections to inject into context. Default: 3 */
+  topK?: number;
+}
+
 export interface GraphMemoryConfig {
   /** Graph store backend for knowledge graph. */
   store: GraphStore;
@@ -109,6 +118,13 @@ export interface UnifiedMemoryConfig {
    * OFF by default. Pass a config with a vectorStore to enable.
    */
   learnings?: LearningsConfig;
+
+  /**
+   * Correction capture — structured records of humans correcting agent
+   * output, embedded and retrieved at inference time so mistakes are not
+   * repeated. OFF by default. Pass a config with a vectorStore to enable.
+   */
+  corrections?: CorrectionsConfig;
 
   /**
    * Knowledge graph — entity-relationship graph with traversal and temporal awareness.

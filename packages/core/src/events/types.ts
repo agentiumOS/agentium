@@ -59,6 +59,13 @@ export type AgentEventMap = {
   "memory.procedure.recorded": { trigger: string; stepCount: number };
   "memory.context.built": { sessionId: string; totalTokens: number; sections: Record<string, number> };
   "memory.recall": { query: string; resultCount: number; topScore: number };
+  "memory.correction.recorded": {
+    correctionId: string;
+    agentName: string;
+    field?: string;
+    entityKey?: string;
+    runId?: string;
+  };
 
   // Skill events
   "skill.loaded": { skillName: string; source: string };

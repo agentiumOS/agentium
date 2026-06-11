@@ -177,7 +177,12 @@ export class UserFacts {
       const existing = await this.getFacts(userId);
       // Canonicalise: lowercase + collapse whitespace + strip terminal punctuation
       // so trivial drift ("User loves coffee" vs "User loves coffee.") doesn't dupe.
-      const canon = (s: string) => s.toLowerCase().trim().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
+      const canon = (s: string) =>
+        s
+          .toLowerCase()
+          .trim()
+          .replace(/\s+/g, " ")
+          .replace(/[.!?]+$/, "");
       const activeMap = new Map<string, UserFact>();
       const invalidatedMap = new Map<string, UserFact>();
       for (const ex of existing) {
@@ -308,9 +313,7 @@ export class UserFacts {
     const active = all.filter((f) => !f.invalidatedAt);
     const invalidated = all.filter((f) => f.invalidatedAt);
 
-    const activeSubjects = new Set(
-      active.map((f) => (f.subject ?? "").toLowerCase().trim()).filter(Boolean),
-    );
+    const activeSubjects = new Set(active.map((f) => (f.subject ?? "").toLowerCase().trim()).filter(Boolean));
 
     const userForgotten = invalidated.filter((f) => {
       if (f.invalidationReason === "superseded") return false;
@@ -404,8 +407,7 @@ export class UserFacts {
       const active = existing.filter((f) => !f.invalidatedAt);
       // Strip the [subject=…] prefix from existing-facts listing — the LLM was
       // copying it verbatim into "supersedes" and breaking matches.
-      const existingStr =
-        active.length > 0 ? active.map((f) => `- ${f.fact}`).join("\n") : "(none)";
+      const existingStr = active.length > 0 ? active.map((f) => `- ${f.fact}`).join("\n") : "(none)";
 
       const conversationStr = messages
         .filter((m) => m.role === "user" || m.role === "assistant")
@@ -503,8 +505,12 @@ function parseExtractionResponse(text: string): {
 function todayInTimezone(timezone?: string): string {
   if (!timezone) return new Date().toISOString().slice(0, 10);
   try {
-    return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" })
-      .format(new Date());
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
   } catch {
     return new Date().toISOString().slice(0, 10);
   }

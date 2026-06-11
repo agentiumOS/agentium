@@ -40,24 +40,15 @@ describe("ProcedureMemory — scope hierarchy", () => {
 
   it("agent procedure is visible to ANY user of that agent", async () => {
     await pm.saveProcedure({ ...baseProc, scope: "agent", agentName: "invoice-recon" });
-    const alice = await pm.suggestProcedure(
-      { userId: "alice", agentName: "invoice-recon" },
-      "invoice reconciliation",
-    );
-    const bob = await pm.suggestProcedure(
-      { userId: "bob", agentName: "invoice-recon" },
-      "invoice reconciliation",
-    );
+    const alice = await pm.suggestProcedure({ userId: "alice", agentName: "invoice-recon" }, "invoice reconciliation");
+    const bob = await pm.suggestProcedure({ userId: "bob", agentName: "invoice-recon" }, "invoice reconciliation");
     expect(alice?.scope).toBe("agent");
     expect(bob?.scope).toBe("agent");
   });
 
   it("agent procedure is INVISIBLE to a different agent", async () => {
     await pm.saveProcedure({ ...baseProc, scope: "agent", agentName: "invoice-recon" });
-    const hr = await pm.suggestProcedure(
-      { userId: "alice", agentName: "hr-agent" },
-      "invoice reconciliation",
-    );
+    const hr = await pm.suggestProcedure({ userId: "alice", agentName: "hr-agent" }, "invoice reconciliation");
     expect(hr).toBeNull();
   });
 

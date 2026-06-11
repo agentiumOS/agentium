@@ -1,4 +1,4 @@
-import type { Agent, Registry, Servable, Team, ToolDef, Toolkit } from "@agentium/core";
+import type { Agent, Registry, Servable, ServableAgent, Team, ToolDef, Toolkit } from "@agentium/core";
 
 export interface GatewayOptions {
   /**
@@ -19,7 +19,7 @@ export interface GatewayOptions {
    * Each item is classified by its `.kind` and keyed by `.name`.
    */
   serve?: Servable[];
-  agents?: Record<string, Agent>;
+  agents?: Record<string, Agent | ServableAgent>;
   teams?: Record<string, Team>;
   io: any;
   namespace?: string;

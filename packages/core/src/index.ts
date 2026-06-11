@@ -66,6 +66,8 @@ export {
   type ComputerUseRunOutput,
 } from "./agent/computer-use-agent.js";
 export { DrainController, RunCancelledError, RunDrainedError } from "./agent/errors.js";
+export type { ExternalAgentConfig } from "./agent/external-agent.js";
+export { defineExternalAgent } from "./agent/external-agent.js";
 // Utils
 export { AgentFactory, type FactoryContext, TeamFactory, WorkflowFactory } from "./agent/factory.js";
 export { LLMLoop } from "./agent/llm-loop.js";
@@ -193,6 +195,7 @@ export { Memory } from "./memory/memory.js";
 // Memory — Unified
 export type {
   ContextBudgetConfig,
+  CorrectionsConfig,
   DecisionConfig,
   EntityConfig,
   GraphMemoryConfig as GraphMemoryFeatureConfig,
@@ -211,6 +214,8 @@ export { isAncestor, resolveScope, scopeMatches } from "./memory/scopes.js";
 export type { ScoredMemory, ScoringWeights } from "./memory/scoring.js";
 export { computeCompositeScore, recencyDecay } from "./memory/scoring.js";
 // Memory — Stores
+export type { Correction, CorrectionStats } from "./memory/stores/correction-store.js";
+export { CorrectionStore } from "./memory/stores/correction-store.js";
 export type { Decision } from "./memory/stores/decision-log.js";
 export { DecisionLog } from "./memory/stores/decision-log.js";
 export type { Entity, EntityEvent, EntityFact, EntityRelationship } from "./memory/stores/entity-memory.js";
@@ -314,7 +319,7 @@ export { VoyageReranker } from "./rerank/providers/voyage.js";
 export type { RerankDocument, Reranker, RerankOptions, RerankResult } from "./rerank/types.js";
 export type { CloudSandbox, SandboxRunOptions, SandboxRunResult } from "./sandbox/types.js";
 // ── Auto-discovery / Registry ─────────────────────────────────────────────
-export type { Servable } from "./serve.js";
+export type { Servable, ServableAgent } from "./serve.js";
 export { classifyServables, Registry, registry } from "./serve.js";
 export {
   type IncrementalSessionConfig,

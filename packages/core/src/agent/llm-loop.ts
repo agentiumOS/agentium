@@ -294,9 +294,7 @@ export class LLMLoop {
             output.structured = this.structuredOutput.parse(parsed);
           } catch (e) {
             // structured parsing failed, raw text is still available
-            this.logger?.warn?.(
-              `Structured output parsing failed, falling back to raw text: ${(e as Error)?.message}`,
-            );
+            this.logger?.warn?.(`Structured output parsing failed, falling back to raw text: ${(e as Error)?.message}`);
           }
         }
 

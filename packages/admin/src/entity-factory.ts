@@ -100,7 +100,9 @@ export class EntityFactory {
         const available = registry.list().agents.join(", ") || "(none)";
         throw new Error(`Agent "${name}" not found in registry. Available agents: ${available}`);
       }
-      members.push(agent);
+      // Registry holds ServableAgents; blueprint-created members are always
+      // concrete Agent instances, so this narrowing is safe here.
+      members.push(agent as Agent);
     }
     return members;
   }

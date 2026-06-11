@@ -156,6 +156,27 @@ const SCHEMAS = {
       userId: { type: "string" },
     },
   },
+  CorrectionRequest: {
+    type: "object",
+    required: ["originalValue", "correctedValue"],
+    properties: {
+      originalValue: { type: "string", description: "What the agent produced (the wrong value)" },
+      correctedValue: { type: "string", description: "What it should have been" },
+      field: { type: "string", description: "The specific field/aspect corrected" },
+      reason: { type: "string", description: "Why the correction applies" },
+      entityKey: { type: "string", description: "Real-world entity this applies to, e.g. a vendor ID" },
+      runId: { type: "string", description: "Run that produced the corrected output" },
+      sessionId: { type: "string" },
+      userId: { type: "string" },
+      tenantId: { type: "string" },
+      scope: {
+        type: "string",
+        enum: ["user", "agent", "tenant", "global"],
+        description: "Visibility scope (default: agent)",
+      },
+      tags: { type: "array", items: { type: "string" } },
+    },
+  },
 };
 
 function buildAgentDescription(agent: any): string {
@@ -374,6 +395,47 @@ export function generateOpenAPISpec(routerOpts: RouterOptions, swaggerOpts: Swag
             },
             "400": {
               description: "Bad request",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/Error" },
+                },
+              },
+            },
+          },
+        },
+      };
+
+      spec.paths[`${prefix}/agents/${name}/corrections`] = {
+        post: {
+          tags: ["Agents"],
+          summary: `Record a correction for agent: ${name}`,
+          description:
+            `Record a human correction of agent **${name}**'s output. The correction is stored as ` +
+            "vectorized knowledge and retrieved on future relevant runs so the mistake is not repeated. " +
+            "Requires the agent to have `memory.corrections` configured.",
+          operationId: `recordCorrection_${name}`,
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/CorrectionRequest" },
+              },
+            },
+          },
+          responses: {
+            "201": {
+              description: "Correction recorded",
+            },
+            "400": {
+              description: "Bad request",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/Error" },
+                },
+              },
+            },
+            "404": {
+              description: "Corrections not enabled for this agent",
               content: {
                 "application/json": {
                   schema: { $ref: "#/components/schemas/Error" },

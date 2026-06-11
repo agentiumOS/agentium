@@ -266,6 +266,49 @@ export function createAgentRouter(opts: RouterOptions) {
           }
         }
       });
+
+      router.post(`/agents/${name}/corrections`, async (req: any, res: any) => {
+        try {
+          const memory = (agent as any).memory;
+          if (!memory || !memory.getCorrectionStore?.()) {
+            return res.status(404).json({
+              error: `Corrections are not enabled for agent "${name}". Configure memory.corrections with a vectorStore.`,
+            });
+          }
+
+          const validated = validateBody(req.body, {
+            originalValue: "string",
+            correctedValue: "string",
+            field: "string?",
+            reason: "string?",
+            entityKey: "string?",
+            runId: "string?",
+            sessionId: "string?",
+            userId: "string?",
+            tenantId: "string?",
+            scope: "string?",
+          });
+
+          const correction = await memory.recordCorrection({
+            agentName: name,
+            runId: validated.runId,
+            sessionId: validated.sessionId,
+            field: validated.field,
+            originalValue: validated.originalValue,
+            correctedValue: validated.correctedValue,
+            reason: validated.reason,
+            entityKey: validated.entityKey,
+            tags: Array.isArray(req.body?.tags) ? req.body.tags : undefined,
+            scope: validated.scope,
+            userId: validated.userId,
+            tenantId: validated.tenantId,
+          });
+
+          res.status(201).json(correction);
+        } catch (error: any) {
+          res.status(400).json({ error: error.message });
+        }
+      });
     }
   }
 
@@ -538,8 +581,7 @@ export function createAgentRouter(opts: RouterOptions) {
     router.get("/agents/:name/checkpoints", async (req: any, res: any) => {
       const agent = reg.getAgent(req.params.name);
       if (!agent) return res.status(404).json({ error: `Agent "${req.params.name}" not found` });
-      const config = (agent as any).config;
-      const checkpointMgr = config?._checkpointManager;
+      const checkpointMgr = (agent as any).checkpointManager ?? (agent as any).config?._checkpointManager;
       if (!checkpointMgr) return res.json([]);
       const runId = req.query.runId as string;
       if (!runId) return res.status(400).json({ error: "runId query param required" });
@@ -554,8 +596,7 @@ export function createAgentRouter(opts: RouterOptions) {
     router.post("/agents/:name/rollback/:checkpointId", async (req: any, res: any) => {
       const agent = reg.getAgent(req.params.name);
       if (!agent) return res.status(404).json({ error: `Agent "${req.params.name}" not found` });
-      const config = (agent as any).config;
-      const checkpointMgr = config?._checkpointManager;
+      const checkpointMgr = (agent as any).checkpointManager ?? (agent as any).config?._checkpointManager;
       if (!checkpointMgr) return res.status(400).json({ error: "Checkpointing not enabled for this agent" });
       try {
         const checkpoint = await checkpointMgr.rollback(req.params.checkpointId);
@@ -576,11 +617,11 @@ export function createAgentRouter(opts: RouterOptions) {
         res.write(`data: ${JSON.stringify(data)}\n\n`);
       };
       for (const agent of reg.agents.values()) {
-        agent.eventBus.on("tool.approval.request", listener);
+        agent.eventBus?.on("tool.approval.request", listener);
       }
       req.on("close", () => {
         for (const agent of reg.agents.values()) {
-          agent.eventBus.off("tool.approval.request", listener);
+          agent.eventBus?.off("tool.approval.request", listener);
         }
       });
     });

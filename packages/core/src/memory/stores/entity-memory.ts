@@ -102,10 +102,7 @@ export class EntityMemory {
     return entries.map((e) => e.value);
   }
 
-  async upsertEntity(
-    userId: string,
-    entity: Partial<Entity> & { name: string; entityType: string },
-  ): Promise<Entity> {
+  async upsertEntity(userId: string, entity: Partial<Entity> & { name: string; entityType: string }): Promise<Entity> {
     const entityId = entity.entityId ?? entity.name.toLowerCase().replace(/\s+/g, "_");
     const existing = await this.getEntity(userId, entityId);
 
@@ -263,7 +260,11 @@ export class EntityMemory {
     ];
   }
 
-  async extractEntities(userId: string | undefined, messages: ChatMessage[], fallbackModel?: ModelProvider): Promise<void> {
+  async extractEntities(
+    userId: string | undefined,
+    messages: ChatMessage[],
+    fallbackModel?: ModelProvider,
+  ): Promise<void> {
     if (!userId) return;
     const model = this.model ?? fallbackModel;
     if (!model) return;

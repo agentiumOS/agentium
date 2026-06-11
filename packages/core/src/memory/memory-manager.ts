@@ -16,6 +16,7 @@ import type {
 } from "./memory-config.js";
 import type { ScoredMemory } from "./scoring.js";
 import { computeCompositeScore } from "./scoring.js";
+import { type Correction, CorrectionStore } from "./stores/correction-store.js";
 import { DecisionLog } from "./stores/decision-log.js";
 import { EntityMemory } from "./stores/entity-memory.js";
 import { GraphMemory } from "./stores/graph-memory.js";
@@ -35,6 +36,7 @@ export class MemoryManager {
   private entityMemory: EntityMemory | null = null;
   private decisionLog: DecisionLog | null = null;
   private learnedKnowledge: LearnedKnowledge | null = null;
+  private correctionStore: CorrectionStore | null = null;
   private graphMemory: GraphMemory | null = null;
   private procedureMemory: ProcedureMemory | null = null;
 
@@ -100,6 +102,22 @@ export class MemoryManager {
         model: config.model,
         collection: config.learnings.collection,
         topK: config.learnings.topK,
+      });
+    }
+
+    if (config.corrections) {
+      this.correctionStore = new CorrectionStore(config.corrections.vectorStore, storage, {
+        collection: config.corrections.collection,
+        topK: config.corrections.topK,
+        onRecorded: (correction) => {
+          config.eventBus?.emit("memory.correction.recorded", {
+            correctionId: correction.id,
+            agentName: correction.agentName,
+            field: correction.field,
+            entityKey: correction.entityKey,
+            runId: correction.runId,
+          });
+        },
       });
     }
 
@@ -181,6 +199,7 @@ export class MemoryManager {
       entities: 0.15,
       graph: 0.1,
       decisions: 0.1,
+      corrections: 0.1,
       learnings: 0.05,
       procedures: 0.05,
     };
@@ -225,6 +244,15 @@ export class MemoryManager {
       if (ctx) sections.push({ key: "learnings", content: ctx, priority: priorities.learnings ?? 0.05 });
     }
 
+    if (this.correctionStore && currentInput) {
+      const ctx = await this.correctionStore.getContextString(currentInput, {
+        userId,
+        agentName,
+        tenantId: this.config.tenantId,
+      });
+      if (ctx) sections.push({ key: "corrections", content: ctx, priority: priorities.corrections ?? 0.1 });
+    }
+
     if (this.procedureMemory && currentInput) {
       const ctx = await this.procedureMemory.getContextString(currentInput, {
         userId,
@@ -250,9 +278,7 @@ export class MemoryManager {
     // Stable, priority-desc order so dev (no budget) and prod (with budget)
     // produce the same prompt layout.
     const ordered = [...sections].sort((a, b) => b.priority - a.priority);
-    return ordered
-      .map((s) => `<memory section="${s.key}" scope="current_user">\n${s.content}\n</memory>`)
-      .join("\n\n");
+    return ordered.map((s) => `<memory section="${s.key}" scope="current_user">\n${s.content}\n</memory>`).join("\n\n");
   }
 
   private allocateBudget(
@@ -352,21 +378,15 @@ export class MemoryManager {
     };
 
     if (this.userFacts && userId) {
-      tasks.push(
-        this.userFacts.extractAndStore(userId, messages, model, tz).catch((e) => emitError("userFacts", e)),
-      );
+      tasks.push(this.userFacts.extractAndStore(userId, messages, model, tz).catch((e) => emitError("userFacts", e)));
     }
 
     if (this.userProfile && userId) {
-      tasks.push(
-        this.userProfile.extractAndUpdate(userId, messages, model).catch((e) => emitError("userProfile", e)),
-      );
+      tasks.push(this.userProfile.extractAndUpdate(userId, messages, model).catch((e) => emitError("userProfile", e)));
     }
 
     if (this.entityMemory) {
-      tasks.push(
-        this.entityMemory.extractEntities(userId, messages, model).catch((e) => emitError("entityMemory", e)),
-      );
+      tasks.push(this.entityMemory.extractEntities(userId, messages, model).catch((e) => emitError("entityMemory", e)));
     }
 
     if (this.learnedKnowledge) {
@@ -377,17 +397,13 @@ export class MemoryManager {
 
     if (this.graphMemory) {
       tasks.push(
-        this.graphMemory
-          .extractFromConversation(userId, messages, model)
-          .catch((e) => emitError("graphMemory", e)),
+        this.graphMemory.extractFromConversation(userId, messages, model).catch((e) => emitError("graphMemory", e)),
       );
     }
 
     if (this.procedureMemory) {
       tasks.push(
-        this.procedureMemory
-          .extractProcedures(userId, messages, model)
-          .catch((e) => emitError("procedureMemory", e)),
+        this.procedureMemory.extractProcedures(userId, messages, model).catch((e) => emitError("procedureMemory", e)),
       );
     }
 
@@ -538,6 +554,26 @@ export class MemoryManager {
   }
 
   /**
+   * Record a human correction of an agent's output as a first-class,
+   * structured event. The correction is embedded into the vector store and
+   * retrieved at inference time on future relevant runs.
+   *
+   * Requires `corrections` to be configured on the memory config.
+   */
+  async recordCorrection(
+    correction: Omit<Correction, "id" | "createdAt" | "tags"> & { tags?: string[] },
+  ): Promise<Correction> {
+    if (!this.correctionStore) {
+      throw new Error(
+        "MemoryManager.recordCorrection: corrections are not enabled. " +
+          "Pass `corrections: { vectorStore }` in the memory config.",
+      );
+    }
+    await this.ensureReady();
+    return this.correctionStore.recordCorrection(correction);
+  }
+
+  /**
    * Remove memories matching the given criteria. Returns count of items removed.
    */
   async forget(opts: { userId?: string; factId?: string; entityId?: string; scope?: string }): Promise<number> {
@@ -585,6 +621,10 @@ export class MemoryManager {
       tools.push(...this.learnedKnowledge.getTools());
     }
 
+    if (this.correctionStore) {
+      tools.push(...this.correctionStore.getTools());
+    }
+
     if (this.graphMemory) {
       tools.push(...this.graphMemory.getTools());
     }
@@ -616,6 +656,10 @@ export class MemoryManager {
 
   getLearnedKnowledge(): LearnedKnowledge | null {
     return this.learnedKnowledge;
+  }
+
+  getCorrectionStore(): CorrectionStore | null {
+    return this.correctionStore;
   }
 
   getSummaries(): Summaries | null {
