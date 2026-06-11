@@ -193,6 +193,134 @@ describe("LearnedKnowledge — provenance and trust", () => {
   });
 });
 
+describe("LearnedKnowledge — pruning", () => {
+  let storage: InMemoryStorage;
+  let kb: LearnedKnowledge;
+
+  const daysAgo = (n: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return d;
+  };
+
+  /** Save a learning then backdate its createdAt in KV storage. */
+  const saveAged = async (opts: Parameters<LearnedKnowledge["saveLearning"]>[0], ageDays: number) => {
+    const l = await kb.saveLearning(opts);
+    await storage.set("memory:learnings", l.id, { ...l, createdAt: daysAgo(ageDays) });
+    return l;
+  };
+
+  beforeEach(() => {
+    storage = new InMemoryStorage();
+    kb = new LearnedKnowledge(new InMemoryVectorStore(makeFlatEmbedder()), storage, { topK: 20 });
+  });
+
+  it("age-prunes only llm-extracted learnings by default", async () => {
+    const oldAi = await saveAged(
+      {
+        title: "Old AI guess",
+        content: "x",
+        context: "",
+        tags: [],
+        namespace: "d",
+        scope: "agent",
+        source: "llm-extracted",
+        agentName: "bot",
+      },
+      120,
+    );
+    const oldHuman = await saveAged(
+      {
+        title: "Old human rule",
+        content: "y",
+        context: "",
+        tags: [],
+        namespace: "d",
+        scope: "agent",
+        source: "manual",
+        agentName: "bot",
+      },
+      120,
+    );
+    const freshAi = await saveAged(
+      {
+        title: "Fresh AI guess",
+        content: "z",
+        context: "",
+        tags: [],
+        namespace: "d",
+        scope: "agent",
+        source: "llm-extracted",
+        agentName: "bot",
+      },
+      5,
+    );
+
+    const pruned = await kb.pruneLearnings({ maxAgeDays: 90, agentName: "bot" });
+
+    expect(pruned).toBe(1);
+    expect(await kb.getLearning(oldAi.id)).toBeNull();
+    expect(await kb.getLearning(oldHuman.id)).not.toBeNull();
+    expect(await kb.getLearning(freshAi.id)).not.toBeNull();
+  });
+
+  it("keeps untagged (pre-v2.5) learnings unless includeUntagged is set", async () => {
+    const untagged = await saveAged(
+      { title: "Legacy", content: "x", context: "", tags: [], namespace: "d", scope: "agent", agentName: "bot" },
+      120,
+    );
+
+    expect(await kb.pruneLearnings({ maxAgeDays: 90, agentName: "bot" })).toBe(0);
+    expect(await kb.getLearning(untagged.id)).not.toBeNull();
+
+    expect(await kb.pruneLearnings({ maxAgeDays: 90, agentName: "bot", includeUntagged: true })).toBe(1);
+    expect(await kb.getLearning(untagged.id)).toBeNull();
+  });
+
+  it("purges old invalidated learnings regardless of source", async () => {
+    const l = await saveAged(
+      {
+        title: "Superseded human note",
+        content: "x",
+        context: "",
+        tags: [],
+        namespace: "d",
+        scope: "agent",
+        source: "manual",
+        agentName: "bot",
+      },
+      120,
+    );
+    await kb.invalidateLearning(l.id, "corr-1");
+    // invalidateLearning refreshes the record — re-backdate createdAt
+    const record = await kb.getLearning(l.id);
+    await storage.set("memory:learnings", l.id, { ...record!, createdAt: daysAgo(120) });
+
+    const pruned = await kb.pruneLearnings({ maxAgeDays: 90, agentName: "bot" });
+    expect(pruned).toBe(1);
+    expect(await kb.getLearning(l.id)).toBeNull();
+  });
+
+  it("respects the agentName owner filter", async () => {
+    const otherAgent = await saveAged(
+      {
+        title: "Other agent's AI guess",
+        content: "x",
+        context: "",
+        tags: [],
+        namespace: "d",
+        scope: "agent",
+        source: "llm-extracted",
+        agentName: "other-bot",
+      },
+      120,
+    );
+
+    expect(await kb.pruneLearnings({ maxAgeDays: 90, agentName: "bot" })).toBe(0);
+    expect(await kb.getLearning(otherAgent.id)).not.toBeNull();
+  });
+});
+
 describe("LearnedKnowledge — grounded extraction", () => {
   let storage: InMemoryStorage;
   let kb: LearnedKnowledge;

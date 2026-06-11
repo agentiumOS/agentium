@@ -98,6 +98,16 @@ export class Curator {
       }
     }
 
+    if (this.stores.learnedKnowledge && (options.agentName || options.userId)) {
+      // Conservative defaults inside pruneLearnings: only unverified
+      // (llm-extracted) learnings are age-pruned; human knowledge is kept.
+      pruned += await this.stores.learnedKnowledge.pruneLearnings({
+        maxAgeDays: options.maxAgeDays,
+        agentName: options.agentName,
+        userId: options.userId,
+      });
+    }
+
     return pruned;
   }
 

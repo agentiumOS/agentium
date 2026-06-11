@@ -289,6 +289,68 @@ export class LearnedKnowledge {
   }
 
   /**
+   * Prune stale learnings to keep retrieval sharp as volume grows.
+   *
+   * Conservative by default:
+   * - Only `"llm-extracted"` (unverified) learnings are age-pruned — human
+   *   knowledge (`"manual"`, `"human-correction"`) is kept unless explicitly
+   *   included via `sources`.
+   * - Pre-v2.5 records with no `source` tag are NOT pruned unless
+   *   `includeUntagged` is set.
+   * - Invalidated learnings older than the cutoff are always purged (their
+   *   audit value decays; they're already excluded from retrieval).
+   *
+   * Returns the number of learnings removed.
+   */
+  async pruneLearnings(opts: {
+    maxAgeDays: number;
+    /** Provenance tiers eligible for age-pruning. Default: ["llm-extracted"] */
+    sources?: LearningSource[];
+    /** Also age-prune pre-v2.5 records that have no source tag. Default: false */
+    includeUntagged?: boolean;
+    /** Purge invalidated learnings older than the cutoff. Default: true */
+    purgeInvalidated?: boolean;
+    /** Only prune learnings belonging to this agent (agent-scoped). */
+    agentName?: string;
+    /** Only prune learnings belonging to this user (user-scoped). */
+    userId?: string;
+  }): Promise<number> {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - opts.maxAgeDays);
+    const sources = opts.sources ?? ["llm-extracted"];
+    const hasOwnerFilter = !!(opts.agentName || opts.userId);
+
+    const all = await this.storage.list<Learning>(NS);
+    let pruned = 0;
+
+    for (const { value: learning } of all) {
+      if (new Date(learning.createdAt) >= cutoff) continue;
+
+      if (hasOwnerFilter) {
+        const ownedByAgent = !!opts.agentName && learning.agentName === opts.agentName;
+        const ownedByUser = !!opts.userId && learning.userId === opts.userId;
+        if (!ownedByAgent && !ownedByUser) continue;
+      }
+
+      if (learning.invalidatedAt) {
+        if (opts.purgeInvalidated !== false) {
+          await this.deleteLearning(learning.id);
+          pruned++;
+        }
+        continue;
+      }
+
+      const sourceEligible = learning.source ? sources.includes(learning.source) : (opts.includeUntagged ?? false);
+      if (!sourceEligible) continue;
+
+      await this.deleteLearning(learning.id);
+      pruned++;
+    }
+
+    return pruned;
+  }
+
+  /**
    * Repair dual-write drift: re-index any active KV learning that is missing
    * from the vector store (e.g. after a crash between the two writes).
    * Returns the number of re-indexed records.
