@@ -102,6 +102,7 @@ export class MemoryManager {
         model: config.model,
         collection: config.learnings.collection,
         topK: config.learnings.topK,
+        minScore: config.learnings.minScore,
       });
     }
 
@@ -109,6 +110,7 @@ export class MemoryManager {
       this.correctionStore = new CorrectionStore(config.corrections.vectorStore, storage, {
         collection: config.corrections.collection,
         topK: config.corrections.topK,
+        minScore: config.corrections.minScore,
         onRecorded: (correction) => {
           config.eventBus?.emit("memory.correction.recorded", {
             correctionId: correction.id,
@@ -148,6 +150,7 @@ export class MemoryManager {
       entityMemory: this.entityMemory,
       decisionLog: this.decisionLog,
       learnedKnowledge: this.learnedKnowledge,
+      correctionStore: this.correctionStore,
     });
   }
 
@@ -453,6 +456,7 @@ export class MemoryManager {
         context: opts?.scope ?? "general",
         tags: [],
         namespace: opts?.scope ?? "global",
+        source: "manual",
         userId: opts?.userId,
       });
       return;
@@ -558,6 +562,11 @@ export class MemoryManager {
    * structured event. The correction is embedded into the vector store and
    * retrieved at inference time on future relevant runs.
    *
+   * Self-corrective side effect (unless disabled via
+   * `corrections.invalidateContradicted: false`): unverified (llm-extracted)
+   * learnings that semantically collide with the correction are invalidated —
+   * the human correction supersedes them.
+   *
    * Requires `corrections` to be configured on the memory config.
    */
   async recordCorrection(
@@ -570,7 +579,33 @@ export class MemoryManager {
       );
     }
     await this.ensureReady();
-    return this.correctionStore.recordCorrection(correction);
+    const entry = await this.correctionStore.recordCorrection(correction);
+
+    // Self-corrective loop: the human correction is authoritative — retire
+    // any unverified AI-extracted learnings it contradicts.
+    if (this.learnedKnowledge && this.config.corrections?.invalidateContradicted !== false) {
+      const query = [entry.field, entry.originalValue, entry.correctedValue, entry.reason].filter(Boolean).join(" ");
+      try {
+        const invalidated = await this.learnedKnowledge.invalidateContradicted(query, {
+          supersededBy: entry.id,
+          threshold: this.config.corrections?.contradictionThreshold,
+          agentName: entry.agentName,
+          tenantId: entry.tenantId ?? this.config.tenantId,
+          userId: entry.userId,
+        });
+        if (invalidated.length > 0) {
+          this.config.eventBus?.emit("memory.learning.invalidated", {
+            learningIds: invalidated,
+            supersededBy: entry.id,
+            agentName: entry.agentName,
+          });
+        }
+      } catch {
+        // best-effort — the correction itself is already persisted
+      }
+    }
+
+    return entry;
   }
 
   /**

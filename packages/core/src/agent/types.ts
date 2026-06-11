@@ -211,6 +211,12 @@ export interface RunOutput {
 
   /** Auto-generated followup prompt suggestions. */
   followupSuggestions?: string[];
+
+  /**
+   * Self-critique result when reflection is enabled. Low scores indicate the
+   * output may need human review — use for confidence-gated escalation.
+   */
+  critique?: { pass: boolean; score: number; feedback: string; revisions: number };
 }
 
 export interface AgentHooks {

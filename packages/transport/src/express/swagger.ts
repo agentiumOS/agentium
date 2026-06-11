@@ -166,6 +166,10 @@ const SCHEMAS = {
       reason: { type: "string", description: "Why the correction applies" },
       entityKey: { type: "string", description: "Real-world entity this applies to, e.g. a vendor ID" },
       runId: { type: "string", description: "Run that produced the corrected output" },
+      originalInput: {
+        type: "string",
+        description: "The input that produced the corrected output — enables regression eval replay",
+      },
       sessionId: { type: "string" },
       userId: { type: "string" },
       tenantId: { type: "string" },

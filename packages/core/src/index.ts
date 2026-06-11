@@ -222,7 +222,7 @@ export type { Entity, EntityEvent, EntityFact, EntityRelationship } from "./memo
 export { EntityMemory } from "./memory/stores/entity-memory.js";
 export type { GraphMemoryConfig } from "./memory/stores/graph-memory.js";
 export { GraphMemory } from "./memory/stores/graph-memory.js";
-export type { Learning } from "./memory/stores/learned-knowledge.js";
+export type { Learning, LearningSource } from "./memory/stores/learned-knowledge.js";
 export { LearnedKnowledge } from "./memory/stores/learned-knowledge.js";
 export type { Procedure, ProcedureMemoryConfig, ProcedureStep } from "./memory/stores/procedure-memory.js";
 export { ProcedureMemory } from "./memory/stores/procedure-memory.js";

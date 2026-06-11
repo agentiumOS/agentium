@@ -23,6 +23,16 @@ const NS = "memory:learnings";
  */
 export type LearningScope = "user" | "agent" | "tenant" | "global";
 
+/**
+ * Provenance of a learning — determines how much the agent should trust it.
+ *
+ * - `"human-correction"` derived from an explicit human correction (highest trust)
+ * - `"manual"`           saved programmatically by application code
+ * - `"llm-extracted"`    auto-extracted by an LLM from conversation (lowest trust —
+ *                        rendered as [unverified] in context)
+ */
+export type LearningSource = "human-correction" | "manual" | "llm-extracted";
+
 export interface Learning {
   id: string;
   title: string;
@@ -33,6 +43,16 @@ export interface Learning {
   importance?: number;
   /** Defaults to "user" when omitted (backward-compat for pre-v2.3 data). */
   scope?: LearningScope;
+  /** Provenance tier. Missing on pre-v2.5 data (rendered without a trust marker). */
+  source?: LearningSource;
+  /** Run that produced this learning, when known. */
+  sourceRunId?: string;
+  /** Supporting quote from the conversation (grounded extraction). */
+  evidence?: string;
+  /** Set when superseded/invalidated — invalidated learnings are never retrieved. */
+  invalidatedAt?: Date;
+  /** ID of the correction or learning that superseded this one. */
+  supersededBy?: string;
   userId?: string;
   agentName?: string;
   tenantId?: string;
@@ -50,14 +70,24 @@ Focus on:
 Do NOT extract:
 - Trivial or obvious information
 - Personal user facts (those belong in user memory)
+- Anything not directly supported by the conversation text
+
+Every item MUST include an "evidence" field containing an EXACT quote from the
+conversation that supports the insight. Items without verbatim supporting
+evidence will be rejected.
 
 Return ONLY a JSON array:
-[{"title": "short title", "content": "the insight", "context": "when this applies", "tags": ["tag1"]}]
+[{"title": "short title", "content": "the insight", "context": "when this applies", "tags": ["tag1"], "evidence": "exact quote from the conversation"}]
 
 If nothing useful, return [].
 
 Conversation:
 {conversation}`;
+
+/** Lowercase + collapse whitespace so quote matching tolerates formatting drift. */
+function normalizeForMatch(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
 
 export class LearnedKnowledge {
   private vectorStore: VectorStore;
@@ -65,18 +95,20 @@ export class LearnedKnowledge {
   private model?: ModelProvider;
   private collection: string;
   private topK: number;
+  private minScore?: number;
   private initPromise: Promise<void> | null = null;
 
   constructor(
     vectorStore: VectorStore,
     storage: StorageDriver,
-    config?: { model?: ModelProvider; collection?: string; topK?: number },
+    config?: { model?: ModelProvider; collection?: string; topK?: number; minScore?: number },
   ) {
     this.vectorStore = vectorStore;
     this.storage = storage;
     this.model = config?.model;
     this.collection = config?.collection ?? "agentium_learnings";
     this.topK = config?.topK ?? 3;
+    this.minScore = config?.minScore;
   }
 
   private async ensureInit(): Promise<void> {
@@ -119,6 +151,7 @@ export class LearnedKnowledge {
         tags: entry.tags,
         namespace: entry.namespace,
         scope: entry.scope,
+        source: entry.source,
         userId: entry.userId,
         agentName: entry.agentName,
         tenantId: entry.tenantId,
@@ -161,6 +194,8 @@ export class LearnedKnowledge {
       userId?: string;
       agentName?: string;
       tenantId?: string;
+      /** Override the store-level relevance floor for this search. */
+      minScore?: number;
     },
   ): Promise<Learning[]> {
     await this.ensureInit();
@@ -169,7 +204,11 @@ export class LearnedKnowledge {
     // Over-fetch generously when filtering — multiple scopes mean many candidates.
     const hasFilter = !!(opts?.userId || opts?.agentName || opts?.tenantId);
     const fetchK = hasFilter ? want * 5 : want;
-    const results = await this.vectorStore.search(this.collection, query, { topK: fetchK });
+    const minScore = opts?.minScore ?? this.minScore;
+    const results = await this.vectorStore.search(this.collection, query, {
+      topK: fetchK,
+      ...(minScore !== undefined ? { minScore } : {}),
+    });
 
     const caller = {
       userId: opts?.userId,
@@ -181,6 +220,7 @@ export class LearnedKnowledge {
     for (const result of results) {
       const full = await this.storage.get<Learning>(NS, result.id);
       if (!full) continue;
+      if (full.invalidatedAt) continue;
       if (hasFilter && !this.canSee(full, caller)) continue;
       learnings.push(full);
       if (learnings.length >= want) break;
@@ -199,6 +239,88 @@ export class LearnedKnowledge {
     await this.storage.delete(NS, id);
   }
 
+  /**
+   * Invalidate a learning: removed from the vector index (never retrieved
+   * again) but kept in KV storage for audit, marked with `invalidatedAt`
+   * and optionally the ID of what superseded it.
+   */
+  async invalidateLearning(id: string, supersededBy?: string): Promise<boolean> {
+    await this.ensureInit();
+    const existing = await this.storage.get<Learning>(NS, id);
+    if (!existing) return false;
+    existing.invalidatedAt = new Date();
+    if (supersededBy) existing.supersededBy = supersededBy;
+    await this.storage.set(NS, id, existing);
+    await this.vectorStore.delete(this.collection, id);
+    return true;
+  }
+
+  /**
+   * Invalidate unverified (llm-extracted) learnings that semantically collide
+   * with new authoritative knowledge — e.g. a human correction. Only items at
+   * or above `threshold` similarity AND with `source: "llm-extracted"` are
+   * invalidated; human-authored learnings are never auto-invalidated.
+   *
+   * Returns the IDs of invalidated learnings.
+   */
+  async invalidateContradicted(
+    query: string,
+    opts: { supersededBy?: string; threshold?: number; agentName?: string; tenantId?: string; userId?: string },
+  ): Promise<string[]> {
+    await this.ensureInit();
+    const threshold = opts.threshold ?? 0.85;
+    const results = await this.vectorStore.search(this.collection, query, {
+      topK: 10,
+      minScore: threshold,
+    });
+
+    const invalidated: string[] = [];
+    for (const result of results) {
+      const full = await this.storage.get<Learning>(NS, result.id);
+      if (!full || full.invalidatedAt) continue;
+      // Only auto-invalidate unverified knowledge.
+      if (full.source !== "llm-extracted") continue;
+      // Respect scope boundaries — never invalidate another tenant/agent/user's data.
+      if (!this.canSee(full, { userId: opts.userId, agentName: opts.agentName, tenantId: opts.tenantId })) continue;
+      await this.invalidateLearning(full.id, opts.supersededBy);
+      invalidated.push(full.id);
+    }
+    return invalidated;
+  }
+
+  /**
+   * Repair dual-write drift: re-index any active KV learning that is missing
+   * from the vector store (e.g. after a crash between the two writes).
+   * Returns the number of re-indexed records.
+   */
+  async reconcile(): Promise<number> {
+    await this.ensureInit();
+    const all = await this.storage.list<Learning>(NS);
+    let repaired = 0;
+    for (const { value: learning } of all) {
+      if (learning.invalidatedAt) continue;
+      const indexed = await this.vectorStore.get(this.collection, learning.id);
+      if (indexed) continue;
+      await this.vectorStore.upsert(this.collection, {
+        id: learning.id,
+        content: `${learning.title}: ${learning.content}`,
+        metadata: {
+          title: learning.title,
+          context: learning.context,
+          tags: learning.tags,
+          namespace: learning.namespace,
+          scope: learning.scope,
+          source: learning.source,
+          userId: learning.userId,
+          agentName: learning.agentName,
+          tenantId: learning.tenantId,
+        },
+      });
+      repaired++;
+    }
+    return repaired;
+  }
+
   async getContextString(
     currentInput?: string,
     opts?: { userId?: string; agentName?: string; tenantId?: string },
@@ -212,15 +334,27 @@ export class LearnedKnowledge {
       const learnings = await this.searchLearnings(currentInput, opts);
       if (learnings.length === 0) return "";
 
-      // Annotate each line with its scope so the model can reason about whether
-      // a learning is personal or organizational.
+      // Annotate each line with its scope and trust tier so the model can
+      // reason about whether a learning is personal or organizational, and
+      // whether it is human-authored or an unverified AI hypothesis.
+      let hasUnverified = false;
       const lines = learnings.map((l) => {
         const scope = l.scope ?? "user";
-        const tag = scope === "user" ? "" : ` [${scope}]`;
-        return `- ${l.title}${tag}: ${l.content} (applies when: ${l.context})`;
+        const scopeTag = scope === "user" ? "" : ` [${scope}]`;
+        let trustTag = "";
+        if (l.source === "llm-extracted") {
+          trustTag = " [unverified]";
+          hasUnverified = true;
+        } else if (l.source === "human-correction" || l.source === "manual") {
+          trustTag = " [verified]";
+        }
+        return `- ${l.title}${scopeTag}${trustTag}: ${l.content} (applies when: ${l.context})`;
       });
 
-      return `Relevant learnings:\n${lines.join("\n")}`;
+      const caveat = hasUnverified
+        ? "\nItems marked [unverified] are AI-extracted hypotheses — treat them as hints to verify, not established facts."
+        : "";
+      return `Relevant learnings:\n${lines.join("\n")}${caveat}`;
     } catch {
       return "";
     }
@@ -263,6 +397,8 @@ export class LearnedKnowledge {
             tags: (args.tags as string[]) ?? [],
             namespace: "global",
             scope,
+            // The tool is invoked by the model, so the content is LLM-authored.
+            source: "llm-extracted",
             userId: scope === "user" ? ctx.userId : undefined,
             agentName: scope === "agent" ? agentName : undefined,
             tenantId: scope === "tenant" ? tenantId : undefined,
@@ -322,10 +458,20 @@ export class LearnedKnowledge {
       if (!text) return;
 
       const parsed = safeParseJsonArray(text);
+      const normalizedConversation = normalizeForMatch(conversationStr);
 
       for (const raw of parsed) {
         const item = raw as Record<string, unknown>;
         if (!item?.title || !item?.content) continue;
+
+        // Grounding gate: reject extractions that can't anchor themselves to a
+        // verbatim quote from the conversation. This is the main defense
+        // against extraction hallucinations becoming permanent "knowledge".
+        const evidence = typeof item.evidence === "string" ? item.evidence : "";
+        if (!evidence || !normalizedConversation.includes(normalizeForMatch(evidence))) {
+          continue;
+        }
+
         await this.saveLearning({
           title: item.title as string,
           content: item.content as string,
@@ -333,6 +479,8 @@ export class LearnedKnowledge {
           tags: (item.tags as string[]) ?? [],
           scope: "user",
           namespace: "global",
+          source: "llm-extracted",
+          evidence,
           userId,
         });
       }

@@ -101,6 +101,94 @@ describe("Agent", () => {
     expect(registry.getAgent("classifier")).toBe(agent2);
   });
 
+  it("reflection critiques output, revises on failure, and attaches critique", async () => {
+    // Agent model: first answer is "bad draft", revision is "good answer"
+    const agentModel: any = {
+      providerId: "test",
+      modelId: "test-model",
+      generate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          message: { role: "assistant", content: "bad draft" },
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          finishReason: "stop",
+        })
+        .mockResolvedValue({
+          message: { role: "assistant", content: "good answer" },
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          finishReason: "stop",
+        }),
+      stream: vi.fn(),
+    };
+
+    // Critic: fails the first draft, passes the revision
+    const critic: any = {
+      providerId: "test",
+      modelId: "critic-model",
+      generate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          message: {
+            role: "assistant",
+            content: '{"pass": false, "score": 0.3, "feedback": "Too vague"}',
+          },
+          usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+          finishReason: "stop",
+        })
+        .mockResolvedValue({
+          message: {
+            role: "assistant",
+            content: '{"pass": true, "score": 0.9, "feedback": "Good"}',
+          },
+          usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+          finishReason: "stop",
+        }),
+      stream: vi.fn(),
+    };
+
+    const agent = new Agent({
+      name: "reflective-agent",
+      model: agentModel,
+      reflection: { enabled: true, maxReflections: 1, critic },
+    });
+
+    const critiques: any[] = [];
+    agent.eventBus.on("reflection.critique", (e) => critiques.push(e));
+
+    const output = await agent.run("explain the policy");
+
+    expect(output.text).toBe("good answer");
+    expect(output.critique).toMatchObject({ pass: true, score: 0.9, revisions: 1 });
+    expect(critiques).toHaveLength(2);
+    expect(critiques[0].pass).toBe(false);
+    expect(critiques[1].pass).toBe(true);
+    // Usage accumulates across the revision
+    expect(output.usage.totalTokens).toBe(30);
+  });
+
+  it("reflection passes through without revision when critique passes", async () => {
+    const critic: any = {
+      providerId: "test",
+      modelId: "critic-model",
+      generate: vi.fn().mockResolvedValue({
+        message: { role: "assistant", content: '{"pass": true, "score": 0.95, "feedback": "Solid"}' },
+        usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+        finishReason: "stop",
+      }),
+      stream: vi.fn(),
+    };
+
+    const agent = new Agent({
+      name: "reflective-agent-2",
+      model: mockModel("first try"),
+      reflection: { enabled: true, critic },
+    });
+
+    const output = await agent.run("hello");
+    expect(output.text).toBe("first try");
+    expect(output.critique).toMatchObject({ pass: true, score: 0.95, revisions: 0 });
+  });
+
   it("exposes agent metadata", () => {
     const agent = new Agent({
       name: "meta-agent",

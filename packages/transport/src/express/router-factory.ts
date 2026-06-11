@@ -287,12 +287,14 @@ export function createAgentRouter(opts: RouterOptions) {
             userId: "string?",
             tenantId: "string?",
             scope: "string?",
+            originalInput: "string?",
           });
 
           const correction = await memory.recordCorrection({
             agentName: name,
             runId: validated.runId,
             sessionId: validated.sessionId,
+            originalInput: validated.originalInput,
             field: validated.field,
             originalValue: validated.originalValue,
             correctedValue: validated.correctedValue,

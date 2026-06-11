@@ -1,5 +1,6 @@
 import type { ModelProvider } from "../models/provider.js";
 import type { StorageDriver } from "../storage/driver.js";
+import type { CorrectionStore } from "./stores/correction-store.js";
 import type { DecisionLog } from "./stores/decision-log.js";
 import type { EntityMemory } from "./stores/entity-memory.js";
 import type { LearnedKnowledge } from "./stores/learned-knowledge.js";
@@ -12,6 +13,7 @@ export interface CuratorStores {
   entityMemory?: EntityMemory | null;
   decisionLog?: DecisionLog | null;
   learnedKnowledge?: LearnedKnowledge | null;
+  correctionStore?: CorrectionStore | null;
 }
 
 export interface PruneOptions {
@@ -48,6 +50,25 @@ export class Curator {
   constructor(storage: StorageDriver, stores: CuratorStores) {
     this.storage = storage;
     this.stores = stores;
+  }
+
+  /**
+   * Repair dual-write drift across the vector-backed stores (learnings,
+   * corrections). KV records missing from the vector index — e.g. after a
+   * crash between the two writes — are re-embedded and re-indexed.
+   *
+   * Run periodically (e.g. on a schedule alongside prune/consolidate).
+   * Returns the number of repaired records per store.
+   */
+  async reconcile(): Promise<{ learnings: number; corrections: number }> {
+    const result = { learnings: 0, corrections: 0 };
+    if (this.stores.learnedKnowledge) {
+      result.learnings = await this.stores.learnedKnowledge.reconcile();
+    }
+    if (this.stores.correctionStore) {
+      result.corrections = await this.stores.correctionStore.reconcile();
+    }
+    return result;
   }
 
   /**

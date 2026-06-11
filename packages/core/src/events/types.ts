@@ -66,6 +66,11 @@ export type AgentEventMap = {
     entityKey?: string;
     runId?: string;
   };
+  "memory.learning.invalidated": {
+    learningIds: string[];
+    supersededBy: string;
+    agentName: string;
+  };
 
   // Skill events
   "skill.loaded": { skillName: string; source: string };

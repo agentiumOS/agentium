@@ -23,6 +23,7 @@ import { countTokens } from "../utils/token-counter.js";
 import type { WebhookManager } from "../webhooks/webhook-manager.js";
 import { RunCancelledError } from "./errors.js";
 import { LLMLoop } from "./llm-loop.js";
+import { ReflectionManager } from "./reflection.js";
 import { RunContext } from "./run-context.js";
 import {
   buildAgentConfigFromSerialized,
@@ -46,6 +47,7 @@ export class Agent {
   private semanticCache: SemanticCache | null = null;
   private compressionManager: CompressionManager | null = null;
   private cultureManager: CultureManager | null = null;
+  private reflectionManager: ReflectionManager | null = null;
   private fallbackSessionManager: SessionManager | null = null;
   // biome-ignore lint/correctness/noUnusedPrivateClassMembers: assigned in rebuildLLMLoop, kept for future use
   private llmLoop!: LLMLoop;
@@ -198,6 +200,10 @@ export class Agent {
     this.name = config.name;
     this.instructions = config.instructions;
     this.eventBus = config.eventBus ?? new EventBus();
+
+    if (config.reflection?.enabled) {
+      this.reflectionManager = new ReflectionManager(config.reflection, config.model);
+    }
 
     if (config.memory) {
       // Pass the agent's eventBus down so memory extraction errors etc.
@@ -486,6 +492,57 @@ export class Agent {
 
       const messages = await this.buildMessages(processedInput, session, ctx, inputText);
       const output = await runLoop.run(messages, ctx, opts?.apiKey);
+
+      // Reflection: LLM-as-critic pass over the output, with bounded revision.
+      if (this.reflectionManager) {
+        const maxReflections = this.config.reflection?.maxReflections ?? 1;
+        let critique = await this.reflectionManager.critiqueOutput(output, inputText, messages);
+        this.eventBus.emit("reflection.critique", {
+          runId: ctx.runId,
+          pass: critique.pass,
+          score: critique.score,
+          feedback: critique.feedback,
+        });
+
+        let revisions = 0;
+        while (!critique.pass && revisions < maxReflections) {
+          revisions++;
+          const revisionMessages: ChatMessage[] = [
+            ...messages,
+            { role: "assistant", content: output.text },
+            {
+              role: "user",
+              content: `A quality reviewer critiqued your previous response:\n${critique.feedback}\n\nProvide an improved response that addresses the critique. Respond with the full corrected answer.`,
+            },
+          ];
+          const revised = await runLoop.run(revisionMessages, ctx, opts?.apiKey);
+
+          output.text = revised.text;
+          if (revised.structured !== undefined) output.structured = revised.structured;
+          output.toolCalls = [...output.toolCalls, ...revised.toolCalls];
+          output.usage = {
+            ...output.usage,
+            promptTokens: output.usage.promptTokens + revised.usage.promptTokens,
+            completionTokens: output.usage.completionTokens + revised.usage.completionTokens,
+            totalTokens: output.usage.totalTokens + revised.usage.totalTokens,
+          };
+
+          critique = await this.reflectionManager.critiqueOutput(output, inputText, messages);
+          this.eventBus.emit("reflection.critique", {
+            runId: ctx.runId,
+            pass: critique.pass,
+            score: critique.score,
+            feedback: critique.feedback,
+          });
+        }
+
+        output.critique = {
+          pass: critique.pass,
+          score: critique.score,
+          feedback: critique.feedback,
+          revisions,
+        };
+      }
 
       const durationMs = Date.now() - startTime;
       output.durationMs = durationMs;

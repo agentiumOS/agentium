@@ -22,6 +22,12 @@ export interface Correction {
   /** Run that produced the corrected output (RunOutput.runId). */
   runId?: string;
   sessionId?: string;
+  /**
+   * The original input that produced the corrected output. When present,
+   * the correction can be replayed as a regression eval case (see
+   * `toEvalCases()`).
+   */
+  originalInput?: string;
   /** The specific field/aspect corrected, e.g. "chargeCode", "allocation". */
   field?: string;
   /** What the agent produced. */
@@ -57,6 +63,7 @@ export class CorrectionStore {
   private storage: StorageDriver;
   private collection: string;
   private topK: number;
+  private minScore?: number;
   private initPromise: Promise<void> | null = null;
   private onRecorded?: (correction: Correction) => void;
 
@@ -66,6 +73,8 @@ export class CorrectionStore {
     config?: {
       collection?: string;
       topK?: number;
+      /** Relevance floor for retrieval — matches below this score are dropped. */
+      minScore?: number;
       /** Called after every successful record — used to emit events. */
       onRecorded?: (correction: Correction) => void;
     },
@@ -74,6 +83,7 @@ export class CorrectionStore {
     this.storage = storage;
     this.collection = config?.collection ?? "agentium_corrections";
     this.topK = config?.topK ?? 3;
+    this.minScore = config?.minScore;
     this.onRecorded = config?.onRecorded;
   }
 
@@ -175,7 +185,10 @@ export class CorrectionStore {
     const hasFilter = !!(opts?.userId || opts?.agentName || opts?.tenantId || opts?.entityKey);
     // Over-fetch when filtering — not all vector backends support metadata predicates.
     const fetchK = hasFilter ? want * 5 : want;
-    const results = await this.vectorStore.search(this.collection, query, { topK: fetchK });
+    const results = await this.vectorStore.search(this.collection, query, {
+      topK: fetchK,
+      ...(this.minScore !== undefined ? { minScore: this.minScore } : {}),
+    });
 
     const caller = {
       userId: opts?.userId,
@@ -218,6 +231,57 @@ export class CorrectionStore {
         return true;
       })
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }
+
+  /**
+   * Convert corrections with a recorded `originalInput` into regression eval
+   * cases: replaying `input` against the agent should now produce
+   * `expected` (the corrected value). Feed these to `@agentium/eval`'s
+   * EvalSuite with a `contains` scorer to verify the learning loop works.
+   */
+  async toEvalCases(opts?: {
+    agentName?: string;
+    entityKey?: string;
+    since?: Date;
+  }): Promise<Array<{ input: string; expected: string; field?: string; correctionId: string }>> {
+    const corrections = await this.listCorrections(opts);
+    return corrections
+      .filter((c) => !!c.originalInput)
+      .map((c) => ({
+        input: c.originalInput!,
+        expected: c.correctedValue,
+        field: c.field,
+        correctionId: c.id,
+      }));
+  }
+
+  /**
+   * Repair dual-write drift: re-index any KV correction missing from the
+   * vector store. Returns the number of re-indexed records.
+   */
+  async reconcile(): Promise<number> {
+    await this.ensureInit();
+    const all = await this.storage.list<Correction>(NS);
+    let repaired = 0;
+    for (const { value: correction } of all) {
+      const indexed = await this.vectorStore.get(this.collection, correction.id);
+      if (indexed) continue;
+      await this.vectorStore.upsert(this.collection, {
+        id: correction.id,
+        content: this.embeddingText(correction),
+        metadata: {
+          agentName: correction.agentName,
+          field: correction.field,
+          entityKey: correction.entityKey,
+          tags: correction.tags,
+          scope: correction.scope,
+          userId: correction.userId,
+          tenantId: correction.tenantId,
+        },
+      });
+      repaired++;
+    }
+    return repaired;
   }
 
   /** Aggregate correction counts — the raw material for accuracy dashboards. */

@@ -39,6 +39,12 @@ export interface LearningsConfig {
   collection?: string;
   /** Number of relevant learnings to inject into context. Default: 3 */
   topK?: number;
+  /**
+   * Relevance floor (0–1) — matches below this similarity are never injected
+   * into context. Prevents weak matches from polluting the prompt.
+   * Recommended: 0.3–0.5 with real embeddings. Default: no floor.
+   */
+  minScore?: number;
 }
 
 export interface CorrectionsConfig {
@@ -48,6 +54,20 @@ export interface CorrectionsConfig {
   collection?: string;
   /** Number of relevant corrections to inject into context. Default: 3 */
   topK?: number;
+  /**
+   * Relevance floor (0–1) — matches below this similarity are never injected
+   * into context. Recommended: 0.3–0.5 with real embeddings. Default: no floor.
+   */
+  minScore?: number;
+  /**
+   * When a correction is recorded, automatically invalidate unverified
+   * (llm-extracted) learnings that semantically collide with it at or above
+   * `contradictionThreshold` similarity. Human-authored learnings are never
+   * auto-invalidated. Default: true.
+   */
+  invalidateContradicted?: boolean;
+  /** Similarity threshold for contradiction invalidation. Default: 0.85 */
+  contradictionThreshold?: number;
 }
 
 export interface GraphMemoryConfig {
