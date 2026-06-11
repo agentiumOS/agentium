@@ -88,6 +88,19 @@ describe("Agent", () => {
     expect(events).toEqual(["start", "complete"]);
   });
 
+  it("allows creating multiple agents with the same name", async () => {
+    const agent1 = new Agent({ name: "classifier", model: mockModel("A") });
+    const agent2 = new Agent({ name: "classifier", model: mockModel("B") });
+
+    const out1 = await agent1.run("test");
+    const out2 = await agent2.run("test");
+
+    expect(out1.text).toBe("A");
+    expect(out2.text).toBe("B");
+    // Registry holds the latest one (last-write-wins)
+    expect(registry.getAgent("classifier")).toBe(agent2);
+  });
+
   it("exposes agent metadata", () => {
     const agent = new Agent({
       name: "meta-agent",

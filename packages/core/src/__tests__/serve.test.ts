@@ -35,18 +35,20 @@ describe("classifyServables", () => {
     expect(result.workflows).toEqual({});
   });
 
-  it("throws on duplicate agent names", () => {
-    const a1 = { kind: "agent", name: "dup" };
-    const a2 = { kind: "agent", name: "dup" };
+  it("keeps the last agent when names repeat (last-write-wins)", () => {
+    const a1 = { kind: "agent", name: "dup", v: 1 };
+    const a2 = { kind: "agent", name: "dup", v: 2 };
 
-    expect(() => classifyServables([a1, a2] as any[])).toThrow("Duplicate agent");
+    const result = classifyServables([a1, a2] as any[]);
+    expect(result.agents.dup).toBe(a2);
   });
 
-  it("throws on duplicate team names", () => {
-    const t1 = { kind: "team", name: "dup" };
-    const t2 = { kind: "team", name: "dup" };
+  it("keeps the last team when names repeat (last-write-wins)", () => {
+    const t1 = { kind: "team", name: "dup", v: 1 };
+    const t2 = { kind: "team", name: "dup", v: 2 };
 
-    expect(() => classifyServables([t1, t2] as any[])).toThrow("Duplicate team");
+    const result = classifyServables([t1, t2] as any[]);
+    expect(result.teams.dup).toBe(t2);
   });
 
   it("throws on unknown kind", () => {
@@ -107,25 +109,29 @@ describe("Registry", () => {
     expect(reg.getAgent("bot")).toBeUndefined();
   });
 
-  it("throws on duplicate agent names", () => {
+  it("replaces agents with duplicate names (last-write-wins)", () => {
     const a1 = { kind: "agent", name: "bot", v: 1 } as any;
     const a2 = { kind: "agent", name: "bot", v: 2 } as any;
     reg.add(a1);
-    expect(() => reg.add(a2)).toThrow("Duplicate agent name");
+    reg.add(a2);
+    expect(reg.getAgent("bot")).toBe(a2);
+    expect(reg.list().agents).toEqual(["bot"]);
   });
 
-  it("throws on duplicate team names", () => {
-    const t1 = { kind: "team", name: "squad" } as any;
-    const t2 = { kind: "team", name: "squad" } as any;
+  it("replaces teams with duplicate names (last-write-wins)", () => {
+    const t1 = { kind: "team", name: "squad", v: 1 } as any;
+    const t2 = { kind: "team", name: "squad", v: 2 } as any;
     reg.add(t1);
-    expect(() => reg.add(t2)).toThrow("Duplicate team name");
+    reg.add(t2);
+    expect(reg.getTeam("squad")).toBe(t2);
   });
 
-  it("throws on duplicate workflow names", () => {
-    const w1 = { kind: "workflow", name: "pipe" } as any;
-    const w2 = { kind: "workflow", name: "pipe" } as any;
+  it("replaces workflows with duplicate names (last-write-wins)", () => {
+    const w1 = { kind: "workflow", name: "pipe", v: 1 } as any;
+    const w2 = { kind: "workflow", name: "pipe", v: 2 } as any;
     reg.add(w1);
-    expect(() => reg.add(w2)).toThrow("Duplicate workflow name");
+    reg.add(w2);
+    expect(reg.getWorkflow("pipe")).toBe(w2);
   });
 
   it("lists all registered names", () => {

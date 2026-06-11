@@ -17,6 +17,11 @@ export interface ClassifiedServables {
  * Transport layers (Express, Socket.IO) read from the registry dynamically —
  * agents created after the gateway starts are immediately available.
  *
+ * Names are labels, not unique keys: registering an item with an existing
+ * name replaces the previous entry (last-write-wins). This allows the same
+ * agent definition to be constructed repeatedly (loops, factories,
+ * concurrent requests) without conflicts.
+ *
  * @example
  * ```ts
  * createAgentGateway({ io });
@@ -40,17 +45,12 @@ export class Registry {
 
     switch (kind) {
       case "agent":
-        if (this.agents.has(name))
-          throw new Error(`Duplicate agent name: "${name}". Each agent must have a unique name.`);
         this.agents.set(name, item as Agent);
         break;
       case "team":
-        if (this.teams.has(name)) throw new Error(`Duplicate team name: "${name}". Each team must have a unique name.`);
         this.teams.set(name, item as Team);
         break;
       case "workflow":
-        if (this.workflows.has(name))
-          throw new Error(`Duplicate workflow name: "${name}". Each workflow must have a unique name.`);
         this.workflows.set(name, item as Workflow<any>);
         break;
       default:
@@ -208,15 +208,12 @@ export function classifyServables(items: Servable[]): ClassifiedServables {
 
     switch (kind) {
       case "agent":
-        if (result.agents[name]) throw new Error(`Duplicate agent name: "${name}"`);
         result.agents[name] = item as Agent;
         break;
       case "team":
-        if (result.teams[name]) throw new Error(`Duplicate team name: "${name}"`);
         result.teams[name] = item as Team;
         break;
       case "workflow":
-        if (result.workflows[name]) throw new Error(`Duplicate workflow name: "${name}"`);
         result.workflows[name] = item as Workflow<any>;
         break;
       default:
