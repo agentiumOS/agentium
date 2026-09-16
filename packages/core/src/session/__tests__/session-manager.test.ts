@@ -89,4 +89,20 @@ describe("SessionManager", () => {
     const history = await mgr.getHistory("s1");
     expect(history).toEqual([]);
   });
+
+  it("listSessions and searchSessions", async () => {
+    const mgr = new SessionManager(new InMemoryStorage());
+    await mgr.getOrCreate("s1", "alice");
+    await mgr.appendMessages("s1", [{ role: "user", content: "I like mangoes" }]);
+    await mgr.getOrCreate("s2", "bob");
+    await mgr.appendMessages("s2", [{ role: "user", content: "I like apples" }]);
+
+    const listed = await mgr.listSessions({ userId: "alice" });
+    expect(listed).toHaveLength(1);
+    expect(listed[0].sessionId).toBe("s1");
+
+    const hits = await mgr.searchSessions("mango");
+    expect(hits).toHaveLength(1);
+    expect(hits[0].sessionId).toBe("s1");
+  });
 });

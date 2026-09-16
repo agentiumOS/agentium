@@ -65,4 +65,23 @@ describe("EventBus", () => {
     expect(h1).toHaveBeenCalledOnce();
     expect(h2).toHaveBeenCalledOnce();
   });
+
+  it("onAny receives every event", () => {
+    const bus = new EventBus();
+    const any = vi.fn();
+    bus.onAny(any);
+    bus.emit("run.start", { runId: "r1", agentName: "test", input: "hi" });
+    bus.emit("run.complete", { runId: "r1", output: { text: "ok" } as any });
+    expect(any).toHaveBeenCalledTimes(2);
+    expect(any.mock.calls[0][0]).toBe("run.start");
+  });
+
+  it("shared is a singleton until resetShared", () => {
+    EventBus.resetShared();
+    const a = EventBus.shared;
+    const b = EventBus.shared;
+    expect(a).toBe(b);
+    EventBus.resetShared();
+    expect(EventBus.shared).not.toBe(a);
+  });
 });

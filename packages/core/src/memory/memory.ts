@@ -16,6 +16,10 @@ Summary:`;
 /**
  * Long-term conversation memory.
  *
+ * @deprecated Use `memory: { storage, summaries: true }` on `Agent` (MemoryManager)
+ * for conversation summaries, or `fileMemory: true` for standing MEMORY.md notes.
+ * This class will be removed in the next major version.
+ *
  * Memory stores LLM-generated summaries of past conversation segments.
  * It does NOT store raw messages — that's Session's job.
  *

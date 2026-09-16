@@ -220,4 +220,60 @@ describe("Agent", () => {
 
     expect(agent.approvalManager).not.toBeNull();
   });
+
+  it("Agent.deep turns on harness tools", () => {
+    const agent = Agent.deep({
+      name: "deep-agent",
+      model: mockModel(),
+      register: false,
+      workspace: "/tmp",
+    });
+    const names = agent.listTools();
+    expect(names).toContain("task");
+    expect(names).toContain("memory");
+    expect(names).toContain("agent_fs_write");
+    expect(names).toContain("search_past_sessions");
+    expect(names).toContain("fs_read_file");
+  });
+
+  it("sharedEventBus uses EventBus.shared", async () => {
+    const { EventBus } = await import("../../events/event-bus.js");
+    EventBus.resetShared();
+    const agent = new Agent({
+      name: "shared-bus",
+      model: mockModel(),
+      sharedEventBus: true,
+      register: false,
+    });
+    expect(agent.eventBus).toBe(EventBus.shared);
+    expect(agent.events).toBe(agent.eventBus);
+  });
+
+  it("injects AGENTS.md into the system prompt", async () => {
+    const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = await mkdtemp(join(tmpdir(), "agents-md-"));
+    await writeFile(join(dir, "AGENTS.md"), "Always reply with the word kangaroo.");
+    const model = mockModel("ok");
+    const agent = new Agent({
+      name: "ctx-agent",
+      model,
+      register: false,
+      contextFiles: { cwd: dir },
+    });
+    await agent.run("hi");
+    const messages = (model.generate as any).mock.calls[0][0];
+    expect(messages[0].role).toBe("system");
+    expect(messages[0].content).toContain("kangaroo");
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("spawnSubagent returns the child text", async () => {
+    const parent = new Agent({ name: "parent", model: mockModel("parent"), register: false });
+    const text = await parent.spawnSubagent("do the thing", {
+      name: "kid",
+    });
+    expect(text).toBe("parent");
+  });
 });

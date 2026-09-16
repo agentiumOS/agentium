@@ -21,7 +21,59 @@ export interface AgentConfig {
    * entities, decisions, and learnings. Pass an object with a `storage` field
    * to enable persistent memory. All subsystems share this single storage.
    */
+  /**
+   * Unified memory config — sessions, summaries, user facts, user profile,
+   * entities, decisions, and learnings. Pass an object with a `storage` field
+   * to enable persistent memory. All subsystems share this single storage.
+   */
   memory?: UnifiedMemoryConfig;
+  /**
+   * Folder the agent may read and write on the host disk. Paths cannot leave
+   * this folder. Turns on filesystem tools (`fs_read_file`, `fs_list_directory`,
+   * `fs_file_info`, `fs_write_file`).
+   */
+  workspace?: string;
+  /**
+   * Folders to scan for Agent Skills (`SKILL.md`). The prompt only sees a short
+   * name + description until the agent calls `get_skill_instructions`.
+   */
+  skillDirs?: string[];
+  /**
+   * Load project instruction files (`AGENTS.md`, `CLAUDE.md`, `.agentium.md`,
+   * `.cursorrules`) and add them to the system prompt. Default: false.
+   * `Agent.deep()` turns this on.
+   */
+  contextFiles?: boolean | import("../context/context-files.js").LoadContextFilesOptions;
+  /**
+   * Durable notes the agent writes for its future self (not the host disk).
+   * Tools: `agent_fs_write`, `agent_fs_read`, `agent_fs_list`, `agent_fs_search`.
+   */
+  filesystem?: boolean | import("../fs/agent-fs.js").AgentFileSystemConfig;
+  /**
+   * Isolated child agents via the `task` tool. The child gets a fresh chat and
+   * returns one final report. Default: false. `Agent.deep()` turns this on.
+   */
+  subagents?: boolean | { maxDepth?: number };
+  /**
+   * Tiny standing memory files (MEMORY.md / USER.md) with a hard character cap.
+   * Default: false. `Agent.deep()` turns this on.
+   */
+  fileMemory?: boolean | import("../memory/file-memory.js").FileMemoryConfig;
+  /**
+   * Vector-backed learnings. `true` uses a local in-memory store (fine for
+   * tests). For production, pass `{ vectorStore }` or set `memory.learnings`.
+   */
+  learning?: boolean | import("../memory/memory-config.js").LearningsConfig;
+  /**
+   * Give the agent a `search_past_sessions` tool to look up older chats by keyword.
+   */
+  searchPastSessions?: boolean;
+  /**
+   * Use the process-wide `EventBus.shared` so one tracer can see every agent.
+   */
+  sharedEventBus?: boolean;
+  /** Alias for `eventBus`. */
+  events?: EventBus;
   sessionId?: string;
   userId?: string;
   maxToolRoundtrips?: number;
@@ -34,6 +86,10 @@ export interface AgentConfig {
     input?: InputGuardrail[];
     output?: OutputGuardrail[];
   };
+  /**
+   * Custom event bus. Default: a private bus for this agent.
+   * Pass `EventBus.shared` (or `sharedEventBus: true`) so one tracer sees everything.
+   */
   eventBus?: EventBus;
   /** Logging level. Set to "debug" for tool call details, "info" for summaries, "silent" to disable. Default: "silent". */
   logLevel?: LogLevel;
@@ -86,7 +142,7 @@ export interface AgentConfig {
   dependencies?: Record<string, unknown | (() => unknown) | (() => Promise<unknown>)>;
   /** Auto-generate followup prompt suggestions after each response. */
   generateFollowups?: boolean | { count?: number; model?: ModelProvider };
-  /** Culture system — shared organizational knowledge layer. */
+  /** @deprecated Prefer `contextFiles` (AGENTS.md) plus `fileMemory` / `memory.learnings`. */
   culture?: {
     storage: import("../storage/driver.js").StorageDriver;
     addToContext?: boolean;
@@ -147,9 +203,13 @@ export interface ToolResultLimitConfig {
 }
 
 export interface RunOpts {
+  /** Continue this conversation. Same id = the agent remembers prior turns. */
   sessionId?: string;
+  /** Who is talking. Used by memory, fileMemory (USER.md), and isolation. */
   userId?: string;
+  /** Which customer/org this run belongs to (multi-tenant apps). */
   tenantId?: string;
+  /** Extra facts your tools and instruction functions can read via `ctx.metadata`. */
   metadata?: Record<string, unknown>;
   /** Per-request API key override passed to the model provider. */
   apiKey?: string;

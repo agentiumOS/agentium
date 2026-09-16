@@ -40,7 +40,7 @@ benchmarks/      Benchmark suites
 scripts/         Release and utility scripts
 ```
 
-Examples and docs are maintained in separate repositories under the `agentiumOS` org.
+Examples live in the `agentiumOS` org. Docs live in [`agentium-docs`](https://github.com/agentiumOS/agentium-docs) (this repo's `docs/` is not the site).
 
 ## Development Workflow
 

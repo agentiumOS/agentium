@@ -10,6 +10,13 @@ export interface CultureManagerConfig {
   model?: ModelProvider;
 }
 
+/**
+ * Shared organizational knowledge layer.
+ *
+ * @deprecated Prefer `contextFiles: true` (AGENTS.md) for standing project rules,
+ * `fileMemory: true` for tiny always-on notes, and `memory.learnings` for
+ * vector-backed insights. CultureManager still works but overlaps those layers.
+ */
 export class CultureManager {
   private storage: StorageDriver;
   private model: ModelProvider | null;

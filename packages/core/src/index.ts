@@ -82,6 +82,8 @@ export {
 } from "./agent/sandbox-agent.js";
 export type { DeserializeRegistry, SerializedAgent } from "./agent/serialization.js";
 export { buildAgentConfigFromSerialized, serializeAgentConfig } from "./agent/serialization.js";
+export type { SpawnSubagentOptions, SubagentSpec } from "./agent/subagent.js";
+export { createTaskTool, spawnSubagent } from "./agent/subagent.js";
 export type {
   AgentConfig,
   AgentHooks,
@@ -105,6 +107,8 @@ export type { CompressionManagerConfig } from "./compression/compression-manager
 export { CompressionManager } from "./compression/compression-manager.js";
 // Context
 export { ContextCompactor } from "./context/context-compactor.js";
+export type { ContextFile, LoadContextFilesOptions } from "./context/context-files.js";
+export { formatContextFiles, loadContextFiles } from "./context/context-files.js";
 export {
   type ContextProvider,
   DatabaseContextProvider,
@@ -127,15 +131,19 @@ export type {
   ModelPricing,
 } from "./cost/types.js";
 export type { CultureManagerConfig } from "./culture/culture-manager.js";
-// Culture
+/** @deprecated Prefer contextFiles + fileMemory + memory.learnings. */
 export { CultureManager } from "./culture/culture-manager.js";
 export type { CulturalKnowledge } from "./culture/types.js";
 export type { DependencyMap, DependencyValue } from "./dependencies/resolver.js";
 // Dependencies
 export { applyTemplates, resolveDependencies } from "./dependencies/resolver.js";
+export type { AnyEventHandler } from "./events/event-bus.js";
 // Events
 export { EventBus } from "./events/event-bus.js";
-export type { AgentEventMap } from "./events/types.js";
+export type { AgentEventMap, LifecycleEvent } from "./events/types.js";
+export { LIFECYCLE_EVENTS } from "./events/types.js";
+export type { AgentFile, AgentFileSystemConfig } from "./fs/agent-fs.js";
+export { AgentFileSystem } from "./fs/agent-fs.js";
 export {
   type CypherRecord,
   type CypherSchema,
@@ -189,8 +197,11 @@ export type { MCPToolProviderConfig } from "./mcp/mcp-client.js";
 export { MCPToolProvider } from "./mcp/mcp-client.js";
 export type { ConsolidateOptions, CuratorStores, PruneOptions } from "./memory/curator.js";
 export { Curator } from "./memory/curator.js";
+export type { FileMemoryConfig, FileMemoryTarget } from "./memory/file-memory.js";
+export { FileMemory } from "./memory/file-memory.js";
 export { FlashMemoryStore, type FlashMemoryStoreConfig } from "./memory/flash-store.js";
 // Memory — Legacy (kept for backward compat, will be removed in next major)
+/** @deprecated Use MemoryManager via Agent `memory` config. */
 export { Memory } from "./memory/memory.js";
 // Memory — Unified
 export type {
@@ -234,6 +245,7 @@ export type { UserProfileData } from "./memory/stores/user-profile.js";
 export { UserProfile } from "./memory/stores/user-profile.js";
 export type { MemoryConfig, MemoryEntry } from "./memory/types.js";
 export type { UserMemoryConfig } from "./memory/user-memory.js";
+/** @deprecated Use MemoryManager `userFacts` / `userProfile`. */
 export { UserMemory } from "./memory/user-memory.js";
 // Models
 export type { ModelProvider } from "./models/provider.js";
@@ -333,6 +345,8 @@ export type { LearnedSkill, LearnedSkillStep } from "./skills/learned-skills.js"
 export { LearnedSkillStore } from "./skills/learned-skills.js";
 export { GitSkillLoader, type GitSkillLoaderConfig } from "./skills/loaders/git.js";
 export { loadSkill, SkillManager } from "./skills/skill-manager.js";
+export type { SkillMd, SkillMdManagerConfig } from "./skills/skill-md.js";
+export { parseSkillMd, SkillMdManager } from "./skills/skill-md.js";
 // Skills
 export type { Skill, SkillLoader, SkillManifest, SkillSource } from "./skills/types.js";
 export type { ArtifactPointer, StoredArtifact } from "./state/artifact-store.js";
@@ -451,6 +465,7 @@ export type { BM25Document, BM25Result } from "./vector/bm25.js";
 export { BM25Index } from "./vector/bm25.js";
 export type { GoogleEmbeddingConfig } from "./vector/embeddings/google.js";
 export { GoogleEmbedding } from "./vector/embeddings/google.js";
+export { HashEmbedding } from "./vector/embeddings/hash.js";
 export { fetchAsBase64, partsFromFile } from "./vector/embeddings/multimodal-utils.js";
 export type { OpenAIEmbeddingConfig } from "./vector/embeddings/openai.js";
 export { OpenAIEmbedding } from "./vector/embeddings/openai.js";

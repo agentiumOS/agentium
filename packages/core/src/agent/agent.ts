@@ -1,25 +1,38 @@
+import { join } from "node:path";
 import { v4 as uuidv4 } from "uuid";
+import { z } from "zod";
 import type { SemanticCache } from "../cache/semantic-cache.js";
 import { CompressionManager } from "../compression/compression-manager.js";
 import { ContextCompactor } from "../context/context-compactor.js";
+import { formatContextFiles, loadContextFiles } from "../context/context-files.js";
 import { CultureManager } from "../culture/culture-manager.js";
 import { applyTemplates, resolveDependencies } from "../dependencies/resolver.js";
 import { EventBus } from "../events/event-bus.js";
+import { AgentFileSystem } from "../fs/agent-fs.js";
 import { HandoffManager } from "../handoff/handoff-manager.js";
 import { createHandoffTool } from "../handoff/handoff-tool.js";
 import { HandoffSignal } from "../handoff/types.js";
 import { Logger } from "../logger/logger.js";
+import { FileMemory } from "../memory/file-memory.js";
+import type { UnifiedMemoryConfig } from "../memory/memory-config.js";
 import { MemoryManager } from "../memory/memory-manager.js";
+import type { ModelProvider } from "../models/provider.js";
 import { type ChatMessage, getTextContent, type MessageContent, type StreamChunk } from "../models/types.js";
 import { registry } from "../serve.js";
 import { SessionManager } from "../session/session-manager.js";
 import type { Session } from "../session/types.js";
 import { SkillManager } from "../skills/skill-manager.js";
+import { SkillMdManager } from "../skills/skill-md.js";
 import { createArtifactTools } from "../state/artifact-tools.js";
 import { InMemoryStorage } from "../storage/in-memory.js";
+import { FileSystemToolkit } from "../toolkits/filesystem.js";
+import { defineTool } from "../tools/define-tool.js";
 import { ToolExecutor } from "../tools/tool-executor.js";
 import { ToolRouter } from "../tools/tool-router.js";
+import type { ToolDef } from "../tools/types.js";
 import { countTokens } from "../utils/token-counter.js";
+import { HashEmbedding } from "../vector/embeddings/hash.js";
+import { InMemoryVectorStore } from "../vector/in-memory.js";
 import type { WebhookManager } from "../webhooks/webhook-manager.js";
 import { RunCancelledError } from "./errors.js";
 import { LLMLoop } from "./llm-loop.js";
@@ -31,6 +44,7 @@ import {
   type SerializedAgent,
   serializeAgentConfig,
 } from "./serialization.js";
+import { createTaskTool, type SubagentSpec, spawnSubagent } from "./subagent.js";
 import type { AgentConfig, LoopHooks, RunMetrics, RunOpts, RunOutput } from "./types.js";
 
 export class Agent {
@@ -42,6 +56,12 @@ export class Agent {
   private config: AgentConfig;
   private memoryManager: MemoryManager | null = null;
   private skillManager: SkillManager | null = null;
+  private skillMd: SkillMdManager | null = null;
+  private fileMemory: FileMemory | null = null;
+  private agentFs: AgentFileSystem | null = null;
+  private workspaceToolkit: FileSystemToolkit | null = null;
+  private taskTool: ToolDef | null = null;
+  private contextFilesPrompt: string | undefined;
   private handoffManager: HandoffManager | null = null;
   private webhookManager: WebhookManager | null = null;
   private semanticCache: SemanticCache | null = null;
@@ -165,6 +185,15 @@ export class Agent {
     });
   }
 
+  get model(): ModelProvider {
+    return this.config.model;
+  }
+
+  /** Alias for `eventBus`. */
+  get events(): EventBus {
+    return this.eventBus;
+  }
+
   get modelId(): string {
     return this.config.model.modelId;
   }
@@ -195,23 +224,57 @@ export class Agent {
     return (this.config as any)._checkpointManager ?? null;
   }
 
+  /**
+   * Harness preset: project files, skills, workspace jail, durable notes,
+   * standing memory, subagents, learnings, and past-session search.
+   * Pass the same options as `new Agent()` — they override these defaults.
+   */
+  static deep(config: AgentConfig): Agent {
+    return new Agent({
+      workspace: process.cwd(),
+      skillDirs: [join(process.cwd(), "skills")],
+      contextFiles: true,
+      filesystem: true,
+      subagents: true,
+      fileMemory: true,
+      learning: true,
+      searchPastSessions: true,
+      ...config,
+    });
+  }
+
   constructor(config: AgentConfig) {
     this.config = config;
     this.name = config.name;
     this.instructions = config.instructions;
-    this.eventBus = config.eventBus ?? new EventBus();
+    this.eventBus = config.eventBus ?? config.events ?? (config.sharedEventBus ? EventBus.shared : new EventBus());
 
     if (config.reflection?.enabled) {
       this.reflectionManager = new ReflectionManager(config.reflection, config.model);
     }
 
-    if (config.memory) {
-      // Pass the agent's eventBus down so memory extraction errors etc.
-      // surface in observability rather than being silently console.warned.
-      this.memoryManager = new MemoryManager({ ...config.memory, eventBus: config.memory.eventBus ?? this.eventBus });
+    const memoryConfig = resolveMemoryConfig(config);
+    if (memoryConfig) {
+      this.memoryManager = new MemoryManager({ ...memoryConfig, eventBus: memoryConfig.eventBus ?? this.eventBus });
     } else {
-      const storage = new InMemoryStorage();
-      this.fallbackSessionManager = new SessionManager(storage);
+      this.fallbackSessionManager = new SessionManager(new InMemoryStorage());
+    }
+
+    if (config.fileMemory) {
+      this.fileMemory = new FileMemory(config.fileMemory === true ? {} : config.fileMemory);
+    }
+    if (config.filesystem) {
+      this.agentFs = new AgentFileSystem(config.filesystem === true ? {} : config.filesystem);
+    }
+    if (config.skillDirs && config.skillDirs.length > 0) {
+      this.skillMd = new SkillMdManager({ dirs: config.skillDirs });
+    }
+    if (config.workspace) {
+      this.workspaceToolkit = new FileSystemToolkit({ basePath: config.workspace, allowWrite: true });
+    }
+    if (config.subagents) {
+      const maxDepth = typeof config.subagents === "object" ? config.subagents.maxDepth : undefined;
+      this.taskTool = createTaskTool(this, { maxDepth });
     }
 
     if (config.skills && config.skills.length > 0) {
@@ -443,6 +506,7 @@ export class Agent {
     const ctx = new RunContext({
       sessionId,
       userId,
+      tenantId: opts?.tenantId,
       metadata: { ...opts?.metadata, agentName: this.name },
       eventBus: this.eventBus,
       sessionState: { ...session.state },
@@ -721,9 +785,11 @@ export class Agent {
     const ctx = new RunContext({
       sessionId,
       userId,
+      tenantId: opts?.tenantId,
       metadata: { ...opts?.metadata, agentName: this.name },
       eventBus: this.eventBus,
       sessionState: { ...session.state },
+      signal: opts?.signal,
     });
 
     this.eventBus.emit("run.start", {
@@ -919,6 +985,25 @@ export class Agent {
       }
     }
 
+    if (this.skillMd) {
+      const skillIndex = await this.skillMd.getIndexPrompt();
+      if (skillIndex) {
+        systemContent = systemContent ? `${systemContent}\n\n${skillIndex}` : skillIndex;
+      }
+    }
+
+    const projectContext = await this.loadContextFilesPrompt();
+    if (projectContext) {
+      systemContent = systemContent ? `${systemContent}\n\n${projectContext}` : projectContext;
+    }
+
+    if (this.fileMemory) {
+      const fileMem = await this.fileMemory.getContextString({ userId: ctx.userId, agentName: this.name });
+      if (fileMem) {
+        systemContent = systemContent ? `${systemContent}\n\n${fileMem}` : fileMem;
+      }
+    }
+
     if (this.cultureManager && this.config.culture?.addToContext) {
       const cultureContext = await this.cultureManager.buildContext();
       if (cultureContext) {
@@ -971,22 +1056,73 @@ export class Agent {
     return messages;
   }
 
-  private collectTools(config: AgentConfig): import("../tools/types.js").ToolDef[] {
+  private collectTools(config: AgentConfig): ToolDef[] {
     const tools = [...(config.tools ?? [])];
+    const names = new Set(tools.map((t) => t.name));
+    const add = (extra: ToolDef[]) => {
+      for (const tool of extra) {
+        if (names.has(tool.name)) continue;
+        names.add(tool.name);
+        tools.push(tool);
+      }
+    };
 
     if (this.memoryManager) {
-      tools.push(...this.memoryManager.getTools());
+      add(this.memoryManager.getTools());
     }
 
     if (config.handoff && config.handoff.targets.length > 0) {
-      tools.push(createHandoffTool(config.handoff.targets));
+      add([createHandoffTool(config.handoff.targets)]);
     }
 
     if (config.artifacts?.enabled) {
-      tools.push(...createArtifactTools());
+      add(createArtifactTools());
     }
 
+    if (this.fileMemory) add(this.fileMemory.getTools());
+    if (this.agentFs) add(this.agentFs.getTools());
+    if (this.skillMd) add(this.skillMd.getTools());
+    if (this.workspaceToolkit) add(this.workspaceToolkit.getTools());
+    if (this.taskTool) add([this.taskTool]);
+    if (config.searchPastSessions) add([this.createSearchSessionsTool()]);
+
     return tools;
+  }
+
+  private sessionStore(): SessionManager {
+    return this.memoryManager?.sessionManager ?? this.fallbackSessionManager!;
+  }
+
+  private createSearchSessionsTool(): ToolDef {
+    return defineTool({
+      name: "search_past_sessions",
+      description:
+        "Search older chat sessions by keyword. Use this when the user refers to something from a previous conversation.",
+      parameters: z.object({
+        query: z.string(),
+        limit: z.number().optional(),
+      }),
+      execute: async ({ query, limit }, ctx) => {
+        const hits = await this.sessionStore().searchSessions(query, { userId: ctx.userId, limit: limit ?? 8 });
+        if (hits.length === 0) return "No matching sessions.";
+        return hits.map((h) => `[${h.sessionId}] ${h.snippet}`).join("\n");
+      },
+    });
+  }
+
+  private async loadContextFilesPrompt(): Promise<string> {
+    if (!this.config.contextFiles) return "";
+    if (this.contextFilesPrompt !== undefined) return this.contextFilesPrompt;
+    const opts = this.config.contextFiles === true ? {} : this.config.contextFiles;
+    const files = await loadContextFiles(opts);
+    this.contextFilesPrompt = formatContextFiles(files);
+    return this.contextFilesPrompt;
+  }
+
+  /** Run a child agent with a fresh message list. Returns the child's final text. */
+  async spawnSubagent(task: string, spec?: SubagentSpec, runOpts?: RunOpts): Promise<string> {
+    const maxDepth = typeof this.config.subagents === "object" ? this.config.subagents.maxDepth : 2;
+    return spawnSubagent({ parent: this, task, spec, runOpts, maxDepth });
   }
 
   private buildMetrics(output: RunOutput, durationMs: number): RunMetrics {
@@ -1062,4 +1198,17 @@ export class Agent {
 
     return result;
   }
+}
+
+function resolveMemoryConfig(config: AgentConfig): UnifiedMemoryConfig | undefined {
+  const learning = config.learning;
+  if (!config.memory && !learning) return undefined;
+
+  const base: UnifiedMemoryConfig = config.memory ? { ...config.memory } : { storage: new InMemoryStorage() };
+
+  if (learning && !base.learnings) {
+    base.learnings = learning === true ? { vectorStore: new InMemoryVectorStore(new HashEmbedding()) } : learning;
+  }
+
+  return base;
 }

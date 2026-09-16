@@ -15,9 +15,9 @@ Agentium is a TypeScript-native agent orchestration framework with zero dependen
 ## Features
 
 - **Model-agnostic** — swap between OpenAI, Anthropic, Google Gemini, Ollama, or any OpenAI-compatible API with one line
-- **Agents** — tool-calling loop, session history, memory, guardrails, hooks
+- **Agents** — tool-calling loop, session history, memory, guardrails, hooks. [`Agent.deep()`](https://docs.agentium.in/agents/harness) adds project files, skills, workspace, notes, and subagents
 - **Voice / Realtime Agents** — real-time voice conversations over WebSocket
-- **Sessions & Memory** — session history, long-term summarization, cross-session user memory
+- **Sessions & Memory** — session history, standing MEMORY.md notes, long-term summaries, vector learnings
 - **Knowledge Base** — vector + BM25 hybrid search with reciprocal rank fusion
 - **Teams** — multi-agent coordination with coordinate, route, broadcast, and collaborate modes
 - **Workflows** — deterministic step execution with typed state, conditions, parallel steps, retry policies

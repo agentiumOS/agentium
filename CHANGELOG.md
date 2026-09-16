@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.0] - 2026-09-16
+
+### Added
+- **Agent harness** on `Agent` (no separate DeepAgent class): `workspace`, `skillDirs` (`SKILL.md`), `contextFiles` (`AGENTS.md`), durable `filesystem` notes, `fileMemory` (MEMORY.md / USER.md), `subagents` (`task` tool), `learning: true` (wraps existing vector learnings), `searchPastSessions`, `sharedEventBus`, and `Agent.deep()` preset.
+- **EventBus** `onAny`, `EventBus.shared` / `resetShared`, `LIFECYCLE_EVENTS`, and `subagent.*` events. Use hooks to steer a run — the bus is for watching.
+
+### Deprecated
+- `Memory`, `UserMemory`, and `CultureManager` overlap the new file + unified memory layers. Prefer `memory`, `fileMemory`, `learning`, and `contextFiles`.
+
 ## [0.3.41] - 2026-03-01
 
 ### Added

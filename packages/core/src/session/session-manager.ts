@@ -112,4 +112,38 @@ export class SessionManager {
   async deleteSession(sessionId: string): Promise<void> {
     await this.storage.delete(NAMESPACE, sessionId);
   }
+
+  /** List stored sessions, optionally filtered by user. */
+  async listSessions(opts?: { userId?: string }): Promise<Session[]> {
+    const entries = await this.storage.list<Session>(NAMESPACE);
+    const sessions = entries.map((e) => e.value);
+    if (!opts?.userId) return sessions;
+    return sessions.filter((s) => s.userId === opts.userId);
+  }
+
+  /**
+   * Search message text across sessions. Returns short snippets.
+   * This is a simple substring search, not embeddings.
+   */
+  async searchSessions(
+    query: string,
+    opts?: { userId?: string; limit?: number },
+  ): Promise<Array<{ sessionId: string; snippet: string }>> {
+    const q = query.toLowerCase().trim();
+    if (!q) return [];
+    const limit = opts?.limit ?? 8;
+    const sessions = await this.listSessions({ userId: opts?.userId });
+    const hits: Array<{ sessionId: string; snippet: string }> = [];
+    for (const session of sessions) {
+      for (const msg of session.messages) {
+        const text = typeof msg.content === "string" ? msg.content : "";
+        const idx = text.toLowerCase().indexOf(q);
+        if (idx === -1) continue;
+        const start = Math.max(0, idx - 40);
+        hits.push({ sessionId: session.sessionId, snippet: text.slice(start, start + 160) });
+        if (hits.length >= limit) return hits;
+      }
+    }
+    return hits;
+  }
 }

@@ -8,6 +8,13 @@ import type { ToolDef } from "../tools/types.js";
 
 const USER_MEMORY_NS = "memory:user";
 
+/**
+ * Cross-session user facts (legacy class).
+ *
+ * @deprecated Use `memory: { storage, userFacts: true, userProfile: true }` on `Agent`
+ * (MemoryManager) for extracted facts, or `fileMemory: true` for a tiny USER.md file.
+ * This class will be removed in the next major version.
+ */
 export interface UserMemoryConfig {
   storage?: StorageDriver;
   /** LLM used for auto-extraction of facts from conversations. */
@@ -43,6 +50,10 @@ Conversation:
 
 Return a JSON array of new fact strings:`;
 
+/**
+ * @deprecated Use `memory: { storage, userFacts: true, userProfile: true }` on `Agent`.
+ * Will be removed in the next major version.
+ */
 export class UserMemory {
   private storage: StorageDriver;
   private model?: ModelProvider;
