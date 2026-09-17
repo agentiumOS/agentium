@@ -386,6 +386,113 @@ describe("OpenAIProvider", () => {
       expect(args.temperature).toBeUndefined();
     });
   });
+
+  describe("GPT-5.6 / GPT-6 tools + reasoning", () => {
+    const tools = [{ name: "test_tool", description: "A test", parameters: { type: "object" } }];
+    const chatOk = {
+      choices: [{ message: { content: "hi", tool_calls: [] }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+    };
+    const responsesOk = {
+      output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }],
+      output_text: "ok",
+      usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 },
+    };
+
+    it("sends gpt-5.6-terra + tools through Responses (not Chat Completions)", async () => {
+      const mockResponses = vi.fn().mockResolvedValueOnce(responsesOk);
+      const provider = makeProvider("gpt-5.6-terra");
+      (provider as any).client.responses = { create: mockResponses };
+
+      const result = await provider.generate([{ role: "user", content: "test" }], { tools });
+      expect(result.message.content).toBe("ok");
+      expect(mockResponses).toHaveBeenCalledTimes(1);
+      expect(mockCreate).not.toHaveBeenCalled();
+      const args = mockResponses.mock.calls[0][0];
+      expect(args.model).toBe("gpt-5.6-terra");
+      expect(args.tools[0]).toMatchObject({ type: "function", name: "test_tool" });
+      expect(args.tools[0].function).toBeUndefined();
+    });
+
+    it("passes reasoning.effort on Responses when tools + reasoning are both set", async () => {
+      const mockResponses = vi.fn().mockResolvedValueOnce(responsesOk);
+      const provider = makeProvider("gpt-5.6-sol");
+      (provider as any).client.responses = { create: mockResponses };
+
+      await provider.generate([{ role: "user", content: "test" }], {
+        tools,
+        reasoning: { enabled: true, effort: "high" },
+      });
+      expect(mockResponses.mock.calls[0][0].reasoning).toEqual({ effort: "high" });
+    });
+
+    it("stays on Chat Completions with reasoning_effort none when effort is none", async () => {
+      mockCreate.mockResolvedValueOnce(chatOk);
+      const mockResponses = vi.fn();
+      const provider = makeProvider("gpt-5.6-terra");
+      (provider as any).client.responses = { create: mockResponses };
+
+      await provider.generate([{ role: "user", content: "test" }], {
+        tools,
+        reasoning: { enabled: true, effort: "none" },
+      });
+      expect(mockResponses).not.toHaveBeenCalled();
+      expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe("none");
+      expect(mockCreate.mock.calls[0][0].tools[0].function.name).toBe("test_tool");
+    });
+
+    it("falls back to Chat Completions with reasoning_effort none when Responses is missing", async () => {
+      mockCreate.mockResolvedValueOnce(chatOk);
+      const provider = makeProvider("gpt-5.6-terra");
+
+      await provider.generate([{ role: "user", content: "test" }], { tools });
+      expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe("none");
+    });
+
+    it("falls back to Chat Completions with none when Responses returns 404", async () => {
+      mockCreate.mockResolvedValueOnce(chatOk);
+      const notFound = Object.assign(new Error("Unknown request URL"), { status: 404 });
+      const mockResponses = vi.fn().mockRejectedValueOnce(notFound);
+      const provider = makeProvider("gpt-5.6-luna");
+      (provider as any).client.responses = { create: mockResponses };
+
+      await provider.generate([{ role: "user", content: "test" }], { tools });
+      expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe("none");
+    });
+
+    it("keeps gpt-5.6 without tools on Chat Completions", async () => {
+      mockCreate.mockResolvedValueOnce(chatOk);
+      const mockResponses = vi.fn();
+      const provider = makeProvider("gpt-5.6-terra");
+      (provider as any).client.responses = { create: mockResponses };
+
+      await provider.generate([{ role: "user", content: "test" }], {
+        reasoning: { enabled: true, effort: "high" },
+      });
+      expect(mockResponses).not.toHaveBeenCalled();
+      expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe("high");
+    });
+
+    it("sends gpt-6 + tools through Responses", async () => {
+      const mockResponses = vi.fn().mockResolvedValueOnce({
+        ...responsesOk,
+        output: [
+          {
+            type: "function_call",
+            call_id: "call_1",
+            name: "test_tool",
+            arguments: '{"q":1}',
+          },
+        ],
+      });
+      const provider = makeProvider("gpt-6-astra");
+      (provider as any).client.responses = { create: mockResponses };
+
+      const result = await provider.generate([{ role: "user", content: "test" }], { tools });
+      expect(result.finishReason).toBe("tool_calls");
+      expect(result.message.toolCalls).toEqual([{ id: "call_1", name: "test_tool", arguments: { q: 1 } }]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -456,6 +563,42 @@ describe("AnthropicProvider", () => {
       expect(toolResultMsg.role).toBe("user");
       expect(toolResultMsg.content[0].type).toBe("tool_result");
       expect(toolResultMsg.content[0].tool_use_id).toBe("tc_1");
+    });
+
+    it("replays thinking blocks from providerExtras on the next tool turn", async () => {
+      mockCreate.mockResolvedValueOnce({
+        content: [{ type: "text", text: "done" }],
+        usage: { input_tokens: 5, output_tokens: 3 },
+        stop_reason: "end_turn",
+      });
+
+      const thinkingBlocks = [
+        { type: "thinking", thinking: "hmm", signature: "sig_abc" },
+        { type: "tool_use", id: "tc_1", name: "lookup", input: { q: "x" } },
+      ];
+      const provider = makeProvider();
+      await provider.generate(
+        [
+          { role: "user", content: "hi" },
+          {
+            role: "assistant",
+            content: null,
+            toolCalls: [{ id: "tc_1", name: "lookup", arguments: { q: "x" } }],
+            providerExtras: { anthropicContent: thinkingBlocks },
+          },
+          { role: "tool", content: "ok", toolCallId: "tc_1" },
+        ],
+        {
+          reasoning: { enabled: true, budgetTokens: 2048 },
+          tools: [{ name: "lookup", description: "d", parameters: { type: "object" } }],
+        },
+      );
+
+      const args = mockCreate.mock.calls[0][0];
+      expect(args.messages[1].content).toEqual(thinkingBlocks);
+      expect(args.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+      expect(args.temperature).toBeUndefined();
+      expect(args.top_p).toBeUndefined();
     });
 
     it("converts assistant messages with tool_use blocks", async () => {
@@ -541,6 +684,11 @@ describe("AnthropicProvider", () => {
         name: "search",
         arguments: { query: "test" },
       });
+      expect(result.message.providerExtras?.anthropicContent?.[1]).toMatchObject({
+        type: "tool_use",
+        id: "tu_1",
+        name: "search",
+      });
     });
 
     it("maps max_tokens stop_reason to length", async () => {
@@ -570,6 +718,10 @@ describe("AnthropicProvider", () => {
 
       expect(result.message.content).toBe("The answer is 42");
       expect((result as any).thinking).toBe("Step 1: analyze...");
+      expect(result.message.providerExtras?.anthropicContent).toEqual([
+        { type: "thinking", thinking: "Step 1: analyze..." },
+        { type: "text", text: "The answer is 42" },
+      ]);
     });
 
     it("handles empty content blocks", async () => {
@@ -648,5 +800,30 @@ describe("ModelRegistry", () => {
     expect(modelRegistry.has("google")).toBe(true);
     expect(modelRegistry.has("ollama")).toBe(true);
     expect(modelRegistry.has("vertex")).toBe(true);
+  });
+});
+
+describe("OpenAICompatibleProvider GPT-5.6 tools", () => {
+  const origKey = process.env.XAI_API_KEY;
+
+  afterEach(() => {
+    if (origKey) process.env.XAI_API_KEY = origKey;
+    else delete process.env.XAI_API_KEY;
+  });
+
+  it("forces reasoning_effort none on Chat Completions when Responses is absent", async () => {
+    process.env.XAI_API_KEY = "test-key";
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "hi", tool_calls: [] }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
+    const { XAIProvider } = await import("../providers/xai.js");
+    const provider = new XAIProvider("gpt-5.6-terra");
+    (provider as any).client = { chat: { completions: { create: mockCreate } } };
+
+    await provider.generate([{ role: "user", content: "test" }], {
+      tools: [{ name: "t", description: "t", parameters: { type: "object" } }],
+    });
+    expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe("none");
   });
 });

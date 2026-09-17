@@ -446,6 +446,7 @@ export class LLMLoop {
       }> = [];
       let finishReason = "stop";
       let chunkUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      let providerExtras: Record<string, unknown> | undefined;
 
       const streamGen = this.provider.stream(currentMessages, modelConfig);
 
@@ -472,6 +473,7 @@ export class LLMLoop {
         } else if (chunk.type === "finish") {
           finishReason = chunk.finishReason;
           if (chunk.usage) chunkUsage = chunk.usage;
+          if (chunk.providerExtras) providerExtras = chunk.providerExtras;
         }
       }
 
@@ -504,6 +506,7 @@ export class LLMLoop {
           }
           return { id: tc.id, name: tc.name, arguments: parsed };
         }),
+        ...(providerExtras ? { providerExtras } : {}),
       };
       currentMessages.push(assistantMsg);
 

@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { generateOpenAIStyle, streamOpenAIStyle } from "../openai-api.js";
 import type { ModelProvider } from "../provider.js";
 import {
   type ChatMessage,
@@ -296,119 +297,13 @@ export class PerplexityProvider implements ModelProvider {
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): Promise<ModelResponse> {
-    const params: Record<string, unknown> = {
-      model: this.modelId,
-      messages: this.toPerplexityMessages(messages),
-    };
-    if (options?.temperature !== undefined) params.temperature = options.temperature;
-    if (options?.maxTokens !== undefined) params.max_tokens = options.maxTokens;
-    if (options?.topP !== undefined) params.top_p = options.topP;
-    if (options?.stop) params.stop = options.stop;
-    if (options?.responseFormat === "json") {
-      params.response_format = { type: "json_object" };
-    }
-
-    const response = await this.client.chat.completions.create(params);
-    return this.normalizeOpenAI(response);
+    return generateOpenAIStyle(this.client, this.modelId, messages, options);
   }
 
   private async *streamOpenAI(
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): AsyncGenerator<StreamChunk> {
-    const params: Record<string, unknown> = {
-      model: this.modelId,
-      messages: this.toPerplexityMessages(messages),
-      stream: true,
-      stream_options: { include_usage: true },
-    };
-    if (options?.temperature !== undefined) params.temperature = options.temperature;
-    if (options?.maxTokens !== undefined) params.max_tokens = options.maxTokens;
-    if (options?.topP !== undefined) params.top_p = options.topP;
-    if (options?.stop) params.stop = options.stop;
-    if (options?.responseFormat === "json") {
-      params.response_format = { type: "json_object" };
-    }
-
-    const stream = await this.client.chat.completions.create(params);
-    let finishReason: string | null = null;
-
-    for await (const chunk of stream as any) {
-      const choice = chunk.choices?.[0];
-      if (!choice) {
-        if (chunk.usage && finishReason) {
-          yield {
-            type: "finish",
-            finishReason: finishReason ?? "stop",
-            usage: {
-              promptTokens: chunk.usage.prompt_tokens ?? 0,
-              completionTokens: chunk.usage.completion_tokens ?? 0,
-              totalTokens: chunk.usage.total_tokens ?? 0,
-              providerMetrics: { ...chunk.usage },
-            },
-          };
-        }
-        continue;
-      }
-
-      const delta = choice.delta;
-      if (delta?.content) yield { type: "text", text: delta.content };
-
-      if (choice.finish_reason) {
-        finishReason = choice.finish_reason;
-        if (chunk.usage) {
-          yield {
-            type: "finish",
-            finishReason: finishReason ?? "stop",
-            usage: {
-              promptTokens: chunk.usage.prompt_tokens ?? 0,
-              completionTokens: chunk.usage.completion_tokens ?? 0,
-              totalTokens: chunk.usage.total_tokens ?? 0,
-              providerMetrics: { ...chunk.usage },
-            },
-          };
-          finishReason = null;
-        }
-      }
-    }
-
-    if (finishReason) yield { type: "finish" as const, finishReason, usage: undefined };
-  }
-
-  private normalizeOpenAI(response: any): ModelResponse {
-    const choice = response.choices[0];
-    const msg = choice.message;
-
-    const toolCalls: ToolCall[] = (msg.tool_calls ?? []).map((tc: any) => {
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(tc.function.arguments || "{}");
-      } catch {
-        /* ignore */
-      }
-      return { id: tc.id, name: tc.function.name, arguments: args };
-    });
-
-    const usage: TokenUsage = {
-      promptTokens: response.usage?.prompt_tokens ?? 0,
-      completionTokens: response.usage?.completion_tokens ?? 0,
-      totalTokens: response.usage?.total_tokens ?? 0,
-      providerMetrics: response.usage ? { ...response.usage } : undefined,
-    };
-
-    let finishReason: ModelResponse["finishReason"] = "stop";
-    if (choice.finish_reason === "tool_calls") finishReason = "tool_calls";
-    else if (choice.finish_reason === "length") finishReason = "length";
-
-    return {
-      message: {
-        role: "assistant",
-        content: msg.content ?? null,
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      },
-      usage,
-      finishReason,
-      raw: response,
-    };
+    yield* streamOpenAIStyle(this.client, this.modelId, messages, options);
   }
 }

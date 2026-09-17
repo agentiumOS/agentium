@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import type { ModelProvider } from "../provider.js";
+import { anthropicReplayContent, extrasFromAnthropicContent } from "../thinking-replay.js";
 import {
   type ChatMessage,
   type ContentPart,
@@ -147,6 +148,7 @@ export class AnthropicProvider implements ModelProvider {
         budget_tokens: thinkingBudget,
       };
       delete params.temperature;
+      delete params.top_p;
     }
 
     const client = this.getClient(options?.apiKey);
@@ -188,6 +190,7 @@ export class AnthropicProvider implements ModelProvider {
         budget_tokens: thinkingBudget,
       };
       delete params.temperature;
+      delete params.top_p;
     }
 
     const client = this.getClient(options?.apiKey);
@@ -196,30 +199,56 @@ export class AnthropicProvider implements ModelProvider {
     let currentToolId = "";
     let inThinkingBlock = false;
     let inputTokens = 0;
+    const replayContent: unknown[] = [];
+    let currentBlock: Record<string, unknown> | null = null;
+    let toolInputJson = "";
 
     for await (const event of stream) {
       switch (event.type) {
         case "content_block_start": {
-          if (event.content_block?.type === "tool_use") {
-            currentToolId = event.content_block.id;
+          const block = event.content_block;
+          if (block?.type === "tool_use") {
+            currentToolId = block.id;
+            toolInputJson = "";
+            currentBlock = { type: "tool_use", id: block.id, name: block.name, input: block.input ?? {} };
+            replayContent.push(currentBlock);
             yield {
               type: "tool_call_start",
               toolCall: {
-                id: event.content_block.id,
-                name: event.content_block.name,
+                id: block.id,
+                name: block.name,
               },
             };
-          } else if (event.content_block?.type === "thinking") {
+          } else if (block?.type === "thinking") {
             inThinkingBlock = true;
+            currentBlock = { type: "thinking", thinking: block.thinking ?? "", signature: block.signature ?? "" };
+            replayContent.push(currentBlock);
+          } else if (block?.type === "redacted_thinking") {
+            currentBlock = { type: "redacted_thinking", data: block.data };
+            replayContent.push(currentBlock);
+          } else if (block?.type === "text") {
+            currentBlock = { type: "text", text: block.text ?? "" };
+            replayContent.push(currentBlock);
           }
           break;
         }
         case "content_block_delta": {
           if (event.delta?.type === "thinking_delta") {
+            if (currentBlock?.type === "thinking") {
+              currentBlock.thinking = `${currentBlock.thinking ?? ""}${event.delta.thinking ?? ""}`;
+            }
             yield { type: "thinking", text: event.delta.thinking };
+          } else if (event.delta?.type === "signature_delta") {
+            if (currentBlock?.type === "thinking") {
+              currentBlock.signature = `${currentBlock.signature ?? ""}${event.delta.signature ?? ""}`;
+            }
           } else if (event.delta?.type === "text_delta") {
+            if (currentBlock?.type === "text") {
+              currentBlock.text = `${currentBlock.text ?? ""}${event.delta.text ?? ""}`;
+            }
             yield { type: "text", text: event.delta.text };
           } else if (event.delta?.type === "input_json_delta") {
+            toolInputJson += event.delta.partial_json ?? "";
             yield {
               type: "tool_call_delta",
               toolCallId: currentToolId,
@@ -229,12 +258,20 @@ export class AnthropicProvider implements ModelProvider {
           break;
         }
         case "content_block_stop": {
+          if (currentBlock?.type === "tool_use" && toolInputJson) {
+            try {
+              currentBlock.input = JSON.parse(toolInputJson);
+            } catch {
+              /* keep whatever was on the start event */
+            }
+          }
           if (inThinkingBlock) {
             inThinkingBlock = false;
           } else if (currentToolId) {
             yield { type: "tool_call_end", toolCallId: currentToolId };
             currentToolId = "";
           }
+          currentBlock = null;
           break;
         }
         case "message_delta": {
@@ -251,7 +288,12 @@ export class AnthropicProvider implements ModelProvider {
           if (finishReason === "tool_use") finishReason = "tool_calls";
           if (finishReason === "end_turn") finishReason = "stop";
 
-          yield { type: "finish", finishReason, usage };
+          yield {
+            type: "finish",
+            finishReason,
+            usage,
+            providerExtras: extrasFromAnthropicContent(replayContent),
+          };
           break;
         }
         case "message_start": {
@@ -293,6 +335,11 @@ export class AnthropicProvider implements ModelProvider {
       }
 
       if (msg.role === "assistant") {
+        const replay = anthropicReplayContent(msg);
+        if (replay) {
+          anthropicMessages.push({ role: "assistant", content: replay });
+          continue;
+        }
         const content: unknown[] = [];
         if (msg.content) {
           content.push({ type: "text", text: msg.content });
@@ -409,11 +456,13 @@ export class AnthropicProvider implements ModelProvider {
     if (response.stop_reason === "tool_use") finishReason = "tool_calls";
     else if (response.stop_reason === "max_tokens") finishReason = "length";
 
+    const extras = extrasFromAnthropicContent(response.content);
     const result: ModelResponse & { thinking?: string } = {
       message: {
         role: "assistant",
         content: textContent || null,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        ...(extras ? { providerExtras: extras } : {}),
       },
       usage,
       finishReason,

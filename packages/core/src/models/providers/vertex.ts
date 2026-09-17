@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import type { ModelProvider } from "../provider.js";
+import { applyGoogleThinkingConfig, extrasFromGoogleParts, googleReplayParts } from "../thinking-replay.js";
 import {
   type ChatMessage,
   type ContentPart,
@@ -121,9 +122,7 @@ export class VertexAIProvider implements ModelProvider {
     }
 
     if (options?.reasoning?.enabled) {
-      config.thinkingConfig = {
-        thinkingBudget: options.reasoning.budgetTokens ?? 10000,
-      };
+      applyGoogleThinkingConfig(config, this.modelId, options);
     }
 
     if (systemInstruction) config.systemInstruction = systemInstruction;
@@ -156,9 +155,7 @@ export class VertexAIProvider implements ModelProvider {
     if (options?.stop) config.stopSequences = options.stop;
 
     if (options?.reasoning?.enabled) {
-      config.thinkingConfig = {
-        thinkingBudget: options.reasoning.budgetTokens ?? 10000,
-      };
+      applyGoogleThinkingConfig(config, this.modelId, options);
     }
 
     if (systemInstruction) config.systemInstruction = systemInstruction;
@@ -176,10 +173,17 @@ export class VertexAIProvider implements ModelProvider {
     const streamResult = await this.withRetry<any>(() => client.models.generateContentStream(params));
 
     let toolCallCounter = 0;
+    let replayParts: unknown[] = [];
 
     for await (const chunk of streamResult) {
       const candidate = chunk.candidates?.[0];
       if (!candidate?.content?.parts) continue;
+
+      if (candidate.finishReason && candidate.content.parts.length) {
+        replayParts = candidate.content.parts;
+      } else {
+        replayParts = replayParts.concat(candidate.content.parts);
+      }
 
       for (const part of candidate.content.parts) {
         if (part.thought) {
@@ -226,6 +230,7 @@ export class VertexAIProvider implements ModelProvider {
                 providerMetrics: this.extractProviderMetrics(cum),
               }
             : undefined,
+          providerExtras: extrasFromGoogleParts(replayParts),
         };
       }
     }
@@ -262,6 +267,11 @@ export class VertexAIProvider implements ModelProvider {
       }
 
       if (msg.role === "assistant") {
+        const replay = googleReplayParts(msg);
+        if (replay) {
+          contents.push({ role: "model", parts: replay });
+          continue;
+        }
         const parts: unknown[] = [];
         if (msg.content) {
           if (typeof msg.content === "string") {
@@ -417,11 +427,13 @@ export class VertexAIProvider implements ModelProvider {
     else if (candidate?.finishReason === "MAX_TOKENS") finishReason = "length";
     else if (candidate?.finishReason === "SAFETY") finishReason = "content_filter";
 
+    const extras = extrasFromGoogleParts(parts);
     const result: ModelResponse & { thinking?: string } = {
       message: {
         role: "assistant",
         content: textContent || null,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        ...(extras ? { providerExtras: extras } : {}),
       },
       usage,
       finishReason,

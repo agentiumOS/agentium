@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.2] - 2026-09-17
+
+### Fixed
+- **GPT-5.6 / GPT-6 function tools.** Chat Completions rejects function tools unless `reasoning_effort` is `none` (GPT-5.6 defaults to medium when the field is omitted). OpenAI, Azure OpenAI, openai-compatible gateways (xAI, Vercel, DeepSeek, Meta, LiteLLM), Azure Foundry, and the OpenAI-compat fallbacks for Mistral / Cohere / Perplexity now send tools + reasoning through `/v1/responses`, and fall back to Chat Completions with `reasoning_effort: "none"` when Responses is unavailable.
+- **Claude / Gemini tools + thinking.** Anthropic, AWS Claude, Gemini, and Vertex already allow tools with thinking on their native APIs — they do not use `reasoning_effort`. They still 400 if the next turn drops thinking signatures. Agentium now replays Anthropic `thinking` / `redacted_thinking` blocks (with signatures) and Gemini `thoughtSignature` parts through the tool loop.
+
 ## [3.0.1] - 2026-09-17
 
 ### Fixed

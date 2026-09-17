@@ -42,6 +42,13 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   toolCallId?: string;
   name?: string;
+  /**
+   * Opaque provider payload replayed on the next request. Anthropic needs the
+   * original `thinking` / `redacted_thinking` blocks (with signatures) before
+   * `tool_use`; Gemini 2.5/3 needs `thoughtSignature` on function-call parts.
+   * Dropping these 400s a tools + reasoning loop.
+   */
+  providerExtras?: Record<string, unknown>;
 }
 
 // ── Tool definitions ──────────────────────────────────────────────────────
@@ -88,14 +95,18 @@ export type StreamChunk =
   | { type: "tool_call_start"; toolCall: { id: string; name: string } }
   | { type: "tool_call_delta"; toolCallId: string; argumentsDelta: string }
   | { type: "tool_call_end"; toolCallId: string }
-  | { type: "finish"; finishReason: string; usage?: TokenUsage };
+  | { type: "finish"; finishReason: string; usage?: TokenUsage; providerExtras?: Record<string, unknown> };
 
 // ── Model config ──────────────────────────────────────────────────────────
 
 export interface ReasoningConfig {
   enabled: boolean;
-  /** Reasoning effort for OpenAI o-series models. */
-  effort?: "low" | "medium" | "high";
+  /**
+   * Reasoning effort for OpenAI-family models (o-series, GPT-5.x, GPT-6).
+   * `none` keeps function tools on Chat Completions; any other value with
+   * tools is sent through the Responses API on GPT-5.4+ / GPT-6.
+   */
+  effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** Token budget for thinking (Anthropic / Gemini). */
   budgetTokens?: number;
 }
