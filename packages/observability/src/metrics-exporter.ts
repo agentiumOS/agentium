@@ -23,12 +23,8 @@ export interface AgentMetrics {
   correctionRate: number;
   /** Average self-critique score (0-1) from reflection, if enabled. */
   avgCritiqueScore?: number;
-  /** Estimated total KV cache memory (GB) across all sessions. Requires capacity module. */
-  estimatedKvCacheGb?: number;
   /** Average context length (tokens) per run. */
   avgContextLength?: number;
-  /** Session count by category (light/medium/heavy/extreme). */
-  sessionCategories?: Record<string, number>;
 }
 
 export interface MetricEvent {
@@ -63,8 +59,6 @@ export class MetricsExporter {
   private listeners: Array<{ event: string; handler: (...args: any[]) => void }> = [];
   private subscribers = new Set<(event: MetricEvent) => void>();
   private maxRecords = 50_000;
-  private sessionCategories: Record<string, number> = {};
-  private estimatedKvCacheGb?: number;
   private corrections: Record<string, number> = {};
   private critiqueScores: Record<string, number[]> = {};
 
@@ -155,16 +149,6 @@ export class MetricsExporter {
           if (data.usage?.cost) this.runs[i].cost = data.usage.cost;
           break;
         }
-      }
-    });
-
-    on("capacity.session.classified", (data: { category: string }) => {
-      this.sessionCategories[data.category] = (this.sessionCategories[data.category] ?? 0) + 1;
-    });
-
-    on("capacity.warning", (data: { estimatedKvGb?: number }) => {
-      if (data.estimatedKvGb !== undefined) {
-        this.estimatedKvCacheGb = data.estimatedKvGb;
       }
     });
 
@@ -268,8 +252,6 @@ export class MetricsExporter {
       correctionRate: totalRuns > 0 ? correctionsTotal / totalRuns : 0,
       avgCritiqueScore,
       avgContextLength,
-      sessionCategories: this.sessionCategories,
-      estimatedKvCacheGb: this.estimatedKvCacheGb,
     };
   }
 
@@ -348,26 +330,6 @@ export class MetricsExporter {
         const m = this.getMetrics(agent);
         lines.push(`agentium_agent_critique_score_avg{agent="${agent}"} ${m.avgCritiqueScore}`);
       }
-    }
-
-    if (this.estimatedKvCacheGb !== undefined) {
-      lines.push("# HELP agentium_kv_cache_estimated_gb Estimated KV cache size in GB");
-      lines.push("# TYPE agentium_kv_cache_estimated_gb gauge");
-      lines.push(`agentium_kv_cache_estimated_gb ${this.estimatedKvCacheGb}`);
-    }
-
-    const categories = Object.entries(this.sessionCategories);
-    if (categories.length > 0) {
-      lines.push("# HELP agentium_session_category_total Sessions by category");
-      lines.push("# TYPE agentium_session_category_total counter");
-      for (const [category, count] of categories) {
-        lines.push(`agentium_session_category_total{category="${category}"} ${count}`);
-      }
-
-      const totalSessions = categories.reduce((s, [, c]) => s + c, 0);
-      lines.push("# HELP agentium_capacity_sessions_total Total tracked sessions");
-      lines.push("# TYPE agentium_capacity_sessions_total counter");
-      lines.push(`agentium_capacity_sessions_total ${totalSessions}`);
     }
 
     return `${lines.join("\n")}\n`;

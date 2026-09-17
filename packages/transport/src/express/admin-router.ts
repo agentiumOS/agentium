@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import type { MCPToolProviderConfig } from "@agentium/core";
-import { toolkitCatalog } from "@agentium/core";
+import { toolkitCatalog } from "@agentium/core/toolkits";
 import { MCPManager } from "./mcp-manager.js";
 
 const _require = createRequire(import.meta.url);

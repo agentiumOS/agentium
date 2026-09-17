@@ -21,7 +21,7 @@ Agentium is a TypeScript-native agent orchestration framework with zero dependen
 - **Knowledge Base** — vector + BM25 hybrid search with reciprocal rank fusion
 - **Teams** — multi-agent coordination with coordinate, route, broadcast, and collaborate modes
 - **Workflows** — deterministic step execution with typed state, conditions, parallel steps, retry policies
-- **Toolkit Catalog** — 18+ built-in toolkits with dynamic credential management via Admin API
+- **Toolkit Catalog** — 30+ built-in toolkits from `@agentium/core/toolkits`, with dynamic credential management via Admin API
 - **Edge & IoT** — Raspberry Pi support with GPIO, I2C sensors, camera, BLE, Ollama local LLM
 - **Transport** — Express REST + SSE streaming + Socket.IO real-time + Voice gateway
 - **Queue** — BullMQ-based background job execution with progress tracking

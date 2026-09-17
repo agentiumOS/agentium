@@ -4,7 +4,8 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "paths": {
-      "@agentium/core": ["../core/dist/index.d.ts"]
+      "@agentium/core": ["../core/dist/index.d.ts"],
+      "@agentium/core/toolkits": ["../core/dist/toolkits/index.d.ts"]
     }
   },
   "include": ["src"]

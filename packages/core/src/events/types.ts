@@ -2,8 +2,9 @@ import type { RunOutput } from "../agent/types.js";
 import type { TokenUsage } from "../models/types.js";
 
 /**
- * Canonical lifecycle events. Prefer these for product code, tracers, and webhooks.
- * Everything else in `AgentEventMap` is kept for backward compatibility.
+ * Canonical lifecycle events — every one of these is really emitted by a run.
+ * Prefer them for product code, tracers, and webhooks. The rest of
+ * `AgentEventMap` covers voice, vision, browser, compaction, and reflection.
  */
 export const LIFECYCLE_EVENTS = [
   "run.start",
@@ -101,100 +102,6 @@ export type AgentEventMap = {
   "subagent.complete": { runId: string; parentRunId: string; agentName: string; text: string };
   "subagent.error": { runId: string; parentRunId: string; agentName: string; error: Error };
 
-  /** @deprecated Never emitted. Use `memory.extract` / `memory.error`. */
-  "memory.stored": { store: string; key: string; agentName: string };
-  /** @deprecated Never emitted. */
-  "memory.fact.added": { userId: string; fact: string; source: "auto" | "manual"; importance?: number };
-  /** @deprecated Never emitted. */
-  "memory.fact.invalidated": { userId: string; factId: string; reason: string };
-  /** @deprecated Never emitted. */
-  "memory.fact.consolidated": { userId: string; mergedCount: number; resultFact: string };
-  /** @deprecated Never emitted. */
-  "memory.graph.node.added": { nodeId: string; type: string; name: string };
-  /** @deprecated Never emitted. */
-  "memory.graph.edge.added": { edgeId: string; sourceId: string; targetId: string; type: string };
-  /** @deprecated Never emitted. */
-  "memory.procedure.recorded": { trigger: string; stepCount: number };
-  /** @deprecated Never emitted. */
-  "memory.context.built": { sessionId: string; totalTokens: number; sections: Record<string, number> };
-  /** @deprecated Never emitted. */
-  "memory.recall": { query: string; resultCount: number; topScore: number };
-  /** @deprecated Never emitted. Subscribe via SkillMdManager instead. */
-  "skill.loaded": { skillName: string; source: string };
-  /** @deprecated Never emitted. */
-  "skill.learned": { skillName: string; agentName: string };
-  /** @deprecated Never emitted. Use `cost.tracked` plus CostTracker.checkBudget. */
-  "cost.budget.exceeded": { runId: string; agentName: string; budget: string; current: number; limit: number };
-  /** @deprecated Never emitted. */
-  "trace.complete": { traceId: string };
-  /** @deprecated Never emitted. Use loopHooks.onRoundtripComplete. */
-  "loop.roundtrip.complete": { runId: string; roundtrip: number; tokensSoFar: TokenUsage };
-  /** @deprecated Never emitted. */
-  "loop.budget.exceeded": { runId: string; agentName: string; roundtrip: number };
-  /** @deprecated Never emitted. */
-  "checkpoint.saved": { runId: string; checkpointId: string; roundtrip: number };
-  /** @deprecated Never emitted. */
-  "checkpoint.rollback": { checkpointId: string; runId: string };
-  /** @deprecated Never emitted. */
-  "pii.scrubbed": { runId: string; fieldsCount: number };
-  /** @deprecated Prefer logger for compaction internals. */
-  "context.compressed": { runId: string; beforeTokens: number; afterTokens: number };
   "context.compacted": { runId: string; beforeTokens: number; afterTokens: number; strategy: string };
-  /** @deprecated Never emitted. */
-  "capacity.session.classified": {
-    sessionId: string;
-    category: "light" | "medium" | "heavy" | "extreme";
-    totalTokens: number;
-    previousCategory?: "light" | "medium" | "heavy" | "extreme";
-  };
-  /** @deprecated Never emitted. */
-  "capacity.warning": {
-    type: "kv_pressure" | "session_limit";
-    message: string;
-    estimatedKvGb: number;
-    sessionCount: number;
-  };
-  /** @deprecated Never emitted. */
-  "metrics.snapshot": { timestamp: number };
-  /** @deprecated Never emitted. */
-  "model.fallback": { from: string; to: string; error: string };
-  /** @deprecated Never emitted. */
-  "model.circuit.open": { provider: string; modelId: string; failureCount: number };
-  /** @deprecated Never emitted. */
-  "model.circuit.close": { provider: string; modelId: string };
-  /** @deprecated Never emitted. */
-  "model.routed": { tier: number; complexity: number; modelId: string };
   "reflection.critique": { runId: string; pass: boolean; score: number; feedback: string };
-  /** @deprecated Never emitted. */
-  "reflection.loop.escaped": { runId: string; tool: string; repeatCount: number };
-  /** @deprecated Never emitted. */
-  "reflection.postmortem": { runId: string; lesson: string; category: string };
-  /** @deprecated Never emitted. */
-  "version.created": { agentName: string; versionId: string };
-  /** @deprecated Never emitted. */
-  "ab.routed": { testName: string; variant: "control" | "variant"; userId?: string };
-  /** @deprecated Never emitted. */
-  "ab.metrics": { testName: string; control: Record<string, number>; variant: Record<string, number> };
-  /** @deprecated Never emitted. */
-  "shadow.compared": { agentName: string; match: boolean; similarity: number };
-  /** @deprecated Never emitted. */
-  "compliance.audit.logged": { entryId: string; action: string; agentName: string };
-  /** @deprecated Never emitted. */
-  "compliance.erasure": { userId: string; storesErased: number; entriesAnonymized: number };
-  /** @deprecated Never emitted. */
-  "compliance.retention.purged": { purgedCount: number };
-  /** @deprecated Never emitted. */
-  "tenant.scoped": { tenantId: string; agentName: string };
-  /** @deprecated Never emitted. */
-  "rateLimit.throttled": { scope: string; limitType: string; resetMs: number };
-  /** @deprecated Never emitted. */
-  "rateLimit.degraded": { scope: string; originalModel: string; degradedModel: string };
-  /** @deprecated Never emitted. */
-  "rateLimit.rejected": { scope: string; reason: string };
-  "schedule.fired": { scheduleId: string; agentName: string };
-  "schedule.completed": { scheduleId: string; agentName: string; runCount: number };
-  "schedule.error": { scheduleId: string; agentName: string; error: Error };
-  "trigger.fired": { triggerId: string; agentName: string; event: string };
-  /** @deprecated Never emitted. */
-  "context.curated": { runId: string; originalCount: number; curatedCount: number; failedRemoved: number };
 };

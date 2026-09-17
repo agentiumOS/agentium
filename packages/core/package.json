@@ -1,8 +1,11 @@
 {
   "name": "@agentium/core",
-  "version": "2.7.0",
+  "version": "3.0.0",
   "description": "Core framework for building AI agents with tools, memory, and multi-model support",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/agentiumOS/agentium.git",
@@ -23,18 +26,44 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs",
-      "default": "./dist/index.js"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./toolkits": {
+      "import": {
+        "types": "./dist/toolkits/index.d.ts",
+        "default": "./dist/toolkits/index.js"
+      },
+      "require": {
+        "types": "./dist/toolkits/index.d.cts",
+        "default": "./dist/toolkits/index.cjs"
+      }
+    },
+    "./toolkits/*": {
+      "import": {
+        "types": "./dist/toolkits/*.d.ts",
+        "default": "./dist/toolkits/*.js"
+      },
+      "require": {
+        "types": "./dist/toolkits/*.d.cts",
+        "default": "./dist/toolkits/*.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
+  "sideEffects": false,
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/tools/sandbox-worker.ts --format esm,cjs --dts --shims --clean",
-    "dev": "tsup src/index.ts src/tools/sandbox-worker.ts --format esm,cjs --dts --shims --watch",
+    "build": "tsup --config tsup.config.ts",
+    "dev": "tsup --config tsup.config.ts --watch",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
@@ -70,7 +99,6 @@
     "neo4j-driver": ">=5.0.0",
     "cohere-ai": ">=7.0.0",
     "@xenova/transformers": ">=2.0.0",
-    "lmdb": ">=3.0.0",
     "@e2b/sdk": ">=0.16.0",
     "@daytonaio/sdk": ">=0.1.0",
     "dockerode": ">=4.0.0"
@@ -137,9 +165,6 @@
       "optional": true
     },
     "@xenova/transformers": {
-      "optional": true
-    },
-    "lmdb": {
       "optional": true
     },
     "@e2b/sdk": {

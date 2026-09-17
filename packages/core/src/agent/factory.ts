@@ -32,9 +32,6 @@ function scopeAgentConfig(base: AgentConfig, scope: StorageScope): AgentConfig {
     cloned.checkpointing = true;
   }
 
-  cloned.culture = scopeStorage(base.culture, scope);
-  cloned.versioning = scopeStorage(base.versioning, scope);
-
   return cloned;
 }
 

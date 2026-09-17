@@ -20,11 +20,7 @@ export interface AgentConfig {
    * Unified memory config — sessions, summaries, user facts, user profile,
    * entities, decisions, and learnings. Pass an object with a `storage` field
    * to enable persistent memory. All subsystems share this single storage.
-   */
-  /**
-   * Unified memory config — sessions, summaries, user facts, user profile,
-   * entities, decisions, and learnings. Pass an object with a `storage` field
-   * to enable persistent memory. All subsystems share this single storage.
+   * `fileMemory` and `filesystem` reuse this storage when they do not set their own.
    */
   memory?: UnifiedMemoryConfig;
   /**
@@ -60,10 +56,10 @@ export interface AgentConfig {
    */
   fileMemory?: boolean | import("../memory/file-memory.js").FileMemoryConfig;
   /**
-   * Vector-backed learnings. `true` uses a local in-memory store (fine for
-   * tests). For production, pass `{ vectorStore }` or set `memory.learnings`.
+   * Vector-backed learnings. Requires a real vector store — pass
+   * `{ vectorStore }` here or set `memory.learnings`.
    */
-  learning?: boolean | import("../memory/memory-config.js").LearningsConfig;
+  learning?: import("../memory/memory-config.js").LearningsConfig;
   /**
    * Give the agent a `search_past_sessions` tool to look up older chats by keyword.
    */
@@ -140,28 +136,8 @@ export interface AgentConfig {
   compressionManager?: import("../compression/compression-manager.js").CompressionManager;
   /** Runtime dependency injection — inject variables into instructions/messages via {key} templates. */
   dependencies?: Record<string, unknown | (() => unknown) | (() => Promise<unknown>)>;
-  /** Auto-generate followup prompt suggestions after each response. */
-  generateFollowups?: boolean | { count?: number; model?: ModelProvider };
-  /** @deprecated Prefer `contextFiles` (AGENTS.md) plus `fileMemory` / `memory.learnings`. */
-  culture?: {
-    storage: import("../storage/driver.js").StorageDriver;
-    addToContext?: boolean;
-    autoUpdate?: boolean;
-    model?: ModelProvider;
-  };
-
   /** Agent reflection and self-correction. */
   reflection?: import("./reflection.js").ReflectionConfig;
-  /** Context pollution prevention. */
-  contextCurator?: import("../context/context-curator.js").ContextCuratorConfig;
-  /** Agent versioning — persist config snapshots. */
-  versioning?: { storage: import("../storage/driver.js").StorageDriver };
-  /** Compliance and audit trail. */
-  compliance?: import("../compliance/types.js").ComplianceConfig;
-  /** Multi-tenant isolation. */
-  tenant?: import("../tenant/types.js").TenantConfig;
-  /** Token-aware rate limiting and backpressure. */
-  rateLimit?: import("../rate-limit/types.js").RateLimitConfig;
   /**
    * Memory Pointer Pattern: auto-inject `storeArtifact` / `getArtifact` / `listArtifacts`
    * tools and automatically convert large tool outputs into pointers.
@@ -268,9 +244,6 @@ export interface RunOutput {
 
   /** Provider-specific response identifier (e.g. OpenAI's chatcmpl-xxx). */
   responseId?: string;
-
-  /** Auto-generated followup prompt suggestions. */
-  followupSuggestions?: string[];
 
   /**
    * Self-critique result when reflection is enabled. Low scores indicate the

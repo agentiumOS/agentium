@@ -27,7 +27,7 @@ console.log(result.text);
 
 - **Multi-model** — OpenAI, Anthropic, Google, Ollama, Vertex AI
 - **Tools** — Define tools with Zod schemas, sandboxed execution, approval workflows, strict mode
-- **18 Built-in Toolkits** — Calculator, GitHub, Slack, Jira, Notion, SQL, and more with a `toolkitCatalog` for UI-driven config
+- **30+ built-in toolkits** — Calculator, GitHub, Slack, Jira, Notion, SQL, and more. Import them from `@agentium/core/toolkits` (or `@agentium/core/toolkits/github`) so `import { Agent }` does not pull every integration. `toolkitCatalog` lives on the same entry.
 - **Auto-Discovery** — Agents, teams, and workflows auto-register into a global `Registry`; transport layers discover them dynamically
 - **Memory** — Unified memory system with summaries, user facts, entity memory
 - **Teams & Workflows** — Multi-agent coordination with handoffs

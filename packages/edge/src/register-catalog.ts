@@ -1,4 +1,4 @@
-import { toolkitCatalog } from "@agentium/core";
+import { toolkitCatalog } from "@agentium/core/toolkits";
 import { BleToolkit } from "./toolkits/ble.js";
 import { CameraToolkit } from "./toolkits/camera.js";
 import { GpioToolkit } from "./toolkits/gpio.js";

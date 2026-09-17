@@ -2,6 +2,59 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.0] - 2026-09-17
+
+A deletion release. Nothing was added. The main `@agentium/core` bundle drops from
+593.8 KB to 363.8 KB (ESM, unminified) — 39% smaller — because toolkits moved behind
+their own entry point and modules that only ever stored data got removed.
+
+Full upgrade notes: https://agentium.in/migration-v3
+
+### Breaking
+
+- **Toolkits moved to `@agentium/core/toolkits`.** All 30 concrete toolkits, their config
+  types, and `toolkitCatalog` / `ToolkitCatalog` now live behind a subpath export so
+  `import { Agent }` no longer pulls every integration into the bundle. Individual
+  toolkits are importable on their own (`@agentium/core/toolkits/github`). The base
+  abstractions — `Toolkit`, `collectToolkitTools`, `describeToolLibrary`, `ToolkitMeta`,
+  `ToolkitConfigField` — stay at the root, so writing your own toolkit does not require
+  the entry point holding all the first-party ones.
+- **`learning: true` no longer accepted.** `learning` takes a `LearningsConfig` with a
+  real `vectorStore`. Passing `true` used to allocate a throwaway in-memory store that
+  looked persistent and was not. `Agent.deep()` no longer enables learning implicitly.
+- **Removed modules:** `capacity/*` (`planCapacity`, `SessionProfiler`, `kv-estimator`,
+  `latency-estimator`, `infra-cost`, `architectures`), `compliance/*` (`AuditLogger`,
+  `ComplianceReporter`, `ErasureManager`, `RetentionManager`), `versioning/*`
+  (`VersionStore`, `ABRouter`, `ShadowRunner`), `scheduling/*` (`AgentScheduler`),
+  `culture/*` (`CultureManager`), `Memory`, `UserMemory`, `FlashMemoryStore`,
+  `ContextCurator`, `LearnedSkillStore`, and `SemanticToolSelector`. These stored state
+  and emitted events, but nothing in the agent loop ever read them back.
+- **Removed `AgentConfig` fields:** `generateFollowups` (and `RunOutput.followupSuggestions`),
+  `culture`, `contextCurator`, `versioning`, `compliance`, `tenant`, and `rateLimit`.
+  Each was accepted and then ignored, or pointed at a module listed above. Multi-tenancy
+  and rate limiting themselves are unchanged — `AgentFactory`, `ScopedStorage`,
+  `TenantScopedStorage`, `TokenRateLimiter`, and `ConcurrencyLimiter` all remain.
+- **Removed 41 never-emitted `AgentEventMap` keys**, leaving 37 real events. Subscribing
+  to one of the removed keys previously gave you a handler that never fired; a bad event
+  name is now a type error.
+
+### Changed
+
+- `fileMemory` and `filesystem` reuse `memory.storage` when they do not declare their own,
+  instead of each defaulting to a separate `InMemoryStorage`.
+- `@agentium/core` is marked `sideEffects: false` and built with code splitting and
+  tree shaking enabled.
+- Export conditions now resolve `.d.cts` for `require` and `.d.ts` for `import`, so CJS
+  consumers get correct types.
+- Every package declares `publishConfig.access: "public"`.
+
+### Kept deliberately
+
+Storage drivers stay in `@agentium/core`. `InMemoryStorage`, `SqliteStorage`,
+`PostgresStorage`, `MongoDBStorage`, `RedisStorage`, `MySQLStorage`, and
+`DynamoDBStorage` are unchanged; their database clients are optional peer dependencies,
+so an unimported driver costs nothing.
+
 ## [2.7.0] - 2026-09-16
 
 ### Added

@@ -1,5 +1,6 @@
 import type { StorageDriver, ToolDef, Toolkit, ToolkitMeta } from "@agentium/core";
-import { collectToolkitTools, toolkitCatalog } from "@agentium/core";
+import { collectToolkitTools } from "@agentium/core";
+import { toolkitCatalog } from "@agentium/core/toolkits";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */

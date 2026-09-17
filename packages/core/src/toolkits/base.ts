@@ -14,6 +14,39 @@ export abstract class Toolkit {
   abstract getTools(): ToolDef[];
 }
 
+export interface ToolkitConfigField {
+  /** Machine-readable name matching the config interface property. */
+  name: string;
+  /** Human-readable label for the UI. */
+  label: string;
+  type: "string" | "number" | "boolean" | "select";
+  /** Field is required to instantiate the toolkit. */
+  required?: boolean;
+  /** Field contains a secret (API key, token) — mask in responses. */
+  secret?: boolean;
+  /** Environment variable fallback name. */
+  envVar?: string;
+  default?: unknown;
+  /** Options for "select" type. */
+  options?: string[];
+  /** Help text shown under the field. */
+  hint?: string;
+}
+
+export interface ToolkitMeta {
+  /** Unique identifier (e.g. "github", "slack"). */
+  id: string;
+  /** Display name (e.g. "GitHub", "Slack"). */
+  name: string;
+  description: string;
+  category: "utility" | "search" | "api" | "enterprise" | "communication" | "iot";
+  /** Whether the toolkit needs credentials / API keys to work. */
+  requiresCredentials: boolean;
+  configFields: ToolkitConfigField[];
+  /** Create a live Toolkit instance from a config object. */
+  factory: (config: Record<string, unknown>) => Toolkit;
+}
+
 /**
  * Collect all tools from one or more toolkit instances into a named
  * `Record<string, ToolDef>` — ready to pass as `toolLibrary` to the

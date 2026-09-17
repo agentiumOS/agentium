@@ -1,4 +1,4 @@
-import type { Toolkit } from "./base.js";
+import type { Toolkit, ToolkitMeta } from "./base.js";
 import { CalculatorToolkit } from "./calculator.js";
 import { GoogleCalendarToolkit } from "./calendar.js";
 import { CodeInterpreterToolkit } from "./code-interpreter.js";
@@ -29,43 +29,6 @@ import { WebSearchToolkit } from "./websearch.js";
 import { WhatsAppToolkit } from "./whatsapp.js";
 import { WikipediaToolkit } from "./wikipedia.js";
 import { YouTubeToolkit } from "./youtube.js";
-
-/* ------------------------------------------------------------------ */
-/*  Types                                                              */
-/* ------------------------------------------------------------------ */
-
-export interface ToolkitConfigField {
-  /** Machine-readable name matching the config interface property. */
-  name: string;
-  /** Human-readable label for the UI. */
-  label: string;
-  type: "string" | "number" | "boolean" | "select";
-  /** Field is required to instantiate the toolkit. */
-  required?: boolean;
-  /** Field contains a secret (API key, token) — mask in responses. */
-  secret?: boolean;
-  /** Environment variable fallback name. */
-  envVar?: string;
-  default?: unknown;
-  /** Options for "select" type. */
-  options?: string[];
-  /** Help text shown under the field. */
-  hint?: string;
-}
-
-export interface ToolkitMeta {
-  /** Unique identifier (e.g. "github", "slack"). */
-  id: string;
-  /** Display name (e.g. "GitHub", "Slack"). */
-  name: string;
-  description: string;
-  category: "utility" | "search" | "api" | "enterprise" | "communication" | "iot";
-  /** Whether the toolkit needs credentials / API keys to work. */
-  requiresCredentials: boolean;
-  configFields: ToolkitConfigField[];
-  /** Create a live Toolkit instance from a config object. */
-  factory: (config: Record<string, unknown>) => Toolkit;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Catalog                                                            */

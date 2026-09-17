@@ -5,7 +5,6 @@ import type { SemanticCache } from "../cache/semantic-cache.js";
 import { CompressionManager } from "../compression/compression-manager.js";
 import { ContextCompactor } from "../context/context-compactor.js";
 import { formatContextFiles, loadContextFiles } from "../context/context-files.js";
-import { CultureManager } from "../culture/culture-manager.js";
 import { applyTemplates, resolveDependencies } from "../dependencies/resolver.js";
 import { EventBus } from "../events/event-bus.js";
 import { AgentFileSystem } from "../fs/agent-fs.js";
@@ -31,8 +30,6 @@ import { ToolExecutor } from "../tools/tool-executor.js";
 import { ToolRouter } from "../tools/tool-router.js";
 import type { ToolDef } from "../tools/types.js";
 import { countTokens } from "../utils/token-counter.js";
-import { HashEmbedding } from "../vector/embeddings/hash.js";
-import { InMemoryVectorStore } from "../vector/in-memory.js";
 import type { WebhookManager } from "../webhooks/webhook-manager.js";
 import { RunCancelledError } from "./errors.js";
 import { LLMLoop } from "./llm-loop.js";
@@ -66,7 +63,6 @@ export class Agent {
   private webhookManager: WebhookManager | null = null;
   private semanticCache: SemanticCache | null = null;
   private compressionManager: CompressionManager | null = null;
-  private cultureManager: CultureManager | null = null;
   private reflectionManager: ReflectionManager | null = null;
   private fallbackSessionManager: SessionManager | null = null;
   // biome-ignore lint/correctness/noUnusedPrivateClassMembers: assigned in rebuildLLMLoop, kept for future use
@@ -226,8 +222,11 @@ export class Agent {
 
   /**
    * Harness preset: project files, skills, workspace jail, durable notes,
-   * standing memory, subagents, learnings, and past-session search.
+   * standing memory, subagents, and past-session search.
    * Pass the same options as `new Agent()` — they override these defaults.
+   *
+   * Learnings are NOT enabled here: they need a real embedding model. Pass
+   * `learning: { vectorStore }` or `memory.learnings` to turn them on.
    */
   static deep(config: AgentConfig): Agent {
     return new Agent({
@@ -237,7 +236,6 @@ export class Agent {
       filesystem: true,
       subagents: true,
       fileMemory: true,
-      learning: true,
       searchPastSessions: true,
       ...config,
     });
@@ -260,11 +258,20 @@ export class Agent {
       this.fallbackSessionManager = new SessionManager(new InMemoryStorage());
     }
 
+    // Standing notes default to the same storage as memory so they survive a
+    // restart whenever the agent has persistent memory configured.
+    const sharedStorage = config.memory?.storage;
+
     if (config.fileMemory) {
-      this.fileMemory = new FileMemory(config.fileMemory === true ? {} : config.fileMemory);
+      const fileMemoryConfig = config.fileMemory === true ? {} : config.fileMemory;
+      this.fileMemory = new FileMemory({
+        ...fileMemoryConfig,
+        storage: fileMemoryConfig.storage ?? sharedStorage,
+      });
     }
     if (config.filesystem) {
-      this.agentFs = new AgentFileSystem(config.filesystem === true ? {} : config.filesystem);
+      const fsConfig = config.filesystem === true ? {} : config.filesystem;
+      this.agentFs = new AgentFileSystem({ ...fsConfig, storage: fsConfig.storage ?? sharedStorage });
     }
     if (config.skillDirs && config.skillDirs.length > 0) {
       this.skillMd = new SkillMdManager({ dirs: config.skillDirs });
@@ -336,13 +343,6 @@ export class Agent {
       this.toolRouter = new ToolRouter({
         ...config.toolRouter,
         logger: config.toolRouter.logger ?? this.logger,
-      });
-    }
-
-    if (config.culture) {
-      this.cultureManager = new CultureManager({
-        storage: config.culture.storage,
-        model: config.culture.model ?? config.model,
       });
     }
 
@@ -639,11 +639,6 @@ export class Agent {
         });
       }
 
-      // Generate followup suggestions
-      if (this.config.generateFollowups) {
-        output.followupSuggestions = await this.generateFollowups(output, messages);
-      }
-
       if (this.config.guardrails?.output) {
         for (const guardrail of this.config.guardrails.output) {
           const result = await guardrail.validate(output, ctx);
@@ -676,11 +671,6 @@ export class Agent {
 
       if (this.config.hooks?.afterRun) {
         await this.config.hooks.afterRun(ctx, output);
-      }
-
-      // Culture auto-update (fire-and-forget)
-      if (this.cultureManager && this.config.culture?.autoUpdate) {
-        this.cultureManager.reflect(inputText, output.text).catch(() => {});
       }
 
       if (output.thinking) {
@@ -1004,13 +994,6 @@ export class Agent {
       }
     }
 
-    if (this.cultureManager && this.config.culture?.addToContext) {
-      const cultureContext = await this.cultureManager.buildContext();
-      if (cultureContext) {
-        systemContent = systemContent ? `${systemContent}\n\n${cultureContext}` : cultureContext;
-      }
-    }
-
     this.logger.debug(
       `buildMessages: system content size: ${systemContent.length} chars (~${countTokens(systemContent)} tokens)`,
     );
@@ -1141,36 +1124,6 @@ export class Agent {
     };
   }
 
-  private async generateFollowups(output: RunOutput, messages: ChatMessage[]): Promise<string[]> {
-    const followupConfig = this.config.generateFollowups;
-    const count = typeof followupConfig === "object" ? (followupConfig.count ?? 3) : 3;
-    const model = typeof followupConfig === "object" && followupConfig.model ? followupConfig.model : this.config.model;
-
-    try {
-      const followupMessages: ChatMessage[] = [
-        ...messages,
-        { role: "assistant", content: output.text },
-        {
-          role: "user",
-          content: `Based on this conversation, suggest exactly ${count} brief followup questions the user might want to ask next. Return ONLY a JSON array of strings, no other text.`,
-        },
-      ];
-
-      const response = await model.generate(followupMessages, { maxTokens: 512, temperature: 0.7 });
-      const text = getTextContent(response.message.content);
-      if (!text) return [];
-
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (Array.isArray(parsed)) return parsed.filter((s: unknown) => typeof s === "string").slice(0, count);
-      }
-    } catch {
-      // followup generation is best-effort
-    }
-    return [];
-  }
-
   private trimHistoryByTokens(
     history: ChatMessage[],
     systemContent: string,
@@ -1207,7 +1160,7 @@ function resolveMemoryConfig(config: AgentConfig): UnifiedMemoryConfig | undefin
   const base: UnifiedMemoryConfig = config.memory ? { ...config.memory } : { storage: new InMemoryStorage() };
 
   if (learning && !base.learnings) {
-    base.learnings = learning === true ? { vectorStore: new InMemoryVectorStore(new HashEmbedding()) } : learning;
+    base.learnings = learning;
   }
 
   return base;
