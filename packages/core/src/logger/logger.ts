@@ -47,17 +47,24 @@ export interface LoggerConfig {
   level?: LogLevel;
   color?: boolean;
   prefix?: string;
+  /**
+   * Max characters of a tool arg/result body printed at debug.
+   * Default: 100_000 (full JSON in practice). Set lower if a toolkit dumps megabytes.
+   */
+  maxPayloadChars?: number;
 }
 
 export class Logger {
   private level: LogLevel;
   private color: boolean;
   private prefix: string;
+  private maxPayloadChars: number;
 
   constructor(config: LoggerConfig = {}) {
     this.level = config.level ?? "info";
     this.color = config.color ?? process.stdout.isTTY !== false;
     this.prefix = config.prefix ?? "agentium";
+    this.maxPayloadChars = config.maxPayloadChars ?? 100_000;
   }
 
   private c(code: string, text: string): string {
@@ -92,20 +99,70 @@ export class Logger {
   private log(level: LogLevel, msg: string, data?: Record<string, unknown>): void {
     if (!this.shouldLog(level)) return;
     const parts = [this.timestamp(), this.tag(level), this.c(C.dim, `[${this.prefix}]`), msg];
+    const multiline: string[] = [];
     if (data && Object.keys(data).length > 0) {
-      const formatted = Object.entries(data)
-        .map(([k, v]) => `${this.c(C.dim, `${k}=`)}${this.formatValue(v)}`)
-        .join(" ");
-      parts.push(formatted);
+      for (const [k, v] of Object.entries(data)) {
+        const rendered = this.formatValue(v);
+        if (rendered.includes("\n")) {
+          multiline.push(`${this.c(C.dim, k)}=\n${rendered}`);
+        } else {
+          parts.push(`${this.c(C.dim, `${k}=`)}${rendered}`);
+        }
+      }
     }
     console.log(parts.join(" "));
+    for (const block of multiline) {
+      console.log(block);
+    }
   }
 
   private formatValue(v: unknown): string {
+    if (v === null) return this.c(C.gray, "null");
+    if (v === undefined) return this.c(C.gray, "undefined");
     if (typeof v === "number") return this.c(C.brightGreen, String(v));
-    if (typeof v === "string") return this.c(C.yellow, `"${v}"`);
     if (typeof v === "boolean") return this.c(C.magenta, String(v));
+    if (typeof v === "string") {
+      if (v.length <= 80 && !v.includes("\n")) return this.c(C.yellow, JSON.stringify(v));
+      return this.formatPayload(v);
+    }
+    if (typeof v === "object") return this.formatPayload(v);
     return String(v);
+  }
+
+  /** Compact JSON when it fits one line; otherwise pretty-print. Never slice mid-token. */
+  formatPayload(value: unknown, maxChars = this.maxPayloadChars): string {
+    let text: string;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        try {
+          text = this.stringifyJson(JSON.parse(trimmed));
+        } catch {
+          text = value;
+        }
+      } else {
+        text = value;
+      }
+    } else {
+      text = this.stringifyJson(value);
+    }
+
+    if (text.length <= maxChars) return text;
+    const keep = text.slice(0, maxChars);
+    const lastNl = keep.lastIndexOf("\n");
+    const cut = lastNl > maxChars * 0.5 ? keep.slice(0, lastNl) : keep;
+    return `${cut}\n… (${(text.length - cut.length).toLocaleString()} more chars)`;
+  }
+
+  private stringifyJson(value: unknown): string {
+    try {
+      const compact = JSON.stringify(value);
+      if (compact === undefined) return String(value);
+      if (compact.length <= 100) return compact;
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
   }
 
   debug(msg: string, data?: Record<string, unknown>) {
@@ -154,39 +211,45 @@ export class Logger {
     console.log(this.pipe());
   }
 
-  toolCall(toolName: string, args: Record<string, unknown>): void {
+  private printIndented(body: string, color: string): void {
+    for (const line of body.split("\n")) {
+      console.log(`${this.pipe()}   ${this.c(color, line)}`);
+    }
+  }
+
+  toolCall(toolName: string, args: Record<string, unknown> = {}): void {
     if (!this.shouldLog("debug")) return;
-    const argsStr = JSON.stringify(args, null, 2);
-    console.log(`${this.pipe()} ${this.c(C.brightMagenta, "⚡")} ${this.c(C.magenta, toolName)}`);
-    if (argsStr !== "{}" && argsStr !== "[]") {
-      const truncated = argsStr.length > 200 ? `${argsStr.slice(0, 200)}…` : argsStr;
-      for (const line of truncated.split("\n")) {
-        console.log(`${this.pipe()}   ${this.c(C.dim, line)}`);
-      }
+    const payload = this.formatPayload(args);
+    const oneLine = !payload.includes("\n") && payload !== "{}";
+    console.log(
+      `${this.pipe()} ${this.c(C.brightMagenta, "→")} ${this.c(C.magenta, toolName)}${oneLine ? `  ${this.c(C.dim, payload)}` : ""}`,
+    );
+    if (!oneLine && payload !== "{}") {
+      this.printIndented(payload, C.dim);
     }
   }
 
   toolResult(toolName: string, result: string): void {
     if (!this.shouldLog("debug")) return;
-    const truncated = result.length > 300 ? `${result.slice(0, 300)}…` : result;
-    console.log(`${this.pipe()} ${this.c(C.green, "✓")} ${this.c(C.dim, `${toolName} →`)}`);
-    for (const line of truncated.split("\n")) {
-      console.log(`${this.pipe()}   ${this.c(C.gray, line)}`);
+    const payload = this.formatPayload(result);
+    if (!payload.includes("\n") && payload.length <= 120) {
+      console.log(`${this.pipe()} ${this.c(C.green, "←")} ${this.c(C.dim, toolName)}  ${this.c(C.gray, payload)}`);
+      return;
     }
-    console.log(this.pipe());
+    console.log(`${this.pipe()} ${this.c(C.green, "←")} ${this.c(C.dim, toolName)}`);
+    this.printIndented(payload, C.gray);
   }
 
   thinking(content: string): void {
     if (!this.shouldLog("info")) return;
-    const truncated = content.length > 500 ? `${content.slice(0, 500)}…` : content;
+    const body = this.shouldLog("debug") ? this.formatPayload(content) : this.formatPayload(content, 500);
+    const lines = body.split("\n");
     const label = this.c(C.dim + C.italic, "Thinking: ");
-    const lines = truncated.split("\n");
     console.log(`${this.pipe()} ${label}${this.c(C.dim + C.italic, lines[0])}`);
     const pad = " ".repeat(10);
     for (let i = 1; i < lines.length; i++) {
       console.log(`${this.pipe()} ${pad}${this.c(C.dim + C.italic, lines[i])}`);
     }
-    console.log(this.pipe());
   }
 
   agentEnd(

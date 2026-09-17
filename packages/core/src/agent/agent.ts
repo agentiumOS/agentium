@@ -369,19 +369,14 @@ export class Agent {
     }
 
     const totalToolsBefore = tools.length;
-    const schemaSize = tools.reduce((sum, t) => sum + JSON.stringify(t.rawJsonSchema ?? {}).length, 0);
-    this.logger.debug(
-      `buildRunLoop: ${totalToolsBefore} tools, total schema size: ${schemaSize} chars (~${countTokens(JSON.stringify(tools.map((t) => t.rawJsonSchema ?? {})))} tokens)`,
-    );
-
     if (this.toolRouter && tools.length > 0) {
       tools = await this.toolRouter.select(query, tools);
     }
-
-    const finalSchemaSize = tools.reduce((sum, t) => sum + JSON.stringify(t.rawJsonSchema ?? {}).length, 0);
-    this.logger.debug(
-      `buildRunLoop: after routing: ${tools.length} tools, schema size: ${finalSchemaSize} chars (~${countTokens(JSON.stringify(tools.map((t) => t.rawJsonSchema ?? {})))} tokens)`,
-    );
+    this.logger.debug("tools", {
+      before: totalToolsBefore,
+      after: tools.length,
+      routed: Boolean(this.toolRouter && totalToolsBefore !== tools.length),
+    });
 
     const executor = tools.length > 0 ? new ToolExecutor(tools, this.buildToolExecutorConfig()) : null;
 
@@ -994,10 +989,6 @@ export class Agent {
       }
     }
 
-    this.logger.debug(
-      `buildMessages: system content size: ${systemContent.length} chars (~${countTokens(systemContent)} tokens)`,
-    );
-
     if (systemContent) {
       messages.push({ role: "system", content: systemContent });
     }
@@ -1013,28 +1004,14 @@ export class Agent {
       history = this.trimHistoryByTokens(history, systemContent, input, maxTokens);
     }
 
-    const historySize = history.reduce((s, m) => s + (typeof m.content === "string" ? m.content.length : 100), 0);
-    this.logger.debug(
-      `buildMessages: ${history.length} history msgs, size: ${historySize} chars (~${countTokens(history.map((m) => (typeof m.content === "string" ? m.content : "")).join(""))} tokens)`,
-    );
-
-    if (history.length > 0) {
-      this.logger.info(`Loaded ${history.length} history messages for session ${session.sessionId}`);
-    }
     messages.push(...history);
-
-    const inputSize = typeof input === "string" ? input.length : 100;
-    this.logger.debug(
-      `buildMessages: user input size: ${inputSize} chars (~${countTokens(typeof input === "string" ? input : "")} tokens)`,
-    );
     messages.push({ role: "user", content: input });
 
-    const totalChars = systemContent.length + historySize + inputSize;
-    this.logger.debug(
-      `buildMessages: TOTAL message content: ${totalChars} chars (~${countTokens(messages.map((m) => (typeof m.content === "string" ? m.content : "")).join(""))} tokens), ${messages.length} messages`,
-    );
-
-    this.logger.info(`Sending ${messages.length} messages to LLM`);
+    this.logger.debug("prompt", {
+      systemChars: systemContent.length,
+      history: history.length,
+      messages: messages.length,
+    });
 
     return messages;
   }

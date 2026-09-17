@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.0.1] - 2026-09-17
+
+### Fixed
+- **Debug logging.** `logLevel: "debug"` now prints real tool arguments (it previously logged `{}`), pretty-prints JSON instead of slicing it at 200/300 characters, and drops the noisy per-loop token-count lines that cluttered the CLI. Override the body cap with `new Logger({ maxPayloadChars })`.
+
 ## [3.0.0] - 2026-09-17
 
 A deletion release. Nothing was added. The main `@agentium/core` bundle drops from

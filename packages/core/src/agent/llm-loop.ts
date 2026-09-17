@@ -13,7 +13,6 @@ import {
 import type { ToolExecutor } from "../tools/tool-executor.js";
 import type { ToolCallResult } from "../tools/types.js";
 import { type RetryConfig, withRetry } from "../utils/retry.js";
-import { countTokens } from "../utils/token-counter.js";
 import { RunCancelledError } from "./errors.js";
 import type { RunContext } from "./run-context.js";
 import type { LoopHooks, RunOutput, ToolResultLimitConfig } from "./types.js";
@@ -193,13 +192,8 @@ export class LLMLoop {
     const loopStartTime = Date.now();
     const currentMessages = [...messages];
     const toolDefs = this.toolExecutor?.getToolDefinitions() ?? [];
-
-    const toolDefsJson = JSON.stringify(toolDefs);
-    this.logger?.debug(
-      `[LLMLoop] ${toolDefs.length} tool defs, serialized size: ${toolDefsJson.length} chars (~${countTokens(toolDefsJson)} tokens)`,
-    );
     if (toolDefs.length > 0) {
-      this.logger?.debug(`[LLMLoop] Tool names: ${toolDefs.map((t) => t.name).join(", ")}`);
+      this.logger?.debug("llm", { tools: toolDefs.map((t) => t.name) });
     }
 
     for (let roundtrip = 0; roundtrip <= this.maxToolRoundtrips; roundtrip++) {
@@ -331,10 +325,11 @@ export class LLMLoop {
 
       allToolCalls.push(...toolResults);
 
+      const argsById = new Map(filteredToolCalls.map((tc) => [tc.id, tc.arguments]));
       for (const result of toolResults) {
         let content = typeof result.result === "string" ? result.result : result.result.content;
 
-        this.logger?.toolCall(result.toolName, {});
+        this.logger?.toolCall(result.toolName, argsById.get(result.toolCallId) ?? {});
         this.logger?.toolResult(result.toolName, typeof content === "string" ? content : JSON.stringify(content));
 
         if (typeof content === "string") {
@@ -412,13 +407,8 @@ export class LLMLoop {
   async *stream(messages: ChatMessage[], ctx: RunContext, apiKey?: string): AsyncGenerator<StreamChunk> {
     const currentMessages = [...messages];
     const toolDefs = this.toolExecutor?.getToolDefinitions() ?? [];
-
-    const toolDefsJsonStream = JSON.stringify(toolDefs);
-    this.logger?.debug(
-      `[LLMLoop:stream] ${toolDefs.length} tool defs, serialized size: ${toolDefsJsonStream.length} chars (~${countTokens(toolDefsJsonStream)} tokens)`,
-    );
     if (toolDefs.length > 0) {
-      this.logger?.debug(`[LLMLoop:stream] Tool names: ${toolDefs.map((t) => t.name).join(", ")}`);
+      this.logger?.debug("llm.stream", { tools: toolDefs.map((t) => t.name) });
     }
 
     let totalPromptTokens = 0;
@@ -538,21 +528,15 @@ export class LLMLoop {
 
       const toolResults = await this.toolExecutor.executeAll(filteredCalls, ctx);
 
+      const argsById = new Map(filteredCalls.map((tc) => [tc.id, tc.arguments]));
       for (const result of toolResults) {
         let content = typeof result.result === "string" ? result.result : result.result.content;
 
-        const originalSize = typeof content === "string" ? content.length : JSON.stringify(content).length;
-        this.logger?.debug(
-          `[LLMLoop:stream] Tool "${result.toolName}" result size: ${originalSize} chars (~${countTokens(typeof content === "string" ? content : JSON.stringify(content))} tokens)`,
-        );
+        this.logger?.toolCall(result.toolName, argsById.get(result.toolCallId) ?? {});
+        this.logger?.toolResult(result.toolName, typeof content === "string" ? content : JSON.stringify(content));
 
         if (typeof content === "string") {
           content = await this.limitToolResult(content, result.toolName);
-          if (content.length < originalSize) {
-            this.logger?.debug(
-              `[LLMLoop:stream] Tool "${result.toolName}" result limited: ${originalSize} → ${content.length} chars (~${countTokens(content)} tokens)`,
-            );
-          }
         }
 
         // Hook: afterToolExec
@@ -584,14 +568,6 @@ export class LLMLoop {
         const hookResult = await this.loopHooks.onRoundtripComplete(roundtrip, tokensSoFar);
         if (hookResult?.stop) return;
       }
-
-      const totalMsgText = currentMessages
-        .map((m) => (typeof m.content === "string" ? (m.content ?? "") : ""))
-        .join("");
-      const totalMsgSize = totalMsgText.length;
-      this.logger?.debug(
-        `[LLMLoop:stream] Roundtrip ${roundtrip + 1}: sending ${currentMessages.length} messages, total size: ${totalMsgSize} chars (~${countTokens(totalMsgText)} tokens)`,
-      );
     }
   }
 
