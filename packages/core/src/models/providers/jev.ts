@@ -19,8 +19,8 @@ export interface JevConfig {
   /** TypeSafe API root. Falls back to `TYPESAFE_BASE_URL`, then `https://api.typesafe.ai`. */
   baseURL?: string;
   /**
-   * Named TypeSafe questions (`choice` / `noul` / `score`).
-   * When set, these win over `structuredOutput` schema and auto tool-choice.
+   * Default TypeSafe questions (`choice` / `noul` / `score`).
+   * Overridden by `agent.run(input, { questions })`.
    */
   questions?: JevQuestions;
 }
@@ -66,6 +66,10 @@ export class JevProvider implements ModelProvider {
     questions: JevQuestions;
     plan?: SchemaQuestionPlan;
   } {
+    if (options?.questions && Object.keys(options.questions).length > 0) {
+      return { questions: options.questions };
+    }
+
     if (this.config.questions && Object.keys(this.config.questions).length > 0) {
       return { questions: this.config.questions };
     }
@@ -81,7 +85,7 @@ export class JevProvider implements ModelProvider {
     }
 
     throw new Error(
-      "Jev has nothing to ask. Pass questions on jev(model, { questions }), set Agent structuredOutput to enums/booleans/bounded numbers, or give the agent closed-set tools.",
+      "Jev has nothing to ask. Pass questions on agent.run(input, { questions }), jev(model, { questions }), structuredOutput, or closed-set tools.",
     );
   }
 

@@ -214,6 +214,7 @@ export class LLMLoop {
       if (this.maxTokens !== undefined) modelConfig.maxTokens = this.maxTokens;
       if (toolDefs.length > 0) modelConfig.tools = toolDefs;
       if (this.reasoning) modelConfig.reasoning = this.reasoning;
+      if (ctx.questions && Object.keys(ctx.questions).length > 0) modelConfig.questions = ctx.questions;
 
       if (this.structuredOutput) {
         modelConfig.responseFormat = {
@@ -437,6 +438,7 @@ export class LLMLoop {
       if (this.maxTokens !== undefined) modelConfig.maxTokens = this.maxTokens;
       if (toolDefs.length > 0) modelConfig.tools = toolDefs;
       if (this.reasoning) modelConfig.reasoning = this.reasoning;
+      if (ctx.questions && Object.keys(ctx.questions).length > 0) modelConfig.questions = ctx.questions;
 
       let fullText = "";
       const pendingToolCalls: Array<{

@@ -135,6 +135,22 @@ describe("JevProvider", () => {
     expect(result.message.toolCalls).toBeUndefined();
   });
 
+  it("uses per-request questions over constructor questions", async () => {
+    const provider = new JevProvider("jev-latest", {
+      questions: { stale: noul("stale?") },
+    });
+    const client = mockClient({ team: { type: "choice", choice: "billing" } });
+    provider.client = client;
+
+    await provider.generate([{ role: "user", content: "charged twice" }], {
+      questions: { team: choice("Which team?", { billing: null, tech: null }) },
+    });
+
+    const sent = client.systemOne.mock.calls[0][0].questions;
+    expect(sent.team).toBeDefined();
+    expect(sent.stale).toBeUndefined();
+  });
+
   it("throws when there are no questions, schema, or tools", async () => {
     const provider = new JevProvider("jev-latest");
     provider.client = mockClient({});

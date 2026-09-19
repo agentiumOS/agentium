@@ -507,6 +507,7 @@ export class Agent {
       sessionState: { ...session.state },
       signal: opts?.signal,
       dependencies: resolvedDeps,
+      questions: opts?.questions,
     });
 
     this.logger.agentStart(this.name, inputText);
@@ -775,6 +776,7 @@ export class Agent {
       eventBus: this.eventBus,
       sessionState: { ...session.state },
       signal: opts?.signal,
+      questions: opts?.questions,
     });
 
     this.eventBus.emit("run.start", {

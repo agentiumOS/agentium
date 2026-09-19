@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **`run({ questions })` for Jev.** Pass `choice` / `noul` / `score` on each `agent.run()` / `agent.stream()`. Per-run questions win over `jev(model, { questions })`.
+
 ## [3.1.0] - 2026-09-19
 
 ### Added

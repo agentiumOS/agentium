@@ -121,6 +121,11 @@ export interface ModelConfig {
   apiKey?: string;
   /** Enable extended thinking / reasoning. */
   reasoning?: ReasoningConfig;
+  /**
+   * Jev questions for this call (`choice` / `noul` / `score`).
+   * Ignored by chat providers.
+   */
+  questions?: Record<string, unknown>;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

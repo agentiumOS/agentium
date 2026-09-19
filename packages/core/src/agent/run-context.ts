@@ -13,6 +13,8 @@ export class RunContext {
   readonly signal?: AbortSignal;
   /** Resolved runtime dependencies available to tools and hooks. */
   readonly dependencies: Record<string, string>;
+  /** Per-run Jev questions, when `agent.run(input, { questions })` is used. */
+  readonly questions?: Record<string, unknown>;
 
   constructor(opts: {
     sessionId: string;
@@ -24,6 +26,7 @@ export class RunContext {
     runId?: string;
     signal?: AbortSignal;
     dependencies?: Record<string, string>;
+    questions?: Record<string, unknown>;
   }) {
     this.runId = opts.runId ?? uuidv4();
     this.sessionId = opts.sessionId;
@@ -34,6 +37,7 @@ export class RunContext {
     this.sessionState = opts.sessionState ?? {};
     this.signal = opts.signal;
     this.dependencies = opts.dependencies ?? {};
+    this.questions = opts.questions;
   }
 
   getState<T>(key: string): T | undefined {

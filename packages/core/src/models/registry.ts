@@ -169,7 +169,8 @@ modelRegistry.register("jev", (modelId, config) => new JevProvider(modelId, conf
  *
  * @example
  * ```ts
- * jev("jev-latest", { questions: { urgent: noul("Is this urgent?") } })
+ * const agent = new Agent({ name: "triage", model: jev("jev-latest") });
+ * await agent.run(ticket, { questions: { urgent: noul("Is this urgent?") } });
  * ```
  */
 export function jev(modelId = "jev-latest", config?: JevConfig): ModelProvider {

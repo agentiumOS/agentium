@@ -193,6 +193,11 @@ export interface RunOpts {
   signal?: AbortSignal;
   /** Per-run dependency overrides (merged with agent-level dependencies). */
   dependencies?: Record<string, unknown | (() => unknown) | (() => Promise<unknown>)>;
+  /**
+   * Jev questions for this run (`choice` / `noul` / `score`).
+   * Wins over `jev(model, { questions })`. Ignored by chat providers.
+   */
+  questions?: Record<string, unknown>;
 }
 
 export interface RunMetrics {
