@@ -13,6 +13,7 @@ import { GoogleWorkspaceToolkit } from "./google-workspace.js";
 import { HackerNewsToolkit } from "./hackernews.js";
 import { HttpToolkit } from "./http.js";
 import { ImageGenerationToolkit } from "./image-generation.js";
+import { JevToolkit } from "./jev.js";
 import { JiraToolkit } from "./jira.js";
 import { NotionToolkit } from "./notion.js";
 import { PageIndexToolkit } from "./pageindex.js";
@@ -587,6 +588,38 @@ const entries: ToolkitMeta[] = [
       { name: "timeout", label: "Timeout (ms)", type: "number", default: 120000 },
     ],
     factory: (c) => new PageIndexToolkit(c as any),
+  },
+  {
+    id: "jev",
+    name: "Jev",
+    description: "TypeSafe System One judgments — choose, score, noul, or ask several questions at once",
+    category: "api",
+    requiresCredentials: true,
+    configFields: [
+      {
+        name: "apiKey",
+        label: "API Key",
+        type: "string",
+        required: true,
+        secret: true,
+        envVar: "TYPESAFE_API_KEY",
+        hint: "Get your key at typesafe.ai",
+      },
+      {
+        name: "baseURL",
+        label: "API Base URL",
+        type: "string",
+        hint: "Override for a self-hosted TypeSafe endpoint",
+      },
+      {
+        name: "model",
+        label: "Model",
+        type: "string",
+        default: "jev-latest",
+        hint: "jev-latest or a pinned id such as jev-1.13.0",
+      },
+    ],
+    factory: (c) => new JevToolkit(c as any),
   },
 
   /* ── Google Workspace (all-in-one via gws CLI MCP) ──────────────── */

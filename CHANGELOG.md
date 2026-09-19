@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.1.0] - 2026-09-19
+
+### Added
+- **Jev (TypeSafe System One).** `jev("jev-latest")` is a `ModelProvider` for `new Agent({ model })` — decisions, not chat. Pass `questions` (`choice` / `noul` / `score`), or derive them from `structuredOutput` (enums / booleans / bounded numbers) or closed-set tools. `JevToolkit` (`@agentium/core/toolkits`) exposes `jev_choose`, `jev_score`, `jev_noul`, `jev_ask`, and optional `jev_evaluate` packs on a chat agent. Requires optional peer `@typesafe-ai/sdk` and `TYPESAFE_API_KEY`.
+
 ## [3.0.2] - 2026-09-17
 
 ### Fixed

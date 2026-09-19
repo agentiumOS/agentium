@@ -15,6 +15,7 @@ import { type AzureOpenAIConfig, AzureOpenAIProvider } from "./providers/azure-o
 import { type CohereConfig, CohereProvider } from "./providers/cohere.js";
 import { type DeepSeekConfig, DeepSeekProvider } from "./providers/deepseek.js";
 import { GoogleProvider } from "./providers/google.js";
+import { type JevConfig, JevProvider } from "./providers/jev.js";
 import { type MetaLlamaConfig, MetaLlamaProvider } from "./providers/meta-llama.js";
 import { type MistralConfig, MistralProvider } from "./providers/mistral.js";
 import { OllamaProvider } from "./providers/ollama.js";
@@ -158,6 +159,21 @@ export function meta(modelId: string, config?: MetaLlamaConfig): ModelProvider {
 
 export function vercel(modelId: string, config?: VercelConfig): ModelProvider {
   return modelRegistry.resolve("vercel", modelId, config);
+}
+
+modelRegistry.register("jev", (modelId, config) => new JevProvider(modelId, config as JevConfig));
+
+/**
+ * Jev (TypeSafe System One). Not a chat model — pass `questions`,
+ * `structuredOutput`, or closed-set tools.
+ *
+ * @example
+ * ```ts
+ * jev("jev-latest", { questions: { urgent: noul("Is this urgent?") } })
+ * ```
+ */
+export function jev(modelId = "jev-latest", config?: JevConfig): ModelProvider {
+  return modelRegistry.resolve("jev", modelId, config);
 }
 
 // ── Realtime / Voice provider helpers ─────────────────────────────────

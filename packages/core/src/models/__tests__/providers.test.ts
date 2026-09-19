@@ -793,13 +793,14 @@ describe("ModelRegistry", () => {
     expect(reg.has("nope")).toBe(false);
   });
 
-  it("default registry has openai, anthropic, google, ollama, vertex", async () => {
+  it("default registry has openai, anthropic, google, ollama, vertex, jev", async () => {
     const { modelRegistry } = await import("../registry.js");
     expect(modelRegistry.has("openai")).toBe(true);
     expect(modelRegistry.has("anthropic")).toBe(true);
     expect(modelRegistry.has("google")).toBe(true);
     expect(modelRegistry.has("ollama")).toBe(true);
     expect(modelRegistry.has("vertex")).toBe(true);
+    expect(modelRegistry.has("jev")).toBe(true);
   });
 });
 

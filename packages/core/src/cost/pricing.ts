@@ -79,6 +79,11 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
   // ── Perplexity ────────────────────────────────────────────────────────
   "sonar-pro": { promptPer1k: 0.003, completionPer1k: 0.015 },
   sonar: { promptPer1k: 0.001, completionPer1k: 0.001 },
+
+  // ── TypeSafe: Jev (input billed, output free) ─────────────────────────
+  // $0.042 / MTok input → $0.000042 / 1K. https://docs.typesafe.ai/models
+  "jev-latest": { promptPer1k: 0.000042, completionPer1k: 0 },
+  "jev-1.13.0": { promptPer1k: 0.000042, completionPer1k: 0 },
 };
 
 export function lookupPricing(modelId: string, customPricing?: Record<string, ModelPricing>): ModelPricing | undefined {

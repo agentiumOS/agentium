@@ -201,6 +201,8 @@ export type { UserFact } from "./memory/stores/user-facts.js";
 export { UserFacts } from "./memory/stores/user-facts.js";
 export type { UserProfileData } from "./memory/stores/user-profile.js";
 export { UserProfile } from "./memory/stores/user-profile.js";
+export type { JevQuestions } from "./models/jev-sdk.js";
+export { choice, noul, score } from "./models/jev-sdk.js";
 // Models
 export type { ModelProvider } from "./models/provider.js";
 export { AnthropicProvider } from "./models/providers/anthropic.js";
@@ -217,6 +219,8 @@ export { CohereProvider } from "./models/providers/cohere.js";
 export type { DeepSeekConfig } from "./models/providers/deepseek.js";
 export { DeepSeekProvider } from "./models/providers/deepseek.js";
 export { GoogleProvider } from "./models/providers/google.js";
+export type { JevConfig } from "./models/providers/jev.js";
+export { JevProvider } from "./models/providers/jev.js";
 export type { MetaLlamaConfig } from "./models/providers/meta-llama.js";
 export { MetaLlamaProvider } from "./models/providers/meta-llama.js";
 export type { MistralConfig } from "./models/providers/mistral.js";
@@ -244,6 +248,7 @@ export {
   geminiVisionLive,
   google,
   googleLive,
+  jev,
   ModelRegistry,
   meta,
   mistral,

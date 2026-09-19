@@ -41,6 +41,8 @@ export type { HttpConfig } from "./http.js";
 export { HttpToolkit } from "./http.js";
 export type { ImageGenerationConfig } from "./image-generation.js";
 export { ImageGenerationToolkit } from "./image-generation.js";
+export type { JevToolkitConfig } from "./jev.js";
+export { JevToolkit } from "./jev.js";
 export type { JiraConfig } from "./jira.js";
 export { JiraToolkit } from "./jira.js";
 export type { NotionConfig } from "./notion.js";
