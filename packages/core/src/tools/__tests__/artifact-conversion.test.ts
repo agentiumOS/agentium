@@ -38,7 +38,9 @@ describe("ToolExecutor artifact auto-conversion", () => {
 
     const art = getArtifact(ctx, parsed.pointer);
     expect(art).not.toBeNull();
-    expect((art?.value as string).length).toBe(100_000);
+    const value = art?.value;
+    expect(typeof value).toBe("string");
+    expect((value as string).length).toBe(100_000);
   });
 
   it("leaves small outputs alone", async () => {

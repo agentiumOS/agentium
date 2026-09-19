@@ -80,27 +80,17 @@ export class AzureOpenAIProvider implements ModelProvider {
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): Promise<ModelResponse> {
-    return generateOpenAIStyle(
-      this.client,
-      this.modelId,
-      messages,
-      options,
-      this.withRetry.bind(this),
-      { maxTokensField: "max_completion_tokens" },
-    );
+    return generateOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this), {
+      maxTokensField: "max_completion_tokens",
+    });
   }
 
   async *stream(
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): AsyncGenerator<StreamChunk> {
-    yield* streamOpenAIStyle(
-      this.client,
-      this.modelId,
-      messages,
-      options,
-      this.withRetry.bind(this),
-      { maxTokensField: "max_completion_tokens" },
-    );
+    yield* streamOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this), {
+      maxTokensField: "max_completion_tokens",
+    });
   }
 }
