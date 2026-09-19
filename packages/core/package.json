@@ -1,6 +1,6 @@
 {
   "name": "@agentium/core",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "Core framework for building AI agents with tools, memory, and multi-model support",
   "license": "MIT",
   "publishConfig": {
@@ -31,7 +31,7 @@
         "default": "./dist/index.js"
       },
       "require": {
-        "types": "./dist/index.d.cts",
+        "types": "./dist/index.d.ts",
         "default": "./dist/index.cjs"
       }
     },
@@ -41,7 +41,7 @@
         "default": "./dist/toolkits/index.js"
       },
       "require": {
-        "types": "./dist/toolkits/index.d.cts",
+        "types": "./dist/toolkits/index.d.ts",
         "default": "./dist/toolkits/index.cjs"
       }
     },
@@ -51,7 +51,7 @@
         "default": "./dist/toolkits/*.js"
       },
       "require": {
-        "types": "./dist/toolkits/*.d.cts",
+        "types": "./dist/toolkits/*.d.ts",
         "default": "./dist/toolkits/*.cjs"
       }
     },
@@ -62,7 +62,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup --config tsup.config.ts",
+    "build": "tsup --config tsup.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false",
     "dev": "tsup --config tsup.config.ts --watch",
     "prepublishOnly": "npm run build"
   },

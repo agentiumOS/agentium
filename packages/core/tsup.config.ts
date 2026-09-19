@@ -15,7 +15,7 @@ const toolkitEntries = readdirSync(TOOLKIT_DIR)
 export default defineConfig({
   entry: ["src/index.ts", "src/tools/sandbox-worker.ts", ...toolkitEntries],
   format: ["esm", "cjs"],
-  dts: true,
+  dts: false,
   shims: true,
   clean: true,
   splitting: true,

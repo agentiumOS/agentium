@@ -1,6 +1,6 @@
 {
   "name": "@agentium/eval",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "Evaluation framework for testing and scoring Agentium agents",
   "license": "MIT",
   "publishConfig": {
@@ -35,12 +35,12 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --dts --shims --clean",
-    "dev": "tsup src/index.ts --format esm,cjs --dts --shims --watch",
+    "build": "tsup src/index.ts --format esm,cjs --shims --clean && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false",
+    "dev": "tsup src/index.ts --format esm,cjs --shims --watch",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "@agentium/core": "^3.1.0"
+    "@agentium/core": "^3.1.1"
   },
   "devDependencies": {
     "@types/node": "^25.3.1",

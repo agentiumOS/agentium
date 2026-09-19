@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **Jev `structuredOutput` scores.** TypeSafe often returns a fractional expected index. Flattening now `Math.round`s it so `z.number().int().min().max()` parses into `result.structured`.
 - **Biome 2.5.14.** Schema/preset migration, Azure OpenAI format, and the artifact test optional-chain error so `biome ci` passes.
+- **Package types.** `tsc --emitDeclarationOnly` replaces tsup `--dts` (rollup-plugin-dts crashes on TypeScript 5.7). CJS and ESM both resolve `.d.ts`.
 
 ## [3.1.0] - 2026-09-19
 
