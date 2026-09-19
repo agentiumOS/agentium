@@ -2,10 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [3.1.1] - 2026-09-19
 
 ### Added
 - **`run({ questions })` for Jev.** Pass `choice` / `noul` / `score` on each `agent.run()` / `agent.stream()`. Per-run questions win over `jev(model, { questions })`.
+
+### Fixed
+- **Jev `structuredOutput` scores.** TypeSafe often returns a fractional expected index. Flattening now `Math.round`s it so `z.number().int().min().max()` parses into `result.structured`.
+- **Biome 2.5.14.** Schema/preset migration, Azure OpenAI format, and the artifact test optional-chain error so `biome ci` passes.
 
 ## [3.1.0] - 2026-09-19
 

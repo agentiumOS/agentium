@@ -188,6 +188,27 @@ describe("JevProvider", () => {
     });
   });
 
+  it("rounds a fractional score when flattening structuredOutput", async () => {
+    const provider = new JevProvider("jev-latest");
+    provider.client = mockClient({
+      severity: { type: "score", score: 2.46 },
+    });
+
+    const result = await provider.generate([{ role: "user", content: "charged twice" }], {
+      responseFormat: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+          properties: {
+            severity: { type: "integer", minimum: 1, maximum: 5, description: "Impact" },
+          },
+        },
+      },
+    });
+
+    expect(JSON.parse(result.message.content as string)).toEqual({ severity: 3 });
+  });
+
   it("throws on unmappable structuredOutput fields", async () => {
     const provider = new JevProvider("jev-latest");
     provider.client = mockClient({});

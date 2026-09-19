@@ -205,7 +205,8 @@ export function flattenJevAnswers(
     } else if (typeof rec.noul === "number") {
       out[key] = rec.noul >= 0.5;
     } else if (typeof rec.score === "number") {
-      out[key] = (numericMin[key] ?? 0) + rec.score;
+      // TypeSafe may return a fractional expected index (e.g. 2.46).
+      out[key] = (numericMin[key] ?? 0) + Math.round(rec.score);
     } else {
       out[key] = value;
     }
