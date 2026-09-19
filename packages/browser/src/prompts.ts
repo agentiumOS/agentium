@@ -1,4 +1,5 @@
 import type { ToolDef } from "@agentium/core";
+import type { TabInfo } from "./action-space.js";
 import type { DomScrollContext } from "./types.js";
 
 export function buildSystemPrompt(
@@ -87,8 +88,18 @@ export function buildSystemPrompt(
     `Set a file on an \`<input type="file">\` by index. \`path\` must be a path the runtime can read; the agent does NOT have a filesystem of its own.`,
     `\`{ "action": "upload_file", "index": <n>, "path": "/abs/path/to/file.pdf" }\``,
     ``,
-    `### navigate / back`,
-    `\`{ "action": "navigate", "url": "<full URL>" }\` · \`{ "action": "back" }\``,
+    `### navigate / back / search`,
+    `\`{ "action": "navigate", "url": "<full URL>" }\` · \`{ "action": "navigate", "url": "<full URL>", "newTab": true }\` · \`{ "action": "back" }\``,
+    `\`{ "action": "search", "query": "<query>", "engine": "duckduckgo"|"google"|"bing" }\` opens a search-engine results page (default engine: duckduckgo).`,
+    ``,
+    `### tabs`,
+    `Tab ids come from the **Open tabs** list in the observation.`,
+    `\`{ "action": "new_tab", "url": "<optional URL>" }\` · \`{ "action": "switch_tab", "tabId": "tab-2" }\` · \`{ "action": "close_tab", "tabId": "tab-1" }\``,
+    ``,
+    `### search_page / find_elements`,
+    `Zero-LLM inspect. Use these instead of \`extract\` when you just need to grep visible text or run a CSS selector.`,
+    `\`{ "action": "search_page", "pattern": "Total", "regex": false, "caseSensitive": false }\``,
+    `\`{ "action": "find_elements", "selector": "a.storylink" }\``,
     ``,
     `### wait / screenshot`,
     `\`{ "action": "wait", "ms": <ms ≤ 10000> }\` · \`{ "action": "screenshot" }\` (request a fresh image on the next step — only useful when vision mode is "auto").`,
@@ -199,6 +210,7 @@ export function buildUserMessage(
   scroll?: DomScrollContext,
   nudge?: string,
   stepBudget?: { current: number; max: number },
+  tabs?: TabInfo[],
 ): string {
   const lines: string[] = [];
 
@@ -219,6 +231,14 @@ export function buildUserMessage(
     if (scroll.pagesBelow > 0) parts.push(`${scroll.pagesBelow} page${scroll.pagesBelow === 1 ? "" : "s"} below`);
     if (scroll.pagesAbove === 0 && scroll.pagesBelow === 0) parts.push("fits in viewport");
     lines.push(`**Page stats:** ${parts.join(" · ")}`);
+  }
+
+  if (tabs && tabs.length > 0) {
+    lines.push(`**Open tabs:**`);
+    for (const tab of tabs) {
+      const mark = tab.active ? " (active)" : "";
+      lines.push(`- ${tab.id}${mark}: ${tab.url || "blank"}`);
+    }
   }
 
   if (domSnapshot !== undefined) {
@@ -273,7 +293,19 @@ export function summarizeAction(action: Record<string, unknown>): string {
       if (typeof action.index === "number") return `Scrolled [${action.index}] into view`;
       return `Scrolled ${action.direction}${action.amount ? ` ${action.amount}px` : ""}`;
     case "navigate":
-      return `Navigated to ${action.url}`;
+      return action.newTab ? `Opened ${action.url} in a new tab` : `Navigated to ${action.url}`;
+    case "search":
+      return `Searched ${action.engine ?? "web"} for "${action.query}"`;
+    case "new_tab":
+      return action.url ? `Opened new tab: ${action.url}` : `Opened new tab`;
+    case "switch_tab":
+      return `Switched to ${action.tabId}`;
+    case "close_tab":
+      return `Closed ${action.tabId}`;
+    case "search_page":
+      return `Searched page for "${action.pattern}"`;
+    case "find_elements":
+      return `Found elements: ${action.selector}`;
     case "back":
       return `Went back to previous page`;
     case "wait":

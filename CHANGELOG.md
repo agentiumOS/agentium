@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Browser Use parity — tabs, search, inspect, Jev planner.** `BrowserAgent` now runs `search`, `new_tab`, `switch_tab`, `close_tab`, `search_page`, and `find_elements`. `navigate` accepts `newTab`. Set `planner: "jev"` to pick the next action from a closed per-step list (`click_12`, `type_3`, `back`, `done`, …) via TypeSafe `choice`. Do **not** set `model: jev()` on the vision JSON loop — Jev is the planner, not the screenshot model.
+- **VoiceAgent GA Realtime.** OpenAI session uses `session.type: "realtime"`, nested `audio.input` / `audio.output`, no beta header. Default model `gpt-realtime-2.1`. `semantic_vad`, `reasoningEffort`, noise reduction, reusable `prompt`, MCP servers, configurable transcription, translation hint, barge-in, idle timeout, `sendImage`, `commitAudio`, `toolCallBehavior` (speak around long tools), recording, `handoff` / `resumeTranscript`, `createRealtimeClientSecret`, `createRealtimeCall` (SIP/WebRTC), and `VoicePipeline` (STT→LLM→TTS). Gemini Live default `gemini-3.1-flash-live-preview`.
+
 ## [3.1.1] - 2026-09-19
 
 ### Added

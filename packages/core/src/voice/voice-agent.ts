@@ -11,7 +11,9 @@ import type {
   RealtimeConnection,
   RealtimeSessionConfig,
   RealtimeToolCall,
+  TurnDetectionConfig,
   VoiceAgentConfig,
+  VoiceRecording,
   VoiceSession,
   VoiceSessionEvent,
   VoiceSessionEventMap,
@@ -19,21 +21,42 @@ import type {
 
 class VoiceSessionImpl extends EventEmitter implements VoiceSession {
   private connection: RealtimeConnection;
+  private transcripts: { role: "user" | "assistant"; text: string }[];
+  private outputChunks: Buffer[] = [];
+  private inputChunks: Buffer[] = [];
+  private recordOutput: boolean;
+  private recordInput: boolean;
 
-  constructor(connection: RealtimeConnection) {
+  constructor(
+    connection: RealtimeConnection,
+    transcripts: { role: "user" | "assistant"; text: string }[],
+    recording?: { output?: boolean; input?: boolean },
+  ) {
     super();
     this.on("error", (err) => {
       console.error("[VoiceSession] Unhandled error:", err);
     });
     this.connection = connection;
+    this.transcripts = transcripts;
+    this.recordOutput = !!recording?.output;
+    this.recordInput = !!recording?.input;
   }
 
   sendAudio(data: Buffer): void {
+    if (this.recordInput) this.inputChunks.push(data);
     this.connection.sendAudio(data);
   }
 
   sendText(text: string): void {
     this.connection.sendText(text);
+  }
+
+  sendImage(image: Buffer | string, opts?: { mimeType?: string; text?: string }): void {
+    this.connection.sendImage(image, opts);
+  }
+
+  commitAudio(): void {
+    this.connection.commitAudio();
   }
 
   interrupt(): void {
@@ -44,6 +67,21 @@ class VoiceSessionImpl extends EventEmitter implements VoiceSession {
     await this.connection.close();
   }
 
+  getTranscript(): string {
+    return this.transcripts.map((t) => `${t.role}: ${t.text}`).join("\n");
+  }
+
+  getRecording(): VoiceRecording {
+    return {
+      output: Buffer.concat(this.outputChunks),
+      input: Buffer.concat(this.inputChunks),
+    };
+  }
+
+  pushOutputAudio(data: Buffer): void {
+    if (this.recordOutput) this.outputChunks.push(data);
+  }
+
   on<K extends VoiceSessionEvent>(event: K, handler: (data: VoiceSessionEventMap[K]) => void): this {
     return super.on(event, handler as any);
   }
@@ -51,6 +89,18 @@ class VoiceSessionImpl extends EventEmitter implements VoiceSession {
   off<K extends VoiceSessionEvent>(event: K, handler: (data: VoiceSessionEventMap[K]) => void): this {
     return super.off(event, handler as any);
   }
+}
+
+function applyBargeIn(
+  td: TurnDetectionConfig | null | undefined,
+  bargeIn?: "always" | "never",
+): TurnDetectionConfig | null | undefined {
+  if (td === null) return null;
+  const interrupt = bargeIn !== "never";
+  if (!td) {
+    return { type: "semantic_vad", eagerness: "low", interruptResponse: interrupt, createResponse: true };
+  }
+  return { ...td, interruptResponse: td.interruptResponse ?? interrupt };
 }
 
 export class VoiceAgent {
@@ -63,7 +113,6 @@ export class VoiceAgent {
   private skillManager: SkillManager | null = null;
   private skillsInitialized = false;
 
-  /** Access the MemoryManager (if memory is configured). */
   get memory(): MemoryManager | null {
     return this.memoryManager;
   }
@@ -106,7 +155,13 @@ export class VoiceAgent {
     }
   }
 
-  async connect(opts?: { apiKey?: string; sessionId?: string; userId?: string }): Promise<VoiceSession> {
+  async connect(opts?: {
+    apiKey?: string;
+    sessionId?: string;
+    userId?: string;
+    /** Prior call transcript — appended to instructions (warm transfer). */
+    resumeTranscript?: string;
+  }): Promise<VoiceSession> {
     await this.ensureSkillsLoaded();
     const toolDefs = this.toolExecutor?.getToolDefinitions() ?? [];
     const sessionId = opts?.sessionId ?? this.config.sessionId ?? `voice_${uuidv4()}`;
@@ -116,7 +171,6 @@ export class VoiceAgent {
 
     if (this.memoryManager) {
       await this.memoryManager.ensureReady();
-
       const memoryContext = await this.memoryManager.buildContext(sessionId, userId, undefined, this.name);
       if (memoryContext) {
         instructions = instructions ? `${instructions}\n\n${memoryContext}` : memoryContext;
@@ -130,21 +184,33 @@ export class VoiceAgent {
       }
     }
 
+    if (opts?.resumeTranscript) {
+      instructions = `${instructions}\n\nPrior call transcript (warm transfer):\n${opts.resumeTranscript}`;
+    }
+
     const sessionConfig: RealtimeSessionConfig = {
       instructions,
       voice: this.config.voice,
       tools: toolDefs,
       inputAudioFormat: this.config.inputAudioFormat,
       outputAudioFormat: this.config.outputAudioFormat,
-      turnDetection: this.config.turnDetection,
+      turnDetection: applyBargeIn(this.config.turnDetection, this.config.bargeIn),
       temperature: this.config.temperature,
       maxResponseOutputTokens: this.config.maxResponseOutputTokens,
       apiKey: opts?.apiKey,
+      reasoningEffort: this.config.reasoningEffort ?? "low",
+      transcriptionModel: this.config.transcriptionModel,
+      noiseReduction: this.config.noiseReduction,
+      prompt: this.config.prompt,
+      mcpServers: this.config.mcpServers,
+      safetyIdentifier: this.config.safetyIdentifier,
+      translation: this.config.translation,
     };
 
     this.logger.info("Connecting to realtime provider...");
     const connection = await this.config.provider.connect(sessionConfig);
-    const session = new VoiceSessionImpl(connection);
+    const transcripts: { role: "user" | "assistant"; text: string }[] = [];
+    const session = new VoiceSessionImpl(connection, transcripts, this.config.recording);
 
     const ctx = new RunContext({
       sessionId,
@@ -153,7 +219,6 @@ export class VoiceAgent {
       metadata: { agentName: this.name },
     });
 
-    const transcripts: { role: "user" | "assistant"; text: string }[] = [];
     let persisted = false;
 
     this.wireEvents(connection, session, ctx, transcripts);
@@ -178,6 +243,15 @@ export class VoiceAgent {
     this.logger.info(`Voice session connected (session=${sessionId}, user=${userId ?? "anonymous"})`);
 
     return session;
+  }
+
+  /**
+   * Warm-transfer: close `from`, open a session on this agent with the same transcript.
+   */
+  async handoff(from: VoiceSession, opts?: { apiKey?: string; userId?: string }): Promise<VoiceSession> {
+    const transcript = from.getTranscript();
+    await from.close();
+    return this.connect({ apiKey: opts?.apiKey, userId: opts?.userId, resumeTranscript: transcript });
   }
 
   private consolidateTranscripts(transcripts: { role: "user" | "assistant"; text: string }[]): ChatMessage[] {
@@ -234,6 +308,7 @@ export class VoiceAgent {
     transcripts: { role: "user" | "assistant"; text: string }[],
   ): void {
     connection.on("audio", (data) => {
+      session.pushOutputAudio(data.data);
       session.emit("audio", data);
       this.eventBus.emit("voice.audio", {
         agentName: this.name,
@@ -257,12 +332,16 @@ export class VoiceAgent {
     });
 
     connection.on("tool_call", (toolCall: RealtimeToolCall) => {
-      this.handleToolCall(connection, session, ctx, toolCall);
+      void this.handleToolCall(connection, session, ctx, toolCall);
     });
 
     connection.on("interrupted", () => {
       session.emit("interrupted", {});
       this.logger.debug("Response interrupted by user speech");
+    });
+
+    connection.on("idle", () => {
+      session.emit("idle", {});
     });
 
     connection.on("error", (data) => {
@@ -302,6 +381,8 @@ export class VoiceAgent {
     ctx: RunContext,
     toolCall: RealtimeToolCall,
   ): Promise<void> {
+    const behavior = this.config.toolCallBehavior ?? "speakBeforeAndAfter";
+
     if (!this.toolExecutor) {
       this.logger.warn(`Tool call "${toolCall.name}" received but no tools registered`);
       connection.sendToolResult(toolCall.id, JSON.stringify({ error: "No tools available" }));
@@ -328,6 +409,13 @@ export class VoiceAgent {
 
     this.logger.info(`Tool call: ${toolCall.name}`);
 
+    if (behavior === "speakBefore" || behavior === "speakBeforeAndAfter") {
+      connection.createResponse({
+        conversation: "none",
+        instructions: `The user asked you to use ${toolCall.name}. In one short sentence, say you are looking that up now. Do not wait for the result.`,
+      });
+    }
+
     try {
       const results = await this.toolExecutor.executeAll(
         [{ id: toolCall.id, name: toolCall.name, arguments: parsedArgs }],
@@ -351,6 +439,12 @@ export class VoiceAgent {
       });
 
       this.logger.info(`Tool result: ${toolCall.name} -> ${resultContent.substring(0, 100)}`);
+
+      if (behavior === "speakAfter") {
+        connection.createResponse({
+          instructions: "Read the tool result back to the user in one short sentence.",
+        });
+      }
     } catch (error: any) {
       const errMsg = error?.message ?? "Tool execution failed";
       connection.sendToolResult(toolCall.id, JSON.stringify({ error: errMsg }));

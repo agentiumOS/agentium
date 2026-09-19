@@ -46,7 +46,19 @@ export type BrowserAction =
       /** If provided, scroll the element with this index into view instead. */
       index?: number;
     }
-  | { action: "navigate"; url: string }
+  | { action: "navigate"; url: string; /** Open the URL in a new tab, then switch to it. */ newTab?: boolean }
+  | { action: "search"; query: string; engine?: SearchEngine }
+  | { action: "new_tab"; url?: string }
+  | { action: "switch_tab"; tabId: string }
+  | { action: "close_tab"; tabId: string }
+  | {
+      action: "search_page";
+      pattern: string;
+      regex?: boolean;
+      caseSensitive?: boolean;
+      maxResults?: number;
+    }
+  | { action: "find_elements"; selector: string; maxResults?: number }
   | { action: "back" }
   | { action: "wait"; ms: number }
   | { action: "screenshot" }
@@ -130,10 +142,34 @@ export interface DomSnapshot {
 
 // ── Config ───────────────────────────────────────────────────────────────
 
+export type SearchEngine = "duckduckgo" | "google" | "bing";
+
+export type BrowserPlanner = "vision" | "jev";
+
 export interface BrowserAgentConfig {
   name: string;
-  /** Vision-capable model (GPT-4o, Gemini, etc.) */
+  /**
+   * Vision-capable model (GPT-4o, Gemini, etc.).
+   * When `planner` is `"jev"`, this model is only used to invent type/search
+   * strings (unless `pageExtractionLLM` is set).
+   */
   model: ModelProvider;
+  /**
+   * Who picks the next action.
+   * - `"vision"` (default): the model writes JSON from screenshot + DOM.
+   * - `"jev"`: each step is a TypeSafe `choice` over this frame's controls
+   *   (`click_12`, `back`, `done`, …). Needs `TYPESAFE_API_KEY`.
+   */
+  planner?: BrowserPlanner;
+  /** Jev model id when `planner` is `"jev"`. Default: `jev-latest`. */
+  jevModel?: string;
+  /**
+   * Max DOM elements offered as `click_N` / `type_N` choices (Jev or the
+   * observation list). Default: 40.
+   */
+  maxActionChoices?: number;
+  /** Default engine for the `search` action. Default: `duckduckgo`. */
+  searchEngine?: SearchEngine;
   /**
    * Optional secondary (usually cheaper) model used for the `extract`
    * action and other text-only sub-tasks. Falls back to `model`.

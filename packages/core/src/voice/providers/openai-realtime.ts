@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
+import { buildOpenAIRealtimeSession, DEFAULT_REALTIME_MODEL } from "../openai-session.js";
 import type {
-  AudioFormat,
+  CreateResponseOpts,
   RealtimeConnection,
   RealtimeEvent,
   RealtimeEventMap,
@@ -17,23 +18,19 @@ export interface OpenAIRealtimeConfig {
   baseURL?: string;
 }
 
-function toOpenAIAudioFormat(fmt?: AudioFormat): string {
-  if (!fmt) return "pcm16";
-  switch (fmt) {
-    case "pcm16":
-      return "pcm16";
-    case "g711_ulaw":
-      return "g711_ulaw";
-    case "g711_alaw":
-      return "g711_alaw";
-    default:
-      return "pcm16";
+function toDataUrl(image: Buffer | string, mimeType = "image/png"): string {
+  if (typeof image === "string") {
+    if (image.startsWith("data:")) return image;
+    if (image.startsWith("http://") || image.startsWith("https://")) return image;
+    return `data:${mimeType};base64,${image}`;
   }
+  return `data:${mimeType};base64,${image.toString("base64")}`;
 }
 
 class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnection {
   private ws: any;
   private closed = false;
+  private pendingFunctionCalls = new Map<string, { name: string; args: string }>();
 
   constructor(ws: any) {
     super();
@@ -42,21 +39,27 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
 
   sendAudio(data: Buffer): void {
     if (this.closed) return;
-    this.send({
-      type: "input_audio_buffer.append",
-      audio: data.toString("base64"),
-    });
+    this.send({ type: "input_audio_buffer.append", audio: data.toString("base64") });
   }
 
   sendText(text: string): void {
     if (this.closed) return;
     this.send({
       type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text }],
-      },
+      item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+    });
+    this.send({ type: "response.create" });
+  }
+
+  sendImage(image: Buffer | string, opts?: { mimeType?: string; text?: string }): void {
+    if (this.closed) return;
+    const content: Array<Record<string, unknown>> = [
+      { type: "input_image", image_url: toDataUrl(image, opts?.mimeType) },
+    ];
+    if (opts?.text) content.push({ type: "input_text", text: opts.text });
+    this.send({
+      type: "conversation.item.create",
+      item: { type: "message", role: "user", content },
     });
     this.send({ type: "response.create" });
   }
@@ -65,13 +68,23 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
     if (this.closed) return;
     this.send({
       type: "conversation.item.create",
-      item: {
-        type: "function_call_output",
-        call_id: callId,
-        output: result,
-      },
+      item: { type: "function_call_output", call_id: callId, output: result },
     });
     this.send({ type: "response.create" });
+  }
+
+  createResponse(opts?: CreateResponseOpts): void {
+    if (this.closed) return;
+    const response: Record<string, unknown> = {};
+    if (opts?.instructions) response.instructions = opts.instructions;
+    if (opts?.conversation) response.conversation = opts.conversation;
+    if (opts?.modalities) response.output_modalities = opts.modalities;
+    this.send({ type: "response.create", ...(Object.keys(response).length ? { response } : {}) });
+  }
+
+  commitAudio(): void {
+    if (this.closed) return;
+    this.send({ type: "input_audio_buffer.commit" });
   }
 
   interrupt(): void {
@@ -99,12 +112,9 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
   }
 
   private send(event: Record<string, unknown>): void {
-    if (this.ws.readyState === 1) {
-      this.ws.send(JSON.stringify(event));
-    }
+    if (this.ws.readyState === 1) this.ws.send(JSON.stringify(event));
   }
 
-  /** Called by the provider to set up server event handling. */
   _bindServerEvents(): void {
     this.ws.on("message", (raw: Buffer | string) => {
       try {
@@ -117,11 +127,7 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
         );
       }
     });
-
-    this.ws.on("error", (err: Error) => {
-      this.emit("error", { error: err });
-    });
-
+    this.ws.on("error", (err: Error) => this.emit("error", { error: err }));
     this.ws.on("close", () => {
       if (!this.closed) {
         this.closed = true;
@@ -130,8 +136,6 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
     });
   }
 
-  private pendingFunctionCalls = new Map<string, { name: string; args: string }>();
-
   private handleServerEvent(event: any): void {
     switch (event.type) {
       case "session.created":
@@ -139,63 +143,56 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
         break;
 
       case "response.audio.delta":
+      case "response.output_audio.delta":
         if (event.delta) {
-          this.emit("audio", {
-            data: Buffer.from(event.delta, "base64"),
-            mimeType: "audio/pcm",
-          });
+          this.emit("audio", { data: Buffer.from(event.delta, "base64"), mimeType: "audio/pcm" });
         }
         break;
 
       case "response.audio_transcript.delta":
-        if (event.delta) {
-          this.emit("transcript", { text: event.delta, role: "assistant" });
-        }
+      case "response.output_audio_transcript.delta":
+        if (event.delta) this.emit("transcript", { text: event.delta, role: "assistant" });
         break;
 
       case "response.text.delta":
-        if (event.delta) {
-          this.emit("text", { text: event.delta });
-        }
+      case "response.output_text.delta":
+        if (event.delta) this.emit("text", { text: event.delta });
         break;
 
       case "input_audio_buffer.speech_started":
         this.emit("interrupted", {});
         break;
 
+      case "input_audio_buffer.timeout_triggered":
+        this.emit("idle", {});
+        break;
+
       case "conversation.item.input_audio_transcription.completed":
-        if (event.transcript) {
-          this.emit("transcript", { text: event.transcript, role: "user" });
-        }
+        if (event.transcript) this.emit("transcript", { text: event.transcript, role: "user" });
         break;
 
       case "response.function_call_arguments.delta":
         if (event.item_id) {
           const pending = this.pendingFunctionCalls.get(event.item_id);
-          if (pending) {
-            pending.args += event.delta ?? "";
-          }
+          if (pending) pending.args += event.delta ?? "";
         }
         break;
 
       case "response.output_item.added":
         if (event.item?.type === "function_call") {
-          this.pendingFunctionCalls.set(event.item.id, {
-            name: event.item.name ?? "",
-            args: "",
-          });
+          this.pendingFunctionCalls.set(event.item.id, { name: event.item.name ?? "", args: "" });
         }
         break;
 
       case "response.output_item.done":
         if (event.item?.type === "function_call") {
           const pending = this.pendingFunctionCalls.get(event.item.id);
+          this.pendingFunctionCalls.delete(event.item.id);
           const toolCall: RealtimeToolCall = {
             id: event.item.call_id ?? event.item.id,
             name: pending?.name ?? event.item.name ?? "",
             arguments: pending?.args ?? event.item.arguments ?? "{}",
           };
-          this.pendingFunctionCalls.delete(event.item.id);
           this.emit("tool_call", toolCall);
         }
         break;
@@ -212,9 +209,7 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
         break;
 
       case "error":
-        this.emit("error", {
-          error: new Error(event.error?.message ?? "Realtime API error"),
-        });
+        this.emit("error", { error: new Error(event.error?.message ?? "Realtime API error") });
         break;
     }
   }
@@ -227,7 +222,7 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
   private baseURL?: string;
 
   constructor(modelId?: string, config?: OpenAIRealtimeConfig) {
-    this.modelId = modelId ?? "gpt-4o-realtime-preview";
+    this.modelId = modelId ?? DEFAULT_REALTIME_MODEL;
     this.apiKey = config?.apiKey;
     this.baseURL = config?.baseURL;
   }
@@ -250,14 +245,10 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
 
     const base = this.baseURL ?? "wss://api.openai.com";
     const url = `${base}/v1/realtime?model=${encodeURIComponent(this.modelId)}`;
+    const headers: Record<string, string> = { Authorization: `Bearer ${key}` };
+    if (config.safetyIdentifier) headers["OpenAI-Safety-Identifier"] = config.safetyIdentifier;
 
-    const ws = new WebSocket(url, {
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "OpenAI-Beta": "realtime=v1",
-      },
-    });
-
+    const ws = new WebSocket(url, { headers });
     const connection = new OpenAIRealtimeConnection(ws);
 
     return new Promise<RealtimeConnection>((resolve, reject) => {
@@ -277,12 +268,12 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
       ws.on("open", () => {
         clearTimeout(timeout);
         connection._bindServerEvents();
-
-        const sessionUpdate: Record<string, unknown> = {
-          type: "session.update",
-          session: this.buildSessionPayload(config),
-        };
-        ws.send(JSON.stringify(sessionUpdate));
+        ws.send(
+          JSON.stringify({
+            type: "session.update",
+            session: buildOpenAIRealtimeSession(this.modelId, config),
+          }),
+        );
         resolve(connection);
       });
 
@@ -302,68 +293,5 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
         });
       });
     });
-  }
-
-  private buildSessionPayload(config: RealtimeSessionConfig): Record<string, unknown> {
-    const session: Record<string, unknown> = {
-      modalities: ["text", "audio"],
-      model: this.modelId,
-    };
-
-    if (config.instructions) {
-      session.instructions = config.instructions;
-    }
-
-    if (config.voice) {
-      session.voice = config.voice;
-    }
-
-    if (config.inputAudioFormat) {
-      session.input_audio_format = toOpenAIAudioFormat(config.inputAudioFormat);
-    }
-
-    if (config.outputAudioFormat) {
-      session.output_audio_format = toOpenAIAudioFormat(config.outputAudioFormat);
-    }
-
-    if (config.turnDetection !== undefined) {
-      if (config.turnDetection === null) {
-        session.turn_detection = null;
-      } else {
-        session.turn_detection = {
-          type: config.turnDetection.type,
-          ...(config.turnDetection.threshold !== undefined && {
-            threshold: config.turnDetection.threshold,
-          }),
-          ...(config.turnDetection.prefixPaddingMs !== undefined && {
-            prefix_padding_ms: config.turnDetection.prefixPaddingMs,
-          }),
-          ...(config.turnDetection.silenceDurationMs !== undefined && {
-            silence_duration_ms: config.turnDetection.silenceDurationMs,
-          }),
-        };
-      }
-    }
-
-    if (config.temperature !== undefined) {
-      session.temperature = config.temperature;
-    }
-
-    if (config.maxResponseOutputTokens !== undefined) {
-      session.max_response_output_tokens = config.maxResponseOutputTokens;
-    }
-
-    session.input_audio_transcription = { model: "whisper-1" };
-
-    if (config.tools && config.tools.length > 0) {
-      session.tools = config.tools.map((t) => ({
-        type: "function",
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-      }));
-    }
-
-    return session;
   }
 }

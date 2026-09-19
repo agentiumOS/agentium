@@ -396,24 +396,48 @@ export type {
   VisionToolCall,
 } from "./vision/types.js";
 export { VisionAgent } from "./vision/vision-agent.js";
+export {
+  audioFormatToGa,
+  buildOpenAIRealtimeSession,
+  DEFAULT_REALTIME_MODEL,
+  DEFAULT_TRANSCRIPTION_MODEL,
+  turnDetectionToGa,
+} from "./voice/openai-session.js";
+export type { VoicePipelineConfig, VoicePipelineTurn } from "./voice/pipeline.js";
+export { VoicePipeline } from "./voice/pipeline.js";
 // Voice / Realtime
 export type { GoogleLiveConfig } from "./voice/providers/google-live.js";
 export { GoogleLiveProvider } from "./voice/providers/google-live.js";
 export type { OpenAIRealtimeConfig } from "./voice/providers/openai-realtime.js";
 export { OpenAIRealtimeProvider } from "./voice/providers/openai-realtime.js";
+export type { ClientSecretOpts, ClientSecretResult, RealtimeCallOpts } from "./voice/realtime-http.js";
+export { createRealtimeCall, createRealtimeClientSecret } from "./voice/realtime-http.js";
 export type {
   AudioFormat,
+  BargeInPolicy,
+  CreateResponseOpts,
+  NoiseReductionConfig,
   RealtimeConnection,
   RealtimeEvent,
   RealtimeEventMap,
+  RealtimeMcpServer,
+  RealtimePrompt,
   RealtimeProvider,
   RealtimeSessionConfig,
   RealtimeToolCall,
+  ReasoningEffort,
+  SemanticVadConfig,
+  SemanticVadEagerness,
+  ServerVadConfig,
+  ToolCallBehavior,
   TurnDetectionConfig,
   VoiceAgentConfig,
+  VoiceRecording,
+  VoiceRecordingConfig,
   VoiceSession,
   VoiceSessionEvent,
   VoiceSessionEventMap,
+  VoiceTranslationConfig,
 } from "./voice/types.js";
 export { VoiceAgent } from "./voice/voice-agent.js";
 export { type EmailWebhookConfig, emailWebhook } from "./webhooks/destinations/email.js";

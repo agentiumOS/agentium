@@ -9,17 +9,60 @@ import type { ToolDef } from "../tools/types.js";
 
 export type AudioFormat = "pcm16" | "g711_ulaw" | "g711_alaw";
 
-// ── Turn detection / VAD ─────────────────────────────────────────────────
+export type SemanticVadEagerness = "low" | "medium" | "high" | "auto";
 
-export interface TurnDetectionConfig {
-  /** Server-side VAD type. */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/** When to talk around a tool call. Long tools (browse_web) should not go silent. */
+export type ToolCallBehavior = "silent" | "speakBefore" | "speakAfter" | "speakBeforeAndAfter";
+
+/** Whether user speech cancels the current spoken reply. */
+export type BargeInPolicy = "always" | "never";
+
+export interface ServerVadConfig {
   type: "server_vad";
-  /** Activation threshold (0-1). Lower = more sensitive. */
   threshold?: number;
-  /** Duration of speech (ms) required to open the turn. */
   prefixPaddingMs?: number;
-  /** Duration of silence (ms) required to close the turn. */
   silenceDurationMs?: number;
+  createResponse?: boolean;
+  interruptResponse?: boolean;
+  /** After this idle (ms) the model speaks (“still there?”). */
+  idleTimeoutMs?: number;
+}
+
+export interface SemanticVadConfig {
+  type: "semantic_vad";
+  eagerness?: SemanticVadEagerness;
+  createResponse?: boolean;
+  interruptResponse?: boolean;
+}
+
+export type TurnDetectionConfig = ServerVadConfig | SemanticVadConfig;
+
+export interface NoiseReductionConfig {
+  type: "near_field" | "far_field";
+}
+
+export interface RealtimePrompt {
+  id: string;
+  version?: string;
+  variables?: Record<string, string>;
+}
+
+export interface RealtimeMcpServer {
+  serverLabel: string;
+  serverUrl: string;
+  headers?: Record<string, string>;
+}
+
+export interface VoiceTranslationConfig {
+  /** Hint the model to translate speech into this language (BCP-47 or name). */
+  targetLanguage: string;
+}
+
+export interface VoiceRecordingConfig {
+  output?: boolean;
+  input?: boolean;
 }
 
 // ── Realtime session config (passed to provider.connect) ─────────────────
@@ -34,6 +77,13 @@ export interface RealtimeSessionConfig {
   temperature?: number;
   maxResponseOutputTokens?: number | "inf";
   apiKey?: string;
+  reasoningEffort?: ReasoningEffort;
+  transcriptionModel?: string;
+  noiseReduction?: NoiseReductionConfig;
+  prompt?: RealtimePrompt;
+  mcpServers?: RealtimeMcpServer[];
+  safetyIdentifier?: string;
+  translation?: VoiceTranslationConfig;
 }
 
 // ── Realtime events ──────────────────────────────────────────────────────
@@ -54,16 +104,27 @@ export type RealtimeEventMap = {
   error: { error: Error };
   connected: {};
   disconnected: {};
+  idle: {};
 };
 
 export type RealtimeEvent = keyof RealtimeEventMap;
+
+export interface CreateResponseOpts {
+  instructions?: string;
+  /** `"none"` = out-of-band (not stored on the conversation). */
+  conversation?: "none" | "auto";
+  modalities?: Array<"text" | "audio">;
+}
 
 // ── RealtimeConnection (provider returns this) ───────────────────────────
 
 export interface RealtimeConnection {
   sendAudio(data: Buffer): void;
   sendText(text: string): void;
+  sendImage(image: Buffer | string, opts?: { mimeType?: string; text?: string }): void;
   sendToolResult(callId: string, result: string): void;
+  createResponse(opts?: CreateResponseOpts): void;
+  commitAudio(): void;
   interrupt(): void;
   close(): Promise<void>;
 
@@ -89,6 +150,10 @@ export interface VoiceAgentConfig {
   instructions?: string;
   tools?: ToolDef[];
   voice?: string;
+  /**
+   * Turn detection. Default: `{ type: "semantic_vad", eagerness: "low" }`.
+   * Pass `{ type: "server_vad" }` for silence-based VAD, or `null` for push-to-talk.
+   */
   turnDetection?: TurnDetectionConfig | null;
   inputAudioFormat?: AudioFormat;
   outputAudioFormat?: AudioFormat;
@@ -97,21 +162,31 @@ export interface VoiceAgentConfig {
   eventBus?: EventBus;
   logLevel?: LogLevel;
 
-  /**
-   * Unified memory config — sessions, summaries, user facts, user profile,
-   * entities, decisions, and learnings. Same config as Agent.
-   */
   memory?: UnifiedMemoryConfig;
-  /** LLM model used for background extraction. Falls back to memory.model. */
   model?: ModelProvider;
-  /** Default session ID (can be overridden per connect()). */
   sessionId?: string;
-  /** Default user ID (can be overridden per connect()). */
   userId?: string;
-  /** Skills — pre-packaged or learned tool bundles. */
   skills?: Array<import("../skills/types.js").Skill | string>;
-  /** Cost tracker for tracking token usage. */
   costTracker?: import("../cost/cost-tracker.js").CostTracker;
+
+  /** Realtime 2.x thinking depth. Default: `low`. */
+  reasoningEffort?: ReasoningEffort;
+  /** Input transcription model. Default: `gpt-4o-mini-transcribe`. */
+  transcriptionModel?: string;
+  noiseReduction?: NoiseReductionConfig;
+  prompt?: RealtimePrompt;
+  /** Remote MCP servers attached to the OpenAI Realtime session. */
+  mcpServers?: RealtimeMcpServer[];
+  safetyIdentifier?: string;
+  translation?: VoiceTranslationConfig;
+  /**
+   * Talk around tool calls so long tools (browse_web / Jev) do not mute the line.
+   * Default: `speakBeforeAndAfter`.
+   */
+  toolCallBehavior?: ToolCallBehavior;
+  /** User speech cancels the current reply. Default: `always`. */
+  bargeIn?: BargeInPolicy;
+  recording?: VoiceRecordingConfig;
 }
 
 // ── VoiceSession events ──────────────────────────────────────────────────
@@ -123,15 +198,22 @@ export type VoiceSessionEventMap = RealtimeEventMap & {
 
 export type VoiceSessionEvent = keyof VoiceSessionEventMap;
 
-// ── VoiceSession (returned by VoiceAgent.connect) ────────────────────────
+export interface VoiceRecording {
+  output: Buffer;
+  input: Buffer;
+}
 
 export interface VoiceSession {
   sendAudio(data: Buffer): void;
   sendText(text: string): void;
+  sendImage(image: Buffer | string, opts?: { mimeType?: string; text?: string }): void;
+  commitAudio(): void;
   interrupt(): void;
   close(): Promise<void>;
+  getTranscript(): string;
+  getRecording(): VoiceRecording;
 
-  on<K extends VoiceSessionEvent>(event: K, handler: (data: VoiceSessionEventMap[K]) => void): void;
+  on<K extends VoiceSessionEvent>(event: K, handler: (data: VoiceSessionEventMap[K]) => void): this;
 
-  off<K extends VoiceSessionEvent>(event: K, handler: (data: VoiceSessionEventMap[K]) => void): void;
+  off<K extends VoiceSessionEvent>(event: K, handler: (data: VoiceSessionEventMap[K]) => void): this;
 }

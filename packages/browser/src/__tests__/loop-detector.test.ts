@@ -24,6 +24,16 @@ describe("normalizeAction", () => {
     expect(normalizeAction({ action: "wait", ms: 1100 })).toBe(normalizeAction({ action: "wait", ms: 1400 }));
     expect(normalizeAction({ action: "wait", ms: 1100 })).not.toBe(normalizeAction({ action: "wait", ms: 3000 }));
   });
+
+  it("keys search / tabs / inspect actions", () => {
+    expect(normalizeAction({ action: "search", query: "cats" })).toBe("search:cats:default");
+    expect(normalizeAction({ action: "new_tab" })).toBe("new_tab:");
+    expect(normalizeAction({ action: "switch_tab", tabId: "tab-2" })).toBe("switch_tab:tab-2");
+    expect(normalizeAction({ action: "close_tab", tabId: "tab-1" })).toBe("close_tab:tab-1");
+    expect(normalizeAction({ action: "search_page", pattern: "Total" })).toBe("search_page:Total");
+    expect(normalizeAction({ action: "find_elements", selector: "a.href" })).toBe("find_elements:a.href");
+    expect(normalizeAction({ action: "navigate", url: "https://x", newTab: true })).toBe("navigate:https://x:new");
+  });
 });
 
 describe("LoopDetector — actions", () => {

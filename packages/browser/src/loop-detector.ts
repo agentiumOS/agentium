@@ -168,7 +168,19 @@ export function normalizeAction(action: BrowserAction): string {
     case "scroll":
       return `scroll:${action.direction}:${action.amount ?? "default"}${action.index != null ? `:${action.index}` : ""}`;
     case "navigate":
-      return `navigate:${action.url}`;
+      return `navigate:${action.url}${action.newTab ? ":new" : ""}`;
+    case "search":
+      return `search:${truncate(action.query, 40)}:${action.engine ?? "default"}`;
+    case "new_tab":
+      return `new_tab:${action.url ?? ""}`;
+    case "switch_tab":
+      return `switch_tab:${action.tabId}`;
+    case "close_tab":
+      return `close_tab:${action.tabId}`;
+    case "search_page":
+      return `search_page:${truncate(action.pattern, 40)}`;
+    case "find_elements":
+      return `find_elements:${truncate(action.selector, 40)}`;
     case "back":
       return "back";
     case "wait":

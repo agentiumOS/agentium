@@ -1,6 +1,20 @@
-import type { ChatMessage, CostTracker, ModelProvider, ToolDef } from "@agentium/core";
-import { EventBus, Logger, MemoryManager, RunContext } from "@agentium/core";
+import type { ChatMessage, CostTracker, ModelProvider, TokenUsage, ToolDef } from "@agentium/core";
+import { choice, EventBus, jev, Logger, MemoryManager, RunContext } from "@agentium/core";
 import { z } from "zod";
+import {
+  buildActionSpace,
+  DEFAULT_MAX_ACTION_CHOICES,
+  guessSearchQuery,
+  isBlockedPageUrl,
+  isBotChallengeText,
+  isResultTitle,
+  isSearchResultsUrl,
+  labelToAction,
+  looksLikeResultList,
+  SERP_TITLE_SELECTORS,
+  searchUrl,
+  titlesFromElements,
+} from "./action-space.js";
 import { BrowserProvider } from "./browser-provider.js";
 import type { CredentialVault } from "./credential-vault.js";
 import { fnvHash, type LoopAdvice, LoopDetector } from "./loop-detector.js";
@@ -9,10 +23,13 @@ import type {
   AgentOutput,
   BrowserAction,
   BrowserAgentConfig,
+  BrowserPlanner,
   BrowserRunOpts,
   BrowserRunOutput,
   BrowserStep,
+  DomElement,
   DomScrollContext,
+  SearchEngine,
 } from "./types.js";
 
 export class BrowserAgent {
@@ -49,6 +66,11 @@ export class BrowserAgent {
   private stealth?: import("./types.js").StealthConfig | boolean;
   private humanize?: import("./types.js").HumanizeConfig | boolean;
   private tools: ToolDef[];
+  private planner: BrowserPlanner;
+  private jevModel: string;
+  private maxActionChoices: number;
+  private searchEngine: SearchEngine;
+  private jevProvider: ModelProvider | null = null;
   private costTracker: CostTracker | null;
   private memoryManager: MemoryManager | null = null;
   private logger: Logger;
@@ -90,6 +112,10 @@ export class BrowserAgent {
     this.stealth = config.stealth;
     this.humanize = config.humanize;
     this.tools = config.tools ?? [];
+    this.planner = config.planner ?? "vision";
+    this.jevModel = config.jevModel ?? "jev-latest";
+    this.maxActionChoices = config.maxActionChoices ?? DEFAULT_MAX_ACTION_CHOICES;
+    this.searchEngine = config.searchEngine ?? "duckduckgo";
     this.costTracker = config.costTracker ?? null;
     this.eventBus = config.eventBus ?? new EventBus();
     this.logger = new Logger({
@@ -198,11 +224,14 @@ export class BrowserAgent {
         // ── Build DOM snapshot + scroll context ────────────────
         let domSnapshot: string | undefined;
         let scrollCtx: DomScrollContext | undefined;
+        let elements: DomElement[] = [];
         if (this.useDOM) {
           const dom = await browser.extractDOM();
           domSnapshot = dom.text;
           scrollCtx = dom.scroll;
+          elements = dom.elements;
         }
+        const tabs = browser.listTabs();
 
         // ── Page-stagnation detection ──────────────────────────
         const pageAdvice = loop.recordPage({
@@ -242,39 +271,68 @@ export class BrowserAgent {
           scrollCtx,
           nudge,
           { current: step, max: maxSteps },
+          tabs,
         );
 
-        const messages = this.buildMessages(systemPrompt, historyTurns, userText, wantVision ? screenshot : null);
+        this.logger.debug("Calling planner", { step, url: pageInfo.url, planner: this.planner, vision: wantVision });
 
-        this.logger.debug("Calling model", { step, url: pageInfo.url, vision: wantVision });
+        let envelope: AgentOutput | null = null;
+        let modelUsed: ModelProvider = this.model;
 
-        // ── Model call (with fallback on transient errors) ────
-        const { response, modelUsed } = await this.callModelWithFallback(messages, opts?.apiKey);
-        if (!response) {
-          consecutiveFailures++;
-          actionHistory.push(`(model call failed — retrying, ${consecutiveFailures}/${this.maxFailures})`);
-          if (consecutiveFailures > this.maxFailures) {
-            return await this.forceDone(browser, steps, startTime, opts, extractedContent, actionHistory, "model");
-          }
-          continue;
-        }
-
-        if (this.costTracker && response.usage) {
-          this.costTracker.track({
-            runId: sessionId,
-            agentName: this.name,
-            modelId: modelUsed.modelId,
-            usage: response.usage,
-            sessionId,
-            userId,
+        if (this.planner === "jev") {
+          const planned = await this.planWithJev({
+            task,
+            url: pageInfo.url,
+            title: pageInfo.title,
+            elements,
+            tabs,
+            actionHistory,
+            lastExtract: lastExtractResult,
+            pagesBelow: scrollCtx?.pagesBelow,
+            pagesAbove: scrollCtx?.pagesAbove,
+            apiKey: opts?.apiKey,
           });
+          envelope = planned.envelope;
+          modelUsed = planned.modelUsed;
+          if (this.costTracker && planned.usage) {
+            this.costTracker.track({
+              runId: sessionId,
+              agentName: this.name,
+              modelId: modelUsed.modelId,
+              usage: planned.usage,
+              sessionId,
+              userId,
+            });
+          }
+        } else {
+          const messages = this.buildMessages(systemPrompt, historyTurns, userText, wantVision ? screenshot : null);
+          const { response, modelUsed: used } = await this.callModelWithFallback(messages, opts?.apiKey);
+          modelUsed = used;
+          if (!response) {
+            consecutiveFailures++;
+            actionHistory.push(`(model call failed — retrying, ${consecutiveFailures}/${this.maxFailures})`);
+            if (consecutiveFailures > this.maxFailures) {
+              return await this.forceDone(browser, steps, startTime, opts, extractedContent, actionHistory, "model");
+            }
+            continue;
+          }
+          if (this.costTracker && response.usage) {
+            this.costTracker.track({
+              runId: sessionId,
+              agentName: this.name,
+              modelId: modelUsed.modelId,
+              usage: response.usage,
+              sessionId,
+              userId,
+            });
+          }
+          const raw = typeof response.message.content === "string" ? response.message.content : "";
+          envelope = this.parseEnvelope(raw);
         }
 
-        const raw = typeof response.message.content === "string" ? response.message.content : "";
-        const envelope = this.parseEnvelope(raw);
         if (!envelope) {
           consecutiveFailures++;
-          this.logger.warn("Failed to parse model response", { raw: raw.slice(0, 200), consecutiveFailures });
+          this.logger.warn("Failed to parse planner response", { planner: this.planner, consecutiveFailures });
           if (consecutiveFailures > this.maxFailures) {
             return await this.forceDone(browser, steps, startTime, opts, extractedContent, actionHistory, "parse");
           }
@@ -348,7 +406,15 @@ export class BrowserAgent {
               didNavigate = true;
               await this.navigationHealthCheck(browser, pageInfo.url);
             }
-            if (action.action === "extract" && exec?.output) lastExtractResult = exec.output;
+            if (
+              exec?.output &&
+              (action.action === "extract" ||
+                action.action === "search" ||
+                action.action === "find_elements" ||
+                action.action === "search_page")
+            ) {
+              lastExtractResult = exec.output;
+            }
             if (action.action === "screenshot") lastActionWasScreenshot = true;
           } catch (e: any) {
             stepOk = false;
@@ -440,6 +506,7 @@ export class BrowserAgent {
   // ── Private helpers ──────────────────────────────────────────────────
 
   private shouldCaptureVision(step: number, lastActionWasScreenshot: boolean): boolean {
+    if (this.planner === "jev" && this.useVision !== true) return false;
     if (this.useVision === false) return false;
     if (this.useVision === true) return true;
     // "auto":
@@ -566,6 +633,147 @@ export class BrowserAgent {
     if (/\b5\d\d\b/.test(msg)) return true;
     if (msg.includes("401") || msg.includes("402") || msg.includes("auth")) return true;
     return false;
+  }
+
+  private getJev(): ModelProvider {
+    if (!this.jevProvider) this.jevProvider = jev(this.jevModel);
+    return this.jevProvider;
+  }
+
+  /**
+   * Ask Jev to pick one label from this frame's action space, then map it
+   * to a BrowserAction. Type/search strings come from a text model or the task.
+   */
+  private async planWithJev(args: {
+    task: string;
+    url: string;
+    title: string;
+    elements: DomElement[];
+    tabs: Array<{ id: string; url: string; active: boolean }>;
+    actionHistory: string[];
+    lastExtract?: string;
+    pagesBelow?: number;
+    pagesAbove?: number;
+    apiKey?: string;
+  }): Promise<{ envelope: AgentOutput | null; modelUsed: ModelProvider; usage?: TokenUsage }> {
+    const alreadySearched = args.actionHistory.some((h) => /^Searched /.test(h));
+    const alreadyWaited = args.actionHistory.some((h) => /^Waited /.test(h));
+    const foundTitles = args.lastExtract ?? titlesFromElements(args.elements);
+    const space = buildActionSpace(args.elements, args.tabs, {
+      max: this.maxActionChoices,
+      pagesBelow: args.pagesBelow,
+      pagesAbove: args.pagesAbove,
+      allowSearch: !alreadySearched && !isSearchResultsUrl(args.url) && !isBlockedPageUrl(args.url),
+      allowDone: looksLikeResultList(foundTitles),
+      allowWait: !alreadyWaited,
+    });
+    const provider = this.getJev();
+    try {
+      const response = await provider.generate(
+        [
+          {
+            role: "user",
+            content: JSON.stringify({
+              task: args.task,
+              url: args.url,
+              title: args.title,
+              lastActions: args.actionHistory.slice(-8),
+              lastExtract: args.lastExtract,
+              visibleTitles: titlesFromElements(args.elements, 8),
+              tabs: args.tabs,
+              hint: looksLikeResultList(foundTitles)
+                ? "Result titles are in lastExtract. Pick done."
+                : alreadySearched
+                  ? "A search already ran. Wait or click a result title. Do not search again."
+                  : undefined,
+            }),
+          },
+        ],
+        {
+          questions: {
+            action: choice(
+              "Which browser action next? Do not repeat lastActions. If search results are already visible, click a result or done.",
+              space.criteria,
+            ),
+          },
+          apiKey: args.apiKey,
+        },
+      );
+      const raw = typeof response.message.content === "string" ? response.message.content : "";
+      let pick: string | undefined;
+      try {
+        const answers = JSON.parse(raw) as Record<string, any>;
+        pick = typeof answers.action === "string" ? answers.action : answers.action?.choice;
+      } catch {
+        pick = undefined;
+      }
+      if (!pick) return { envelope: null, modelUsed: provider, usage: response.usage };
+
+      const extras = {
+        searchQuery: pick === "search" ? guessSearchQuery(args.task) : undefined,
+        typeText: pick.startsWith("type_") ? await this.inferTypeText(args.task, pick) : undefined,
+        doneResult:
+          pick === "done"
+            ? looksLikeResultList(args.lastExtract ?? "")
+              ? args.lastExtract
+              : titlesFromElements(args.elements) || args.lastExtract || "Done"
+            : undefined,
+      };
+      const action = labelToAction(pick, extras);
+      if (!action) return { envelope: null, modelUsed: provider, usage: response.usage };
+      return { envelope: { action, nextGoal: pick }, modelUsed: provider, usage: response.usage };
+    } catch (e: any) {
+      this.logger.warn("Jev planner failed", { error: e?.message });
+      return { envelope: null, modelUsed: provider };
+    }
+  }
+
+  private async pageLooksBlocked(browser: BrowserProvider): Promise<boolean> {
+    const info = await browser.getPageInfo();
+    if (isBlockedPageUrl(info.url)) return true;
+    try {
+      return isBotChallengeText(await browser.visibleText());
+    } catch {
+      return false;
+    }
+  }
+
+  private async scrapeSerpTitles(browser: BrowserProvider): Promise<string> {
+    for (const selector of SERP_TITLE_SELECTORS) {
+      const found = await browser.findElements(selector, { maxResults: 8 });
+      const labels: string[] = [];
+      const seen = new Set<string>();
+      for (const f of found) {
+        const text = f.text.replace(/\s+/g, " ").trim();
+        if (!isResultTitle(text) || seen.has(text.toLowerCase())) continue;
+        seen.add(text.toLowerCase());
+        labels.push(text);
+      }
+      if (labels.length >= 2) {
+        return labels
+          .slice(0, 5)
+          .map((t, i) => `${i + 1}. ${t}`)
+          .join("\n");
+      }
+    }
+    return "";
+  }
+
+  private async inferTypeText(task: string, pick: string): Promise<string> {
+    const model = this.pageExtractionLLM ?? (this.model.providerId === "jev" ? null : this.model);
+    if (!model) return guessSearchQuery(task);
+    try {
+      const response = await model.generate([
+        {
+          role: "user",
+          content: `Task: ${task}\nThe next browser action is ${pick}. Reply with ONLY the text to type into that field. No quotes.`,
+        },
+      ]);
+      const text = typeof response.message.content === "string" ? response.message.content.trim() : "";
+      return text.replace(/^["']|["']$/g, "").slice(0, 500);
+    } catch {
+      return guessSearchQuery(task);
+    }
   }
 
   /**
@@ -814,8 +1022,72 @@ export class BrowserAgent {
 
       case "navigate": {
         this.assertDomainAllowed(action.url);
+        if (action.newTab) {
+          const tabId = await browser.newTab(action.url);
+          await browser.switchTab(tabId);
+          return { didNavigate: true, output: `Opened ${action.url} in ${tabId}` };
+        }
         await browser.navigate(action.url);
         return { didNavigate: true };
+      }
+
+      case "search": {
+        const engine = action.engine ?? this.searchEngine;
+        const url = searchUrl(action.query, engine);
+        this.assertDomainAllowed(url);
+        await browser.navigate(url);
+        let used = engine;
+        if (await this.pageLooksBlocked(browser)) {
+          if (engine === "duckduckgo") {
+            const fallback = searchUrl(action.query, "bing");
+            this.assertDomainAllowed(fallback);
+            await browser.navigate(fallback);
+            used = "bing";
+          } else {
+            return {
+              didNavigate: true,
+              output: `Search blocked on ${engine}. Pick fail or navigate elsewhere.`,
+            };
+          }
+        }
+        await browser.waitForStable(400);
+        const titles = await this.scrapeSerpTitles(browser);
+        return {
+          didNavigate: true,
+          output: titles || `Searched ${used} for "${action.query}"`,
+        };
+      }
+
+      case "new_tab": {
+        if (action.url) this.assertDomainAllowed(action.url);
+        const tabId = await browser.newTab(action.url);
+        await browser.switchTab(tabId);
+        return { didNavigate: !!action.url, output: `Opened ${tabId}` };
+      }
+
+      case "switch_tab":
+        await browser.switchTab(action.tabId);
+        return { didNavigate: true, output: `Switched to ${action.tabId}` };
+
+      case "close_tab":
+        await browser.closeTab(action.tabId);
+        return { output: `Closed ${action.tabId}` };
+
+      case "search_page": {
+        const hits = await browser.searchPage({
+          pattern: action.pattern,
+          regex: action.regex,
+          caseSensitive: action.caseSensitive,
+          maxResults: action.maxResults,
+        });
+        const lines = hits.map((h, i) => `${i + 1}. "${h.match}" — …${h.context}…`);
+        return { output: hits.length ? `search_page:\n${lines.join("\n")}` : "search_page: no matches" };
+      }
+
+      case "find_elements": {
+        const found = await browser.findElements(action.selector, { maxResults: action.maxResults });
+        const lines = found.map((el, i) => `${i + 1}. <${el.tag}> ${el.text}${el.href ? ` ${el.href}` : ""}`);
+        return { output: found.length ? `find_elements:\n${lines.join("\n")}` : "find_elements: none" };
       }
 
       case "back":

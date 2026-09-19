@@ -887,6 +887,87 @@ export class BrowserProvider {
     }
   }
 
+  async visibleText(maxChars = 2000): Promise<string> {
+    this.ensurePage();
+    return this.page.evaluate(
+      (n: number) => ((globalThis as any).document?.body?.innerText ?? "").slice(0, n),
+      maxChars,
+    );
+  }
+
+  /**
+   * Grep visible page text. No LLM. Used by `search_page`.
+   */
+  async searchPage(opts: {
+    pattern: string;
+    regex?: boolean;
+    caseSensitive?: boolean;
+    maxResults?: number;
+    contextChars?: number;
+  }): Promise<Array<{ match: string; context: string; index: number }>> {
+    this.ensurePage();
+    const pattern = opts.pattern;
+    const useRegex = !!opts.regex;
+    const caseSensitive = !!opts.caseSensitive;
+    const maxResults = Math.min(Math.max(opts.maxResults ?? 20, 1), 50);
+    const contextChars = opts.contextChars ?? 100;
+    return this.page.evaluate(
+      ({ pattern, useRegex, caseSensitive, maxResults, contextChars }: Record<string, unknown>) => {
+        const doc = (globalThis as any).document;
+        const text = doc?.body?.innerText ?? "";
+        const src = String(pattern);
+        const flags = caseSensitive ? "g" : "gi";
+        let re: RegExp;
+        try {
+          re = useRegex ? new RegExp(src, flags) : new RegExp(src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+        } catch {
+          return [];
+        }
+        const matches: Array<{ match: string; context: string; index: number }> = [];
+        let m: RegExpExecArray | null = re.exec(text);
+        while (m && matches.length < Number(maxResults)) {
+          const start = Math.max(0, m.index - Number(contextChars));
+          const end = Math.min(text.length, m.index + m[0].length + Number(contextChars));
+          matches.push({ match: m[0], context: text.slice(start, end), index: m.index });
+          if (!re.global) break;
+          m = re.exec(text);
+        }
+        return matches;
+      },
+      { pattern, useRegex, caseSensitive, maxResults, contextChars },
+    );
+  }
+
+  /**
+   * querySelectorAll over the page. No LLM. Used by `find_elements`.
+   */
+  async findElements(
+    selector: string,
+    opts?: { maxResults?: number },
+  ): Promise<Array<{ tag: string; text: string; href?: string }>> {
+    this.ensurePage();
+    const maxResults = Math.min(Math.max(opts?.maxResults ?? 50, 1), 80);
+    return this.page.evaluate(
+      ({ selector, maxResults }: { selector: string; maxResults: number }) => {
+        const doc = (globalThis as any).document;
+        let nodes: any[];
+        try {
+          nodes = Array.from(doc.querySelectorAll(selector)).slice(0, maxResults);
+        } catch {
+          return [];
+        }
+        return nodes.map((el: any) => ({
+          tag: String(el.tagName ?? "").toLowerCase(),
+          text: String(el.textContent ?? "")
+            .trim()
+            .slice(0, 200),
+          href: el.href ? String(el.href) : undefined,
+        }));
+      },
+      { selector, maxResults },
+    );
+  }
+
   listTabs(): { id: string; url: string; active: boolean }[] {
     const tabs: { id: string; url: string; active: boolean }[] = [];
     for (const [id, pg] of this.pages) {

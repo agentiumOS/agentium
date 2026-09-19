@@ -21,7 +21,17 @@ const agent = new BrowserAgent({
 });
 
 const result = await agent.run("Go to example.com and get the page title");
-console.log(result.text);
+console.log(result.result);
+```
+
+Jev can pick the next click from a closed per-step list (`planner: "jev"`). Do not set `model: jev()`.
+
+```typescript
+const agent = new BrowserAgent({
+  name: "jev-browser",
+  model: openai("gpt-4o-mini"),
+  planner: "jev",
+});
 ```
 
 ## Documentation

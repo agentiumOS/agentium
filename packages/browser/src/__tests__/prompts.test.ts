@@ -77,12 +77,17 @@ describe("summarizeAction", () => {
     expect(out).toContain("hello");
   });
 
-  it("summarizes find_text / send_keys / select_dropdown / extract / tool", () => {
+  it("summarizes find_text / send_keys / select_dropdown / extract / tool / search / tabs", () => {
     expect(summarizeAction({ action: "find_text", text: "Annual" })).toContain("Annual");
     expect(summarizeAction({ action: "send_keys", keys: "Tab Enter" })).toContain("Tab Enter");
     expect(summarizeAction({ action: "select_dropdown", index: 2, text: "US" })).toContain('"US"');
     expect(summarizeAction({ action: "extract", query: "prices" })).toContain("prices");
     expect(summarizeAction({ action: "tool", name: "get_2fa" })).toContain("get_2fa");
+    expect(summarizeAction({ action: "search", query: "cats", engine: "google" })).toContain("cats");
+    expect(summarizeAction({ action: "switch_tab", tabId: "tab-2" })).toContain("tab-2");
+    expect(summarizeAction({ action: "search_page", pattern: "Total" })).toContain("Total");
+    expect(summarizeAction({ action: "find_elements", selector: "a" })).toContain("a");
+    expect(summarizeAction({ action: "navigate", url: "https://x.com", newTab: true })).toContain("new tab");
   });
 
   it("summarizes done action", () => {
@@ -106,13 +111,17 @@ describe("buildSystemPrompt (new options)", () => {
     expect(prompt).toContain('"index"');
   });
 
-  it("lists new actions: find_text, send_keys, select_dropdown, upload_file, extract", () => {
+  it("lists new actions: find_text, send_keys, select_dropdown, upload_file, extract, search, tabs, inspect", () => {
     const prompt = buildSystemPrompt({ width: 1280, height: 720 });
     expect(prompt).toContain("find_text");
     expect(prompt).toContain("send_keys");
     expect(prompt).toContain("select_dropdown");
     expect(prompt).toContain("upload_file");
     expect(prompt).toContain("extract");
+    expect(prompt).toContain('"action": "search"');
+    expect(prompt).toContain("switch_tab");
+    expect(prompt).toContain("search_page");
+    expect(prompt).toContain("find_elements");
   });
 
   it("includes evaluate action only when allowEvaluate is set", () => {
@@ -211,5 +220,15 @@ describe("buildUserMessage (v2.2 additions)", () => {
     });
     expect(msg).toContain("Step:** 3 of 30");
     expect(msg).toContain("27 remaining");
+  });
+
+  it("lists open tabs", () => {
+    const msg = buildUserMessage("task", "https://x", "T", 0, [], "[1]", undefined, undefined, undefined, undefined, [
+      { id: "tab-1", url: "https://a.com", active: true },
+      { id: "tab-2", url: "https://b.com", active: false },
+    ]);
+    expect(msg).toContain("Open tabs");
+    expect(msg).toContain("tab-1 (active)");
+    expect(msg).toContain("tab-2");
   });
 });

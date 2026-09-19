@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import type {
+  CreateResponseOpts,
   RealtimeConnection,
   RealtimeEvent,
   RealtimeEventMap,
@@ -40,6 +41,29 @@ class GoogleLiveConnection extends EventEmitter implements RealtimeConnection {
       turns: text,
       turnComplete: true,
     });
+  }
+
+  sendImage(image: Buffer | string, opts?: { mimeType?: string; text?: string }): void {
+    if (this.closed) return;
+    const data =
+      typeof image === "string" && !image.startsWith("data:")
+        ? image
+        : Buffer.isBuffer(image)
+          ? image.toString("base64")
+          : image.replace(/^data:[^;]+;base64,/, "");
+    this.session.sendRealtimeInput({
+      media: { data, mimeType: opts?.mimeType ?? "image/jpeg" },
+    });
+    if (opts?.text) this.sendText(opts.text);
+  }
+
+  createResponse(_opts?: CreateResponseOpts): void {
+    if (this.closed) return;
+    this.session.sendClientContent?.({ turns: "", turnComplete: true });
+  }
+
+  commitAudio(): void {
+    // Live API commits on VAD; nothing extra to send.
   }
 
   sendToolResult(callId: string, result: string): void {
@@ -140,7 +164,7 @@ export class GoogleLiveProvider implements RealtimeProvider {
   private apiKey?: string;
 
   constructor(modelId?: string, config?: GoogleLiveConfig) {
-    this.modelId = modelId ?? "gemini-2.5-flash-native-audio-preview-12-2025";
+    this.modelId = modelId ?? "gemini-3.1-flash-live-preview";
     this.apiKey = config?.apiKey;
   }
 

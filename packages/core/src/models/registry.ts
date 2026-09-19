@@ -184,7 +184,7 @@ export function jev(modelId = "jev-latest", config?: JevConfig): ModelProvider {
  *
  * @example
  * const agent = new VoiceAgent({
- *   provider: openaiRealtime("gpt-4o-realtime-preview"),
+ *   provider: openaiRealtime("gpt-realtime-2.1"),
  * });
  */
 export function openaiRealtime(modelId?: string, config?: OpenAIRealtimeConfig): RealtimeProvider {
