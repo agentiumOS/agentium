@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-04
+
+### Added
+- **Provider reasoning options.** `reasoning` now accepts `summary` (`auto` | `concise` | `detailed`, OpenAI Responses defaults to `detailed`), `mode` (`standard` | `pro`), and `context` (`auto` | `current_turn` | `all_turns`). `providerOptions` covers Anthropic prompt cache, tool-result clearing, and server compaction (minimum 50,000 tokens), OpenAI `promptCacheRetention`, and Gemini `mediaResolution`, `cachedContent`, and `googleSearch`.
+- **Current thinking payloads.** Claude Opus/Sonnet 4.6+, Claude 5, Fable, and Mythos use adaptive thinking with `display: "summarized"` and `output_config.effort`. Older Claude still uses `budget_tokens`, also with `display: "summarized"`. DeepSeek maps effort onto `low` / `high` / `max` (`medium` → `high`) and replays `reasoning_content`. Mistral native sends `reasoningEffort` `high` or `none`. Cohere native sends `thinking` plus `tokenBudget`. Grok 4.5 and 4.6 omit `none` and `minimal`. Gemini tool calls include the call id, and Gemini 3.8 drops `temperature` and `topP`.
+- **SDK floors.** Anthropic SDK 0.131, Google GenAI 2.27, OpenAI SDK 7, Cohere 8.1. Peer ranges now allow those majors without dropping older installs.
+
+### Fixed
+- **Biome CLI.** Dev dependency is 2.5.14, matching `biome.json`, so the pre-commit hook can run.
+
 ## [3.1.2] - 2026-10-04
 
 ### Fixed

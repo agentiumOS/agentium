@@ -6,6 +6,7 @@ import {
   type ChatMessage,
   getTextContent,
   type ModelConfig,
+  type ProviderOptions,
   type ReasoningConfig,
   type StreamChunk,
   type ToolDefinition,
@@ -112,6 +113,7 @@ export class LLMLoop {
   private structuredOutput?: z.ZodSchema;
   private logger?: Logger;
   private reasoning?: ReasoningConfig;
+  private providerOptions?: ProviderOptions;
   private retry?: Partial<RetryConfig>;
   private toolResultLimit?: ToolResultLimitConfig;
   private loopHooks?: LoopHooks;
@@ -126,6 +128,7 @@ export class LLMLoop {
       structuredOutput?: z.ZodSchema;
       logger?: Logger;
       reasoning?: ReasoningConfig;
+      providerOptions?: ProviderOptions;
       retry?: Partial<RetryConfig>;
       toolResultLimit?: ToolResultLimitConfig;
       loopHooks?: LoopHooks;
@@ -139,6 +142,7 @@ export class LLMLoop {
     this.structuredOutput = options.structuredOutput;
     this.logger = options.logger;
     this.reasoning = options.reasoning;
+    this.providerOptions = options.providerOptions;
     this.retry = options.retry;
     this.toolResultLimit = options.toolResultLimit;
     this.loopHooks = options.loopHooks;
@@ -214,6 +218,7 @@ export class LLMLoop {
       if (this.maxTokens !== undefined) modelConfig.maxTokens = this.maxTokens;
       if (toolDefs.length > 0) modelConfig.tools = toolDefs;
       if (this.reasoning) modelConfig.reasoning = this.reasoning;
+      if (this.providerOptions) modelConfig.providerOptions = this.providerOptions;
       if (ctx.questions && Object.keys(ctx.questions).length > 0) modelConfig.questions = ctx.questions;
 
       if (this.structuredOutput) {
@@ -438,6 +443,7 @@ export class LLMLoop {
       if (this.maxTokens !== undefined) modelConfig.maxTokens = this.maxTokens;
       if (toolDefs.length > 0) modelConfig.tools = toolDefs;
       if (this.reasoning) modelConfig.reasoning = this.reasoning;
+      if (this.providerOptions) modelConfig.providerOptions = this.providerOptions;
       if (ctx.questions && Object.keys(ctx.questions).length > 0) modelConfig.questions = ctx.questions;
 
       let fullText = "";

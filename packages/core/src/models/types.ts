@@ -105,10 +105,38 @@ export interface ReasoningConfig {
    * Reasoning effort for OpenAI-family models (o-series, GPT-5.x, GPT-6).
    * `none` keeps function tools on Chat Completions; any other value with
    * tools is sent through the Responses API on GPT-5.4+ / GPT-6.
+   * Anthropic maps this onto `output_config.effort`. DeepSeek accepts `low` / `high` / `max`.
    */
   effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  /** Token budget for thinking (Anthropic / Gemini). */
+  /** Token budget for thinking (Anthropic / Gemini / Cohere). */
   budgetTokens?: number;
+  /** OpenAI Responses summary. Default `detailed`. */
+  summary?: "auto" | "concise" | "detailed";
+  /** GPT-5.6 / GPT-6 Responses execution mode. */
+  mode?: "standard" | "pro";
+  /** Which reasoning items later turns send back. Default is the model's own. */
+  context?: "auto" | "current_turn" | "all_turns";
+}
+
+/** Provider request options that are not shared sampling knobs. */
+export interface ProviderOptions {
+  /** Anthropic: cache the system prompt (`cache_control: ephemeral`). */
+  promptCache?: boolean;
+  /** OpenAI Responses `prompt_cache_retention`. */
+  promptCacheRetention?: "in_memory" | "24h";
+  /**
+   * Anthropic server compaction once input exceeds this many tokens.
+   * Values under 50000 are raised to 50000. Requires the compaction beta.
+   */
+  compactionTokens?: number;
+  /** Anthropic: clear old tool results server-side. Requires the context-management beta. */
+  clearToolResults?: boolean;
+  /** Gemini media token budget. */
+  mediaResolution?: "low" | "medium" | "high" | "ultra_high";
+  /** Gemini explicit cache resource name (`cachedContents/...`). */
+  cachedContent?: string;
+  /** Gemini Google Search grounding tool. */
+  googleSearch?: boolean;
 }
 
 export interface ModelConfig {
@@ -121,6 +149,8 @@ export interface ModelConfig {
   apiKey?: string;
   /** Enable extended thinking / reasoning. */
   reasoning?: ReasoningConfig;
+  /** Provider-specific request options (cache, compaction, Gemini grounding). */
+  providerOptions?: ProviderOptions;
   /**
    * Jev questions for this call (`choice` / `noul` / `score`).
    * Ignored by chat providers.

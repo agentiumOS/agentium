@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import type { ModelProvider } from "../provider.js";
-import { anthropicReplayContent, extrasFromAnthropicContent } from "../thinking-replay.js";
+import { anthropicReplayContent, applyAnthropicThinking, extrasFromAnthropicContent } from "../thinking-replay.js";
 import {
   type ChatMessage,
   type ContentPart,
@@ -85,11 +85,7 @@ export class AwsClaudeProvider implements ModelProvider {
   ): Promise<ModelResponse> {
     const { systemMsg, anthropicMessages } = this.toAnthropicMessages(messages);
 
-    let maxTokens = options?.maxTokens ?? 4096;
-    const thinkingBudget = options?.reasoning?.enabled ? (options.reasoning.budgetTokens ?? 10000) : 0;
-    if (thinkingBudget > 0 && maxTokens < thinkingBudget + 1024) {
-      maxTokens = thinkingBudget + 4096;
-    }
+    const maxTokens = options?.maxTokens ?? 4096;
 
     const params: Record<string, unknown> = {
       model: this.modelId,
@@ -104,13 +100,11 @@ export class AwsClaudeProvider implements ModelProvider {
     if (options?.tools?.length) {
       params.tools = this.toAnthropicTools(options.tools);
     }
-    if (options?.reasoning?.enabled) {
-      params.thinking = { type: "enabled", budget_tokens: thinkingBudget };
-      delete params.temperature;
-      delete params.top_p;
-    }
+    const betaHeaders = applyAnthropicThinking(params, this.modelId, options);
 
-    const response = await this.withRetry(() => this.client.messages.create(params));
+    const response = await this.withRetry(() =>
+      this.client.messages.create(params, betaHeaders ? { headers: betaHeaders } : undefined),
+    );
     return this.normalizeResponse(response);
   }
 
@@ -120,11 +114,7 @@ export class AwsClaudeProvider implements ModelProvider {
   ): AsyncGenerator<StreamChunk> {
     const { systemMsg, anthropicMessages } = this.toAnthropicMessages(messages);
 
-    let maxTokens = options?.maxTokens ?? 4096;
-    const thinkingBudget = options?.reasoning?.enabled ? (options.reasoning.budgetTokens ?? 10000) : 0;
-    if (thinkingBudget > 0 && maxTokens < thinkingBudget + 1024) {
-      maxTokens = thinkingBudget + 4096;
-    }
+    const maxTokens = options?.maxTokens ?? 4096;
 
     const params: Record<string, unknown> = {
       model: this.modelId,
@@ -140,13 +130,11 @@ export class AwsClaudeProvider implements ModelProvider {
     if (options?.tools?.length) {
       params.tools = this.toAnthropicTools(options.tools);
     }
-    if (options?.reasoning?.enabled) {
-      params.thinking = { type: "enabled", budget_tokens: thinkingBudget };
-      delete params.temperature;
-      delete params.top_p;
-    }
+    const betaHeaders = applyAnthropicThinking(params, this.modelId, options);
 
-    const stream = await this.withRetry<any>(() => this.client.messages.create(params));
+    const stream = await this.withRetry<any>(() =>
+      this.client.messages.create(params, betaHeaders ? { headers: betaHeaders } : undefined),
+    );
 
     let currentToolId = "";
     let inThinkingBlock = false;

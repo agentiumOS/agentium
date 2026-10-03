@@ -14,7 +14,8 @@ export interface SerializedAgent {
   sessionId?: string;
   userId?: string;
   logLevel?: string;
-  reasoning?: { enabled?: boolean; budgetTokens?: number };
+  reasoning?: { enabled?: boolean; budgetTokens?: number; effort?: string };
+  providerOptions?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
 
@@ -38,6 +39,7 @@ export function serializeAgentConfig(config: any): SerializedAgent {
     userId: config.userId,
     logLevel: config.logLevel,
     reasoning: config.reasoning,
+    providerOptions: config.providerOptions,
   };
 }
 
@@ -62,6 +64,7 @@ export function buildAgentConfigFromSerialized(data: SerializedAgent, registry: 
     userId: data.userId,
     logLevel: data.logLevel as any,
     reasoning: data.reasoning ? { ...data.reasoning, enabled: data.reasoning.enabled ?? false } : undefined,
+    providerOptions: data.providerOptions,
     register: false,
   };
 }

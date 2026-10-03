@@ -101,7 +101,7 @@ export function applyChatCompletionsParams(
   if (forceNone) {
     params.reasoning_effort = "none";
   } else if (options?.reasoning?.enabled) {
-    params.reasoning_effort = options.reasoning.effort ?? "medium";
+    applyChatReasoning(params, modelId, options.reasoning);
   }
 
   const skipSampling = isReasoning || Boolean(options?.reasoning?.enabled);
@@ -163,7 +163,18 @@ export function buildResponsesParams(
   if (options?.maxTokens !== undefined) params.max_output_tokens = options.maxTokens;
 
   if (options?.reasoning?.enabled && options.reasoning.effort && options.reasoning.effort !== "none") {
-    params.reasoning = { effort: options.reasoning.effort, summary: "detailed" };
+    params.reasoning = {
+      effort: options.reasoning.effort,
+      summary: options.reasoning.summary ?? "detailed",
+      ...(options.reasoning.mode ? { mode: options.reasoning.mode } : {}),
+      ...(options.reasoning.context ? { context: options.reasoning.context } : {}),
+    };
+  }
+  if (/^grok/i.test(normalizeOpenAIModelId(modelId)) && options?.reasoning?.enabled) {
+    params.include = ["reasoning.encrypted_content"];
+  }
+  if (options?.providerOptions?.promptCacheRetention) {
+    params.prompt_cache_retention = options.providerOptions.promptCacheRetention;
   }
 
   applyResponsesTextFormat(params, options);
@@ -230,18 +241,21 @@ export async function* streamOpenAIStyle(
 export function toChatCompletionsMessages(messages: ChatMessage[]): unknown[] {
   return messages.map((msg) => {
     if (msg.role === "assistant" && msg.toolCalls?.length) {
-      return {
-        role: "assistant",
-        content: getTextContent(msg.content),
-        tool_calls: msg.toolCalls.map((tc) => ({
-          id: tc.id,
-          type: "function",
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments),
-          },
-        })),
-      };
+      return withReasoningContent(
+        {
+          role: "assistant",
+          content: getTextContent(msg.content),
+          tool_calls: msg.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function",
+            function: {
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments),
+            },
+          })),
+        },
+        msg,
+      );
     }
 
     if (msg.role === "tool") {
@@ -259,11 +273,48 @@ export function toChatCompletionsMessages(messages: ChatMessage[]): unknown[] {
       };
     }
 
-    return {
-      role: msg.role,
-      content: msg.content ?? "",
-    };
+    return withReasoningContent(
+      {
+        role: msg.role,
+        content: msg.content ?? "",
+      },
+      msg,
+    );
   });
+}
+
+function withReasoningContent(payload: Record<string, unknown>, msg: ChatMessage): Record<string, unknown> {
+  const reasoning = msg.providerExtras?.reasoningContent;
+  if (msg.role === "assistant" && typeof reasoning === "string" && reasoning) {
+    payload.reasoning_content = reasoning;
+  }
+  return payload;
+}
+
+/** DeepSeek, Mistral, Cohere, and Grok do not share OpenAI's effort enum. */
+function applyChatReasoning(
+  params: Record<string, unknown>,
+  modelId: string,
+  reasoning: NonNullable<GenerateOptions["reasoning"]>,
+): void {
+  const id = normalizeOpenAIModelId(modelId).toLowerCase();
+  const effort = reasoning.effort ?? "medium";
+  if (id.includes("deepseek")) {
+    if (effort === "none") {
+      params.thinking = { type: "disabled" };
+      return;
+    }
+    params.thinking = { type: "enabled" };
+    params.reasoning_effort =
+      effort === "minimal" || effort === "low" ? "low" : effort === "max" || effort === "xhigh" ? "max" : "high";
+    return;
+  }
+  if (id.includes("mistral") || id.includes("command")) {
+    params.reasoning_effort = effort === "none" ? "none" : "high";
+    return;
+  }
+  if (/grok-4\.(5|6)/.test(id) && (effort === "none" || effort === "minimal")) return;
+  params.reasoning_effort = effort;
 }
 
 export function toChatCompletionsTools(tools: ToolDefinition[]): unknown[] {
@@ -370,6 +421,10 @@ export function toResponsesInput(messages: ChatMessage[]): { instructions?: stri
     if (msg.role === "assistant" && msg.toolCalls?.length) {
       const text = getTextContent(msg.content);
       if (text) input.push({ role: "assistant", content: text });
+      const reasoningItems = msg.providerExtras?.responsesReasoning;
+      if (Array.isArray(reasoningItems)) {
+        for (const item of reasoningItems) input.push(item);
+      }
       for (const tc of msg.toolCalls) {
         input.push({
           type: "function_call",
@@ -464,12 +519,15 @@ export function normalizeChatCompletionsResponse(response: any): ModelResponse &
     raw: response,
   };
 
-  if (msg.reasoning_content) result.thinking = msg.reasoning_content;
+  if (msg.reasoning_content) {
+    result.thinking = msg.reasoning_content;
+    result.message.providerExtras = { reasoningContent: msg.reasoning_content };
+  }
   return result;
 }
 
 export function normalizeResponsesResponse(response: any): ModelResponse & { thinking?: string } {
-  const { text, toolCalls, thinking } = extractResponsesOutput(response);
+  const { text, toolCalls, thinking, reasoningItems } = extractResponsesOutput(response);
   const usage = usageFromResponses(response.usage);
 
   const result: ModelResponse & { thinking?: string } = {
@@ -477,6 +535,7 @@ export function normalizeResponsesResponse(response: any): ModelResponse & { thi
       role: "assistant",
       content: text.length > 0 ? text : response.output_text || null,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      ...(reasoningItems.length ? { providerExtras: { responsesReasoning: reasoningItems } } : {}),
     },
     usage,
     finishReason: toolCalls.length > 0 ? "tool_calls" : responsesStatusToFinish(response?.status),
@@ -486,10 +545,16 @@ export function normalizeResponsesResponse(response: any): ModelResponse & { thi
   return result;
 }
 
-function extractResponsesOutput(response: any): { text: string; toolCalls: ToolCall[]; thinking: string } {
+function extractResponsesOutput(response: any): {
+  text: string;
+  toolCalls: ToolCall[];
+  thinking: string;
+  reasoningItems: unknown[];
+} {
   let text = "";
   let thinking = "";
   const toolCalls: ToolCall[] = [];
+  const reasoningItems: unknown[] = [];
 
   for (const item of response?.output ?? []) {
     if (item?.type === "function_call") {
@@ -513,6 +578,7 @@ function extractResponsesOutput(response: any): { text: string; toolCalls: ToolC
       continue;
     }
     if (item?.type === "reasoning") {
+      reasoningItems.push(item);
       const summary = item.summary;
       if (Array.isArray(summary)) {
         thinking += summary.map((s: any) => s.text ?? "").join("");
@@ -523,7 +589,7 @@ function extractResponsesOutput(response: any): { text: string; toolCalls: ToolC
   }
 
   if (!text && typeof response?.output_text === "string") text = response.output_text;
-  return { text, toolCalls, thinking };
+  return { text, toolCalls, thinking, reasoningItems };
 }
 
 function responsesStatusToFinish(status: unknown): ModelResponse["finishReason"] {
@@ -688,11 +754,12 @@ export async function* iterResponsesStream(stream: AsyncIterable<any>): AsyncGen
 
     if (type === "response.completed") {
       const response = event.response ?? event;
-      const { toolCalls } = extractResponsesOutput(response);
+      const { toolCalls, reasoningItems } = extractResponsesOutput(response);
       yield {
         type: "finish",
         finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
         usage: usageFromResponses(response?.usage),
+        ...(reasoningItems.length ? { providerExtras: { responsesReasoning: reasoningItems } } : {}),
       };
       emittedFinish = true;
     }

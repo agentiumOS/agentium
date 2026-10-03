@@ -3,7 +3,14 @@ import type { EventBus } from "../events/event-bus.js";
 import type { LogLevel } from "../logger/logger.js";
 import type { UnifiedMemoryConfig } from "../memory/memory-config.js";
 import type { ModelProvider } from "../models/provider.js";
-import type { ChatMessage, MessageContent, ReasoningConfig, StreamChunk, TokenUsage } from "../models/types.js";
+import type {
+  ChatMessage,
+  MessageContent,
+  ProviderOptions,
+  ReasoningConfig,
+  StreamChunk,
+  TokenUsage,
+} from "../models/types.js";
 import type { ApprovalConfig } from "../tools/approval.js";
 import type { SandboxConfig, ToolCallResult, ToolDef } from "../tools/types.js";
 import type { RetryConfig } from "../utils/retry.js";
@@ -91,6 +98,8 @@ export interface AgentConfig {
   logLevel?: LogLevel;
   /** Enable extended thinking / reasoning for the model. */
   reasoning?: ReasoningConfig;
+  /** Cache, compaction, and Gemini grounding options for this agent. */
+  providerOptions?: ProviderOptions;
   /** Retry configuration for transient LLM API failures (429, 5xx, network errors). */
   retry?: Partial<RetryConfig>;
   /** Default sandbox config applied to ALL tools unless the tool explicitly sets sandbox: false. Off by default. */

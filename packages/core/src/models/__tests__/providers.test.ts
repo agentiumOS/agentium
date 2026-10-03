@@ -423,7 +423,7 @@ describe("OpenAIProvider", () => {
         tools,
         reasoning: { enabled: true, effort: "high" },
       });
-      expect(mockResponses.mock.calls[0][0].reasoning).toEqual({ effort: "high" });
+      expect(mockResponses.mock.calls[0][0].reasoning).toEqual({ effort: "high", summary: "detailed" });
     });
 
     it("stays on Chat Completions with reasoning_effort none when effort is none", async () => {
@@ -596,7 +596,7 @@ describe("AnthropicProvider", () => {
 
       const args = mockCreate.mock.calls[0][0];
       expect(args.messages[1].content).toEqual(thinkingBlocks);
-      expect(args.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+      expect(args.thinking).toEqual({ type: "enabled", budget_tokens: 2048, display: "summarized" });
       expect(args.temperature).toBeUndefined();
       expect(args.top_p).toBeUndefined();
     });

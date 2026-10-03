@@ -78,13 +78,13 @@
     "typescript": "^5.6.0"
   },
   "peerDependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
-    "@google/genai": "^0.10.0",
+    "@anthropic-ai/sdk": ">=0.30.0 <1",
+    "@google/genai": ">=0.10.0 <3",
     "@qdrant/js-client-rest": "^1.0.0",
     "better-sqlite3": "^11.0.0",
     "mongodb": "^6.0.0",
-    "ollama": "^0.5.0",
-    "openai": "^4.0.0 || ^5.0.0 || ^6.0.0",
+    "ollama": "^0.5.0 || ^0.6.0",
+    "openai": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0",
     "@perplexity-ai/perplexity_ai": ">=0.20.0",
     "pg": "^8.0.0",
     "@modelcontextprotocol/sdk": ">=1.0.0",

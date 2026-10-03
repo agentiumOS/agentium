@@ -89,6 +89,9 @@ export class MistralProvider implements ModelProvider {
     if (options?.topP !== undefined) params.topP = options.topP;
     if (options?.responseFormat === "json") params.responseFormat = { type: "json_object" };
     if (options?.tools?.length) params.tools = this.toMistralTools(options.tools);
+    if (options?.reasoning) {
+      params.reasoningEffort = !options.reasoning.enabled || options.reasoning.effort === "none" ? "none" : "high";
+    }
 
     const response = await this.client.chat.complete(params);
     return this.normalizeNative(response);
@@ -107,6 +110,9 @@ export class MistralProvider implements ModelProvider {
     if (options?.topP !== undefined) params.topP = options.topP;
     if (options?.responseFormat === "json") params.responseFormat = { type: "json_object" };
     if (options?.tools?.length) params.tools = this.toMistralTools(options.tools);
+    if (options?.reasoning) {
+      params.reasoningEffort = !options.reasoning.enabled || options.reasoning.effort === "none" ? "none" : "high";
+    }
 
     const stream = await this.client.chat.stream(params);
 

@@ -1,6 +1,11 @@
 import { createRequire } from "node:module";
 import type { ModelProvider } from "../provider.js";
-import { applyGoogleThinkingConfig, extrasFromGoogleParts, googleReplayParts } from "../thinking-replay.js";
+import {
+  applyGoogleRequestExtras,
+  applyGoogleThinkingConfig,
+  extrasFromGoogleParts,
+  googleReplayParts,
+} from "../thinking-replay.js";
 import {
   type ChatMessage,
   type ContentPart,
@@ -129,6 +134,7 @@ export class GoogleProvider implements ModelProvider {
         },
       ];
     }
+    applyGoogleRequestExtras(config, this.modelId, options);
 
     const params: Record<string, unknown> = {
       model: this.modelId,
@@ -165,6 +171,7 @@ export class GoogleProvider implements ModelProvider {
         },
       ];
     }
+    applyGoogleRequestExtras(config, this.modelId, options);
 
     const params: Record<string, unknown> = {
       model: this.modelId,
@@ -292,7 +299,7 @@ export class GoogleProvider implements ModelProvider {
         if (msg.toolCalls) {
           for (const tc of msg.toolCalls) {
             parts.push({
-              functionCall: { name: tc.name, args: tc.arguments },
+              functionCall: { name: tc.name, args: tc.arguments, id: tc.id },
             });
           }
         }
@@ -310,6 +317,7 @@ export class GoogleProvider implements ModelProvider {
             {
               functionResponse: {
                 name: msg.name ?? "unknown",
+                id: msg.toolCallId,
                 response: { result: msg.content ?? "" },
               },
             },

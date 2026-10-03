@@ -85,6 +85,12 @@ export class CohereProvider implements ModelProvider {
     if (options?.maxTokens !== undefined) params.maxTokens = options.maxTokens;
     if (options?.topP !== undefined) params.p = options.topP;
     if (options?.tools?.length) params.tools = this.toCohereTools(options.tools);
+    if (options?.reasoning) {
+      params.thinking = {
+        type: options.reasoning.enabled && options.reasoning.effort !== "none" ? "enabled" : "disabled",
+        ...(options.reasoning.budgetTokens ? { tokenBudget: options.reasoning.budgetTokens } : {}),
+      };
+    }
 
     const response = await this.client.chat(params);
     return this.normalizeNative(response);
@@ -102,6 +108,12 @@ export class CohereProvider implements ModelProvider {
     if (options?.maxTokens !== undefined) params.maxTokens = options.maxTokens;
     if (options?.topP !== undefined) params.p = options.topP;
     if (options?.tools?.length) params.tools = this.toCohereTools(options.tools);
+    if (options?.reasoning) {
+      params.thinking = {
+        type: options.reasoning.enabled && options.reasoning.effort !== "none" ? "enabled" : "disabled",
+        ...(options.reasoning.budgetTokens ? { tokenBudget: options.reasoning.budgetTokens } : {}),
+      };
+    }
 
     const stream = await this.client.chatStream(params);
 
@@ -111,6 +123,8 @@ export class CohereProvider implements ModelProvider {
       if (event.type === "content-delta") {
         const text = event.delta?.message?.content?.text;
         if (text) yield { type: "text", text };
+        const thought = event.delta?.message?.content?.thinking;
+        if (thought) yield { type: "thinking", text: thought };
       }
 
       if (event.type === "tool-call-start") {
@@ -195,6 +209,12 @@ export class CohereProvider implements ModelProvider {
 
   private normalizeNative(response: any): ModelResponse {
     const msg = response.message ?? response;
+    let thinking = "";
+    if (Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (typeof part?.thinking === "string") thinking += part.thinking;
+      }
+    }
     const content = msg.content?.[0]?.text ?? msg.text ?? null;
     const rawToolCalls = msg.toolCalls ?? msg.tool_calls ?? [];
 
@@ -217,12 +237,14 @@ export class CohereProvider implements ModelProvider {
       providerMetrics: { ...u },
     };
 
-    return {
+    const result: ModelResponse & { thinking?: string } = {
       message: { role: "assistant", content, toolCalls: toolCalls.length > 0 ? toolCalls : undefined },
       usage,
       finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
       raw: response,
     };
+    if (thinking) result.thinking = thinking;
+    return result;
   }
 
   // ── OpenAI-compat fallback ──────────────────────────────────────────
