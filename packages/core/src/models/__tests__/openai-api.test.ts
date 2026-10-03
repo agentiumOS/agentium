@@ -103,6 +103,14 @@ describe("Responses conversion", () => {
     });
     expect(params.store).toBe(false);
   });
+
+  it("asks OpenAI for a detailed reasoning summary so thinking text comes back", () => {
+    const params = buildResponsesParams("gpt-5.6-terra", [{ role: "user", content: "hi" }], {
+      tools: [{ name: "t", description: "t", parameters: { type: "object" } }],
+      reasoning: { enabled: true, effort: "medium" },
+    });
+    expect(params.reasoning).toEqual({ effort: "medium", summary: "detailed" });
+  });
 });
 
 describe("Gemini / Vertex thinking", () => {

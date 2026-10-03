@@ -163,7 +163,7 @@ export function buildResponsesParams(
   if (options?.maxTokens !== undefined) params.max_output_tokens = options.maxTokens;
 
   if (options?.reasoning?.enabled && options.reasoning.effort && options.reasoning.effort !== "none") {
-    params.reasoning = { effort: options.reasoning.effort };
+    params.reasoning = { effort: options.reasoning.effort, summary: "detailed" };
   }
 
   applyResponsesTextFormat(params, options);
