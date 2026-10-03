@@ -1,4 +1,5 @@
 import type { ModelProvider } from "../models/provider.js";
+import type { ProviderOptions, ReasoningConfig } from "../models/types.js";
 import type { StorageDriver } from "../storage/driver.js";
 import type { ToolDef } from "../tools/types.js";
 
@@ -14,8 +15,8 @@ export interface SerializedAgent {
   sessionId?: string;
   userId?: string;
   logLevel?: string;
-  reasoning?: { enabled?: boolean; budgetTokens?: number; effort?: string };
-  providerOptions?: Record<string, unknown>;
+  reasoning?: ReasoningConfig;
+  providerOptions?: ProviderOptions;
   metadata?: Record<string, unknown>;
 }
 
