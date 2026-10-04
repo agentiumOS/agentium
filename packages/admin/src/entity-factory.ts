@@ -20,13 +20,14 @@ export class EntityFactory {
     return typeof this.toolSource === "function" ? this.toolSource() : this.toolSource;
   }
 
-  createAgent(blueprint: AgentBlueprint): Agent {
+  createAgent(blueprint: AgentBlueprint, options?: { register?: boolean }): Agent {
     this.validateProvider(blueprint.provider);
     const tools = this.resolveTools(blueprint.tools ?? []);
-    const model = modelRegistry.resolve(blueprint.provider, blueprint.model, blueprint.providerConfig);
+    const model = this.resolveModel(blueprint);
 
     return new Agent({
       name: blueprint.name,
+      register: options?.register,
       model,
       instructions: blueprint.instructions,
       tools: tools.length > 0 ? tools : undefined,
@@ -34,14 +35,15 @@ export class EntityFactory {
     });
   }
 
-  createTeam(blueprint: TeamBlueprint): Team {
+  createTeam(blueprint: TeamBlueprint, options?: { register?: boolean }): Team {
     this.validateProvider(blueprint.provider);
     const members = this.resolveMembers(blueprint.members);
     const mode = this.resolveTeamMode(blueprint.mode);
-    const model = modelRegistry.resolve(blueprint.provider, blueprint.model, blueprint.providerConfig);
+    const model = this.resolveModel(blueprint);
 
     return new Team({
       name: blueprint.name,
+      register: options?.register,
       mode,
       model,
       members,
@@ -76,6 +78,16 @@ export class EntityFactory {
       throw new Error(
         `Unknown model provider "${provider}". Registered providers can be checked via modelRegistry.has().`,
       );
+    }
+  }
+
+  private resolveModel(blueprint: Pick<AgentBlueprint, "provider" | "model" | "providerConfig">) {
+    try {
+      return modelRegistry.resolve(blueprint.provider, blueprint.model, blueprint.providerConfig);
+    } catch {
+      // Custom provider constructors may echo URLs, headers or credentials.
+      // CRUD front doors expose Error.message, so keep that boundary value-free.
+      throw new Error("Provider initialization failed; verify the private provider configuration");
     }
   }
 

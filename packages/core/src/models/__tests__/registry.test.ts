@@ -11,6 +11,7 @@ describe("ModelRegistry", () => {
         message: { role: "assistant" as const, content: "ok" },
         usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
         finishReason: "stop" as const,
+        raw: {},
       }),
       stream: async function* () {},
     }));

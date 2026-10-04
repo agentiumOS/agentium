@@ -182,7 +182,7 @@ export class Neo4jGraphStore implements GraphStore {
   }
 
   async addEdge(edge: Omit<GraphEdge, "id" | "createdAt">): Promise<GraphEdge> {
-    const { v4: uuidv4 } = await import("uuid");
+    const { randomUUID: uuidv4 } = await import("node:crypto");
     const full: GraphEdge = { ...edge, id: uuidv4(), createdAt: new Date() };
     const session = this.session();
     try {

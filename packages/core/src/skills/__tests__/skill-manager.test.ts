@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { SkillManager } from "../skill-manager.js";
 import type { Skill } from "../types.js";
 

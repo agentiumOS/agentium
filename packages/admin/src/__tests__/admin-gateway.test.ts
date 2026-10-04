@@ -1,6 +1,6 @@
 import { InMemoryStorage, registry } from "@agentium/core";
 import { beforeEach, describe, expect, it } from "vitest";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { createAdminGateway } from "../admin-gateway.js";
 
 const mockTool = {
@@ -123,6 +123,15 @@ describe("Admin Gateway", () => {
   });
 
   describe("admin.agent.update", () => {
+    it("preserves the registered entity when replacement validation fails", async () => {
+      await mock.emit("admin.agent.create", { name: "bot", provider: "openai", model: "gpt-4o-mini" });
+      const original = registry.getAgent("bot");
+      const result = await mock.emit("admin.agent.update", { name: "bot", provider: "missing-provider" });
+      expect(result.ok).toBe(false);
+      expect(registry.getAgent("bot")).toBe(original);
+      expect(mock.nsEmitted.some((event) => event.event === "admin.agent.updated")).toBe(false);
+    });
+
     it("updates an agent", async () => {
       await mock.emit("admin.agent.create", { name: "bot", provider: "openai", model: "gpt-4o-mini" });
       const res = await mock.emit("admin.agent.update", { name: "bot", model: "gpt-4o" });
@@ -259,4 +268,31 @@ describe("Admin Gateway", () => {
       expect(result.ok).toBe(false);
     });
   });
+});
+
+it("keeps provider configuration out of acknowledgements and broadcasts for agents and teams", async () => {
+  registry.clear();
+  const mock = createMockIO();
+  createAdminGateway({ io: mock.io, storage: new InMemoryStorage() });
+  const providerConfig = { apiKey: "fixture-private-key", credentials: { arbitrary: "fixture-private-secret" } };
+  for (const kind of ["agent", "team"]) {
+    const data = {
+      name: `private-${kind}`,
+      provider: "openai",
+      model: "gpt-4o-mini",
+      providerConfig,
+      ...(kind === "team" ? { mode: "coordinate", members: ["private-agent"] } : {}),
+    };
+    const created = await mock.emit(`admin.${kind}.create`, data);
+    expect(created.ok).toBe(true);
+    const loaded = await mock.emit(`admin.${kind}.get`, { name: data.name });
+    const listed = await mock.emit(`admin.${kind}.list`, {});
+    const updated = await mock.emit(`admin.${kind}.update`, { name: data.name, instructions: "Updated" });
+    for (const result of [created, loaded, listed, updated]) {
+      expect(JSON.stringify(result)).not.toContain("fixture-private");
+      expect(JSON.stringify(result)).not.toContain("providerConfig");
+    }
+  }
+  expect(JSON.stringify(mock.nsEmitted)).not.toContain("providerConfig");
+  expect(JSON.stringify(mock.nsEmitted)).not.toContain("fixture-private");
 });

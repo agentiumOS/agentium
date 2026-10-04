@@ -47,5 +47,6 @@ export type {
   EvalSuiteResult,
   Reporter,
   Scorer,
+  ScorerContext,
   ScorerResult,
 } from "./types.js";

@@ -15,6 +15,7 @@
   "type": "module",
   "workspaces": [
     "packages/core",
+    "packages/harness",
     "packages/transport",
     "packages/queue",
     "packages/browser",
@@ -25,7 +26,7 @@
     "packages/cli"
   ],
   "scripts": {
-    "build": "npm run build -w packages/core && npm run build -w packages/transport -w packages/queue -w packages/browser -w packages/eval -w packages/observability -w packages/admin -w packages/edge -w packages/cli",
+    "build": "npm run build -w packages/core && npm run build -w packages/harness -w packages/transport -w packages/queue -w packages/browser -w packages/eval -w packages/observability -w packages/admin -w packages/edge -w packages/cli",
     "build:core": "npm run build -w packages/core",
     "build:transport": "npm run build -w packages/transport",
     "build:queue": "npm run build -w packages/queue",
@@ -36,7 +37,9 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "prepare": "husky",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "build:harness": "npm run build -w packages/harness",
+    "test:package": "AGENTIUM_TEST_PACKAGES=1 vitest run packages/harness/src/__tests__/package-consumption.test.ts packages/cli/src/__tests__/package-consumption.test.ts"
   },
   "lint-staged": {
     "*.{ts,tsx,js,json}": [
@@ -44,13 +47,24 @@
     ]
   },
   "devDependencies": {
+    "@a2a-js/sdk": "1.3.0",
     "@biomejs/biome": "^2.5.14",
+    "@modelcontextprotocol/client": "2.3.0",
+    "@modelcontextprotocol/server": "2.3.0",
+    "bullmq": "6.3.11",
+    "bullmq-v5": "npm:bullmq@5.81.5",
     "cohere-ai": "^8.1.0",
     "husky": "^9.1.7",
+    "ioredis": "^5.9.3",
     "lint-staged": "^16.2.7",
     "openai": "^7.27.0",
-    "tsx": "^4.21.0",
-    "vitest": "^4.0.18"
+    "pdf-parse": "2.4.5",
+    "socket.io-client": "^4.8.4",
+    "tsdown": "0.23.0",
+    "tsx": "^4.23.15",
+    "vitest": "^4.0.18",
+    "zod-v3": "npm:zod@3.25.76",
+    "zod-v4": "npm:zod@4.6.5"
   },
   "license": "MIT",
   "repository": {
@@ -69,8 +83,11 @@
     "@types/express": "^5.0.6",
     "express": "^5.2.1",
     "mongodb": "^6.21.0",
-    "multer": "^2.0.2",
-    "socket.io": "^4.8.3",
+    "multer": "^2.3.0",
+    "socket.io": "^4.8.4",
     "swagger-ui-express": "^5.0.1"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.11.0"
   }
 }

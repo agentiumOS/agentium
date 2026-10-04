@@ -1,7 +1,7 @@
 {
   "name": "@agentium/edge",
   "version": "3.2.0",
-  "description": "Edge deployment for Agentium — IoT toolkits (GPIO, sensors, camera, BLE), edge runtime, and Ollama helpers for Raspberry Pi",
+  "description": "Edge deployment for Agentium \u2014 IoT toolkits (GPIO, sensors, camera, BLE), edge runtime, and Ollama helpers for Raspberry Pi",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -37,14 +37,14 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --shims --clean && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false",
-    "dev": "tsup src/index.ts --format esm,cjs --shims --watch",
+    "build": "tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false",
+    "dev": "tsdown --config ../../tsdown.config.ts --watch",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^25.3.1",
-    "tsup": "^8.0.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "tsdown": "0.23.0"
   },
   "peerDependencies": {
     "@agentium/core": "^3.2.0",
@@ -66,5 +66,11 @@
   "homepage": "https://agentium.in",
   "bugs": {
     "url": "https://github.com/agentiumOS/agentium/issues"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.11.0"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
   }
 }

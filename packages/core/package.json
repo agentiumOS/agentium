@@ -55,27 +55,45 @@
         "default": "./dist/toolkits/*.cjs"
       }
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./voice": {
+      "import": {
+        "types": "./dist/voice/index.d.ts",
+        "default": "./dist/voice/index.js"
+      },
+      "require": {
+        "types": "./dist/voice/index.d.ts",
+        "default": "./dist/voice/index.cjs"
+      }
+    },
+    "./telephony": {
+      "import": {
+        "types": "./dist/telephony/index.d.ts",
+        "default": "./dist/telephony/index.js"
+      },
+      "require": {
+        "types": "./dist/telephony/index.d.ts",
+        "default": "./dist/telephony/index.cjs"
+      }
+    }
   },
   "sideEffects": false,
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup --config tsup.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false",
-    "dev": "tsup --config tsup.config.ts --watch",
+    "build": "tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false",
+    "dev": "tsdown --config ../../tsdown.config.ts --watch",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "uuid": "^11.0.0",
-    "zod": "^3.23.0",
+    "zod": "^4.6.5",
     "zod-to-json-schema": "^3.24.0"
   },
   "devDependencies": {
     "@types/node": "^25.3.1",
-    "@types/uuid": "^10.0.0",
-    "tsup": "^8.0.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "tsdown": "0.23.0"
   },
   "peerDependencies": {
     "@anthropic-ai/sdk": ">=0.30.0 <1",
@@ -87,9 +105,9 @@
     "openai": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0",
     "@perplexity-ai/perplexity_ai": ">=0.20.0",
     "pg": "^8.0.0",
-    "@modelcontextprotocol/sdk": ">=1.0.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "googleapis": ">=100.0.0",
-    "pdf-parse": ">=1.1.0",
+    "pdf-parse": "^2.4.5",
     "ioredis": ">=5.0.0",
     "@aws-sdk/client-s3": ">=3.0.0",
     "@aws-sdk/s3-request-presigner": ">=3.0.0",
@@ -98,11 +116,13 @@
     "gpt-tokenizer": ">=3.0.0",
     "neo4j-driver": ">=5.0.0",
     "cohere-ai": ">=7.0.0",
-    "@xenova/transformers": ">=2.0.0",
-    "@e2b/sdk": ">=0.16.0",
-    "@daytonaio/sdk": ">=0.1.0",
     "dockerode": ">=4.0.0",
-    "@typesafe-ai/sdk": ">=0.6.0"
+    "@typesafe-ai/sdk": ">=0.6.0",
+    "@modelcontextprotocol/client": "^2.3.0",
+    "@huggingface/transformers": "^4.3.0",
+    "@a2a-js/sdk": "^1.3.0",
+    "@e2b/code-interpreter": "~2.8.0",
+    "@daytona/sdk": "~0.220.0"
   },
   "peerDependenciesMeta": {
     "openai": {
@@ -165,24 +185,33 @@
     "cohere-ai": {
       "optional": true
     },
-    "@xenova/transformers": {
-      "optional": true
-    },
-    "@e2b/sdk": {
-      "optional": true
-    },
-    "@daytonaio/sdk": {
-      "optional": true
-    },
     "dockerode": {
       "optional": true
     },
     "@typesafe-ai/sdk": {
+      "optional": true
+    },
+    "@modelcontextprotocol/client": {
+      "optional": true
+    },
+    "@huggingface/transformers": {
+      "optional": true
+    },
+    "@a2a-js/sdk": {
+      "optional": true
+    },
+    "@e2b/code-interpreter": {
+      "optional": true
+    },
+    "@daytona/sdk": {
       "optional": true
     }
   },
   "homepage": "https://agentium.in",
   "bugs": {
     "url": "https://github.com/agentiumOS/agentium/issues"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.11.0"
   }
 }

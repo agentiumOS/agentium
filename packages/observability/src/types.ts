@@ -1,3 +1,6 @@
+import type { ExportLimits } from "./export-queue.js";
+import type { TelemetryOptions } from "./safety.js";
+
 export type SpanKind =
   | "agent"
   | "llm"
@@ -17,10 +20,19 @@ export interface SpanEvent {
   attributes?: Record<string, unknown>;
 }
 
+export interface TraceContext {
+  traceId: string;
+  spanId: string;
+  traceFlags?: number;
+  traceState?: string;
+}
+
 export interface Span {
   traceId: string;
   spanId: string;
   parentSpanId?: string;
+  traceFlags?: number;
+  traceState?: string;
   name: string;
   kind: SpanKind;
   startTime: number;
@@ -43,7 +55,7 @@ export interface Trace {
 
 export interface TraceExporter {
   name: string;
-  export(trace: Trace): Promise<void>;
+  export(trace: Trace, context?: { signal: AbortSignal }): Promise<void>;
   flush?(): Promise<void>;
   shutdown?(): Promise<void>;
 }
@@ -53,6 +65,8 @@ export interface MetricsSnapshot {
     runs_total: number;
     runs_success: number;
     runs_error: number;
+    runs_cancelled: number;
+    runs_stopped: number;
     tool_calls_total: number;
     handoffs_total: number;
     cache_hits: number;
@@ -79,9 +93,9 @@ export interface MetricsSnapshot {
   timestamp: number;
 }
 
-export type ExporterShorthand = "console" | "langfuse" | "json-file" | "otel";
+export type ExporterShorthand = "console" | "langfuse" | "json-file" | "otel" | "langfuse-otlp";
 
-export interface ObservabilityConfig {
+export interface ObservabilityConfig extends TelemetryOptions, ExportLimits {
   /** Exporter instances or shorthand strings like "console", "langfuse". */
   exporters?: (TraceExporter | ExporterShorthand)[];
   metrics?: boolean;

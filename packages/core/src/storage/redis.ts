@@ -18,7 +18,7 @@ export class RedisStorage implements StorageDriver {
   private keyPrefix: string;
   private ttl: number | null;
 
-  constructor(private config: RedisStorageConfig = {}) {
+  constructor(config: RedisStorageConfig = {}) {
     this.keyPrefix = config.keyPrefix ?? "agentium";
     this.ttl = config.ttl ?? null;
 

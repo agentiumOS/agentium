@@ -1,5 +1,6 @@
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID as uuidv4 } from "node:crypto";
 import { RunContext } from "../agent/run-context.js";
+import type { RunOpts } from "../agent/types.js";
 import { EventBus } from "../events/event-bus.js";
 import { registry } from "../serve.js";
 import type { WorkflowCheckpoint } from "./checkpoints.js";
@@ -25,10 +26,17 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
     }
   }
 
-  async run(opts?: { sessionId?: string; userId?: string }): Promise<WorkflowResult<TState>> {
+  async run(opts?: RunOpts & { initialState?: Partial<TState> }): Promise<WorkflowResult<TState>> {
     const ctx = new RunContext({
       sessionId: opts?.sessionId ?? uuidv4(),
       userId: opts?.userId,
+      tenantId: opts?.tenantId,
+      signal: opts?.signal,
+      runMode: opts?.runMode,
+      executionPolicy: opts?.executionServices?.executionPolicy,
+      executionServices: opts?.executionServices,
+      runId: opts?.runId,
+      metadata: opts?.metadata,
       eventBus: this.eventBus,
       sessionState: {},
     });
@@ -42,7 +50,7 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
     try {
       const { state, results } = await this.stepRunner.executeSteps(
         this.config.steps,
-        { ...this.config.initialState },
+        { ...this.config.initialState, ...opts?.initialState },
         ctx,
       );
 

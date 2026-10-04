@@ -5,6 +5,7 @@ import {
   isMultiModal,
   type ModelConfig,
   type ModelResponse,
+  type ResponsesReplayEnvelope,
   type StreamChunk,
   type TokenUsage,
   type ToolCall,
@@ -17,6 +18,28 @@ export interface ChatCompletionsExtra {
   stream?: boolean;
   /** OpenAI/Azure always use max_completion_tokens. Compatible APIs keep max_tokens unless the model is a reasoning family. */
   maxTokensField?: ChatMaxTokensField;
+}
+
+const OPENAI_REPLAY_OWNER = "https://api.openai.com/v1";
+
+/** Endpoint ownership deliberately excludes credentials/query strings from persisted data. */
+function replayOwner(client: { baseURL?: string }): string {
+  const url = new URL(client.baseURL ?? OPENAI_REPLAY_OWNER);
+  return `${url.origin}${url.pathname.replace(/\/$/, "")}`;
+}
+
+function hasResponsesReplay(messages: ChatMessage[]): boolean {
+  return messages.some((m) => m.providerExtras?.responsesReplay || m.providerExtras?.responsesReasoning);
+}
+
+function responsesExtras(response: any, owner: string, model?: string): Record<string, unknown> {
+  const replay: ResponsesReplayEnvelope = {
+    version: 1,
+    owner,
+    ...(model ? { model } : {}),
+    items: response?.output ?? [],
+  };
+  return { responsesReplay: replay };
 }
 
 type GenerateOptions = ModelConfig & { tools?: ToolDefinition[] };
@@ -146,9 +169,9 @@ export function buildResponsesParams(
   modelId: string,
   messages: ChatMessage[],
   options?: GenerateOptions,
-  extra?: { stream?: boolean },
+  extra?: { stream?: boolean; replayOwner?: string },
 ): Record<string, unknown> {
-  const { instructions, input } = toResponsesInput(messages);
+  const { instructions, input } = toResponsesInput(messages, extra?.replayOwner, modelId);
   const params: Record<string, unknown> = {
     model: modelId,
     input,
@@ -187,8 +210,11 @@ export function buildResponsesParams(
 
 export async function generateOpenAIStyle(
   client: {
-    chat?: { completions?: { create: (params: unknown) => Promise<unknown> } };
-    responses?: { create?: (params: unknown) => Promise<unknown> };
+    baseURL?: string;
+    chat?: {
+      completions?: { create: (params: unknown, requestOptions?: { signal?: AbortSignal }) => Promise<unknown> };
+    };
+    responses?: { create?: (params: unknown, requestOptions?: { signal?: AbortSignal }) => Promise<unknown> };
   },
   modelId: string,
   messages: ChatMessage[],
@@ -196,25 +222,42 @@ export async function generateOpenAIStyle(
   withRetry: RetryFn = identityRetry,
   extra?: ChatCompletionsExtra,
 ): Promise<ModelResponse> {
-  if (shouldUseResponsesApi(modelId, options) && typeof client.responses?.create === "function") {
+  options?.signal?.throwIfAborted();
+  const owner = replayOwner(client);
+  const continuing = hasResponsesReplay(messages);
+  if (continuing) toResponsesInput(messages, owner, modelId); // Validate ownership before any request.
+  if (continuing && typeof client.responses?.create !== "function") {
+    throw new Error("Responses continuation requires a Responses-capable endpoint; start a new session to switch APIs");
+  }
+  if ((continuing || shouldUseResponsesApi(modelId, options)) && typeof client.responses?.create === "function") {
     const create = client.responses.create.bind(client.responses);
     try {
-      const response = await withRetry(() => create(buildResponsesParams(modelId, messages, options)));
-      return normalizeResponsesResponse(response);
+      const response = await withRetry(() =>
+        create(
+          buildResponsesParams(modelId, messages, options, { replayOwner: owner }),
+          ...(options?.signal ? [{ signal: options.signal }] : []),
+        ),
+      );
+      return normalizeResponsesResponse(response, owner, modelId);
     } catch (err) {
-      if (!isResponsesUnavailable(err)) throw err;
+      if (continuing || !isResponsesUnavailable(err)) throw err;
     }
   }
 
   const params = buildChatCompletionsParams(modelId, messages, options, extra);
-  const response = await withRetry(() => client.chat!.completions!.create(params));
+  const response = await withRetry(() =>
+    client.chat!.completions!.create(params, ...(options?.signal ? [{ signal: options.signal }] : [])),
+  );
   return normalizeChatCompletionsResponse(response);
 }
 
 export async function* streamOpenAIStyle(
   client: {
-    chat?: { completions?: { create: (params: unknown) => Promise<unknown> } };
-    responses?: { create?: (params: unknown) => Promise<unknown> };
+    baseURL?: string;
+    chat?: {
+      completions?: { create: (params: unknown, requestOptions?: { signal?: AbortSignal }) => Promise<unknown> };
+    };
+    responses?: { create?: (params: unknown, requestOptions?: { signal?: AbortSignal }) => Promise<unknown> };
   },
   modelId: string,
   messages: ChatMessage[],
@@ -222,24 +265,48 @@ export async function* streamOpenAIStyle(
   withRetry: RetryFn = identityRetry,
   extra?: ChatCompletionsExtra,
 ): AsyncGenerator<StreamChunk> {
-  if (shouldUseResponsesApi(modelId, options) && typeof client.responses?.create === "function") {
+  options?.signal?.throwIfAborted();
+  const owner = replayOwner(client);
+  const continuing = hasResponsesReplay(messages);
+  if (continuing) toResponsesInput(messages, owner, modelId); // Validate ownership before any request.
+  if (continuing && typeof client.responses?.create !== "function") {
+    throw new Error("Responses continuation requires a Responses-capable endpoint; start a new session to switch APIs");
+  }
+  if ((continuing || shouldUseResponsesApi(modelId, options)) && typeof client.responses?.create === "function") {
     const create = client.responses.create.bind(client.responses);
+    let committed = false;
     try {
-      const stream = await withRetry(() => create(buildResponsesParams(modelId, messages, options, { stream: true })));
-      yield* iterResponsesStream(stream as AsyncIterable<unknown>);
+      const stream = await withRetry(() =>
+        create(
+          buildResponsesParams(modelId, messages, options, { stream: true, replayOwner: owner }),
+          ...(options?.signal ? [{ signal: options.signal }] : []),
+        ),
+      );
+      for await (const chunk of iterResponsesStream(stream as AsyncIterable<unknown>, owner, modelId)) {
+        committed = true;
+        yield chunk;
+      }
       return;
     } catch (err) {
-      if (!isResponsesUnavailable(err)) throw err;
+      if (committed || continuing || !isResponsesUnavailable(err)) throw err;
     }
   }
 
   const params = buildChatCompletionsParams(modelId, messages, options, { ...extra, stream: true });
-  const stream = await withRetry(() => client.chat!.completions!.create(params));
+  const stream = await withRetry(() =>
+    client.chat!.completions!.create(params, ...(options?.signal ? [{ signal: options.signal }] : [])),
+  );
   yield* iterChatCompletionStream(stream as AsyncIterable<unknown>);
 }
 
 export function toChatCompletionsMessages(messages: ChatMessage[]): unknown[] {
   return messages.map((msg) => {
+    if (msg.providerExtras?.responsesReplay || msg.providerExtras?.responsesReasoning) {
+      throw new Error("Responses continuation cannot be converted to Chat Completions; start a new session");
+    }
+    if (msg.providerExtras?.anthropicContent || msg.providerExtras?.googleParts) {
+      throw new Error("Foreign provider continuation cannot be converted to Chat Completions; start a new session");
+    }
     if (msg.role === "assistant" && msg.toolCalls?.length) {
       return withReasoningContent(
         {
@@ -407,7 +474,11 @@ export function toResponsesTools(tools: ToolDefinition[]): unknown[] {
   }));
 }
 
-export function toResponsesInput(messages: ChatMessage[]): { instructions?: string; input: unknown[] } {
+export function toResponsesInput(
+  messages: ChatMessage[],
+  owner = OPENAI_REPLAY_OWNER,
+  model?: string,
+): { instructions?: string; input: unknown[] } {
   let instructions: string | undefined;
   const input: unknown[] = [];
 
@@ -418,13 +489,40 @@ export function toResponsesInput(messages: ChatMessage[]): { instructions?: stri
       continue;
     }
 
+    if (msg.role === "assistant") {
+      if (
+        msg.providerExtras?.anthropicContent ||
+        msg.providerExtras?.googleParts ||
+        msg.providerExtras?.reasoningContent
+      ) {
+        throw new Error("Foreign provider continuation cannot be replayed through Responses; start a new session");
+      }
+      const replay = msg.providerExtras?.responsesReplay as Partial<ResponsesReplayEnvelope> | undefined;
+      if (replay) {
+        if (
+          replay.version !== 1 ||
+          replay.owner !== owner ||
+          (model && replay.model && model !== replay.model) ||
+          !Array.isArray(replay.items)
+        ) {
+          throw new Error(
+            "Unsupported Responses replay version or provider ownership; start a new session to switch providers",
+          );
+        }
+        input.push(...replay.items);
+        continue;
+      }
+      const legacy = msg.providerExtras?.responsesReasoning;
+      if (Array.isArray(legacy)) {
+        if (owner !== OPENAI_REPLAY_OWNER)
+          throw new Error("Unowned legacy Responses replay cannot be sent to a custom endpoint");
+        input.push(...legacy);
+      }
+    }
+
     if (msg.role === "assistant" && msg.toolCalls?.length) {
       const text = getTextContent(msg.content);
       if (text) input.push({ role: "assistant", content: text });
-      const reasoningItems = msg.providerExtras?.responsesReasoning;
-      if (Array.isArray(reasoningItems)) {
-        for (const item of reasoningItems) input.push(item);
-      }
       for (const tc of msg.toolCalls) {
         input.push({
           type: "function_call",
@@ -483,17 +581,25 @@ function partToResponsesContent(part: ContentPart): unknown {
   }
 }
 
+function parseToolArguments(value: unknown): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(typeof value === "string" ? value : "");
+  } catch {
+    throw new Error("Invalid provider tool arguments: expected a complete JSON object; no tools executed");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Invalid provider tool arguments: expected a JSON object; no tools executed");
+  }
+  return parsed as Record<string, unknown>;
+}
+
 export function normalizeChatCompletionsResponse(response: any): ModelResponse & { thinking?: string } {
   const choice = response.choices[0];
   const msg = choice.message;
 
   const toolCalls: ToolCall[] = (msg.tool_calls ?? []).map((tc: any) => {
-    let args: Record<string, unknown> = {};
-    try {
-      args = JSON.parse(tc.function.arguments || "{}");
-    } catch (err) {
-      console.warn("[agentium] Error:", err instanceof Error ? err.message : err);
-    }
+    const args = parseToolArguments(tc.function.arguments);
     return {
       id: tc.id,
       name: tc.function.name,
@@ -501,6 +607,9 @@ export function normalizeChatCompletionsResponse(response: any): ModelResponse &
     };
   });
 
+  if (toolCalls.length && choice.finish_reason && choice.finish_reason !== "tool_calls") {
+    throw new Error("Incomplete Chat Completions tool turn; no tools executed");
+  }
   const usage = usageFromChatCompletions(response.usage);
 
   let finishReason: ModelResponse["finishReason"] = "stop";
@@ -526,8 +635,18 @@ export function normalizeChatCompletionsResponse(response: any): ModelResponse &
   return result;
 }
 
-export function normalizeResponsesResponse(response: any): ModelResponse & { thinking?: string } {
-  const { text, toolCalls, thinking, reasoningItems } = extractResponsesOutput(response);
+export function normalizeResponsesResponse(
+  response: any,
+  owner = OPENAI_REPLAY_OWNER,
+  model?: string,
+): ModelResponse & { thinking?: string } {
+  if (response.status === "failed" || response.status === "cancelled") {
+    throw new Error(`Responses request ${response.status}`);
+  }
+  const { text, toolCalls, thinking } = extractResponsesOutput(response);
+  if (toolCalls.length && response.status && response.status !== "completed") {
+    throw new Error("Incomplete Responses tool turn; no tools executed");
+  }
   const usage = usageFromResponses(response.usage);
 
   const result: ModelResponse & { thinking?: string } = {
@@ -535,7 +654,7 @@ export function normalizeResponsesResponse(response: any): ModelResponse & { thi
       role: "assistant",
       content: text.length > 0 ? text : response.output_text || null,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      ...(reasoningItems.length ? { providerExtras: { responsesReasoning: reasoningItems } } : {}),
+      providerExtras: responsesExtras(response, owner, model),
     },
     usage,
     finishReason: toolCalls.length > 0 ? "tool_calls" : responsesStatusToFinish(response?.status),
@@ -558,12 +677,7 @@ function extractResponsesOutput(response: any): {
 
   for (const item of response?.output ?? []) {
     if (item?.type === "function_call") {
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(item.arguments || "{}");
-      } catch (err) {
-        console.warn("[agentium] Error:", err instanceof Error ? err.message : err);
-      }
+      const args = parseToolArguments(item.arguments);
       toolCalls.push({
         id: item.call_id ?? item.id,
         name: item.name,
@@ -630,6 +744,7 @@ function usageFromResponses(usage: any): TokenUsage {
 export async function* iterChatCompletionStream(stream: AsyncIterable<any>): AsyncGenerator<StreamChunk> {
   const activeToolCalls = new Map<number, { id: string; name: string; args: string }>();
   let finishReason: string | null = null;
+  let completed = false;
 
   for await (const chunk of stream) {
     const choice = chunk.choices?.[0];
@@ -640,6 +755,7 @@ export async function* iterChatCompletionStream(stream: AsyncIterable<any>): Asy
           finishReason: finishReason === "tool_calls" ? "tool_calls" : finishReason,
           usage: usageFromChatCompletions(chunk.usage),
         };
+        finishReason = null;
       }
       continue;
     }
@@ -667,6 +783,9 @@ export async function* iterChatCompletionStream(stream: AsyncIterable<any>): Asy
               name: tc.function?.name ?? "",
             },
           };
+          if (tc.function?.arguments) {
+            yield { type: "tool_call_delta", toolCallId: tc.id, argumentsDelta: tc.function.arguments };
+          }
         } else if (tc.function?.arguments) {
           const existing = activeToolCalls.get(idx);
           if (existing) {
@@ -691,6 +810,12 @@ export async function* iterChatCompletionStream(stream: AsyncIterable<any>): Asy
     }
 
     if (choice.finish_reason) {
+      if (activeToolCalls.size && choice.finish_reason !== "tool_calls") {
+        throw new Error("Incomplete Chat Completions tool turn; no tools executed");
+      }
+      // Validate the whole batch before marking any call complete.
+      for (const tc of activeToolCalls.values()) parseToolArguments(tc.args);
+      completed = true;
       for (const [, tc] of activeToolCalls) {
         yield { type: "tool_call_end", toolCallId: tc.id };
       }
@@ -708,13 +833,18 @@ export async function* iterChatCompletionStream(stream: AsyncIterable<any>): Asy
     }
   }
 
+  if (!completed) throw new Error("Chat Completions stream ended without a completion marker");
   if (finishReason) {
     yield { type: "finish" as const, finishReason, usage: undefined };
   }
 }
 
-export async function* iterResponsesStream(stream: AsyncIterable<any>): AsyncGenerator<StreamChunk> {
-  const itemToCall = new Map<string, { callId: string; name: string }>();
+export async function* iterResponsesStream(
+  stream: AsyncIterable<any>,
+  owner = OPENAI_REPLAY_OWNER,
+  model?: string,
+): AsyncGenerator<StreamChunk> {
+  const itemToCall = new Map<string, { callId: string; name: string; args: string }>();
   let emittedFinish = false;
 
   for await (const event of stream) {
@@ -734,38 +864,52 @@ export async function* iterResponsesStream(stream: AsyncIterable<any>): AsyncGen
     if (type === "response.output_item.added" && event.item?.type === "function_call") {
       const callId = event.item.call_id ?? event.item.id;
       const name = event.item.name ?? "";
-      if (event.item.id) itemToCall.set(event.item.id, { callId, name });
-      if (callId) yield { type: "tool_call_start", toolCall: { id: callId, name } };
+      if (event.item.id) itemToCall.set(event.item.id, { callId, name, args: event.item.arguments ?? "" });
+      if (callId) {
+        yield { type: "tool_call_start", toolCall: { id: callId, name } };
+        if (event.item.arguments)
+          yield { type: "tool_call_delta", toolCallId: callId, argumentsDelta: event.item.arguments };
+      }
       continue;
     }
 
     if (type === "response.function_call_arguments.delta" && event.delta) {
       const mapped = event.item_id ? itemToCall.get(event.item_id) : undefined;
       const callId = mapped?.callId ?? event.item_id;
+      if (mapped) mapped.args += event.delta;
       if (callId) yield { type: "tool_call_delta", toolCallId: callId, argumentsDelta: event.delta };
       continue;
     }
 
     if (type === "response.output_item.done" && event.item?.type === "function_call") {
       const callId = event.item.call_id ?? event.item.id;
+      const mapped = event.item.id ? itemToCall.get(event.item.id) : undefined;
+      if (mapped && typeof event.item.arguments === "string" && event.item.arguments.startsWith(mapped.args)) {
+        const remaining = event.item.arguments.slice(mapped.args.length);
+        if (remaining) yield { type: "tool_call_delta", toolCallId: callId, argumentsDelta: remaining };
+      }
       if (callId) yield { type: "tool_call_end", toolCallId: callId };
       continue;
     }
 
+    if (type === "error" || type === "response.failed" || type === "response.incomplete") {
+      throw new Error(`Responses stream interrupted: ${type}`);
+    }
+
     if (type === "response.completed") {
       const response = event.response ?? event;
-      const { toolCalls, reasoningItems } = extractResponsesOutput(response);
+      const { toolCalls } = extractResponsesOutput(response);
       yield {
         type: "finish",
         finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
         usage: usageFromResponses(response?.usage),
-        ...(reasoningItems.length ? { providerExtras: { responsesReasoning: reasoningItems } } : {}),
+        providerExtras: responsesExtras(response, owner, model),
       };
       emittedFinish = true;
     }
   }
 
   if (!emittedFinish) {
-    yield { type: "finish" as const, finishReason: "stop", usage: undefined };
+    throw new Error("Responses stream ended before response.completed");
   }
 }

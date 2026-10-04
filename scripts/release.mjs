@@ -17,6 +17,7 @@ import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { syncReleaseLock } from "./release-lock.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
@@ -24,6 +25,7 @@ const root = resolve(__dirname, "..");
 const PACKAGES = [
   "package.json",
   "packages/core/package.json",
+  "packages/harness/package.json",
   "packages/transport/package.json",
   "packages/queue/package.json",
   "packages/browser/package.json",
@@ -35,6 +37,7 @@ const PACKAGES = [
 ];
 
 const PEER_DEP_FILES = [
+  "packages/harness/package.json",
   "packages/transport/package.json",
   "packages/queue/package.json",
   "packages/browser/package.json",
@@ -72,7 +75,7 @@ function bumpVersion(current, bump) {
     case "major":
       return `${major + 1}.0.0`;
     default:
-      if (/^\d+\.\d+\.\d+/.test(bump)) return bump;
+      if (/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(bump)) return bump;
       console.error(`Invalid version bump: ${bump}`);
       process.exit(1);
   }
@@ -114,6 +117,18 @@ for (const pkg of PEER_DEP_FILES) {
     console.log(`   ✅ ${pkg} peer dep @agentium/core → ^${newVersion}`);
   }
 }
+
+// Keep npm ci reproducible after bumping workspace versions and peer ranges.
+// Updating metadata directly preserves optional Linux/macOS native bindings.
+writeJson(
+  "package-lock.json",
+  syncReleaseLock(
+    readJson("package-lock.json"),
+    Object.fromEntries(
+      PACKAGES.map((path) => [path === "package.json" ? "" : path.slice(0, -"/package.json".length), readJson(path)]),
+    ),
+  ),
+);
 
 // 3. Build to verify everything compiles
 console.log("\n2️⃣  Building all packages...");

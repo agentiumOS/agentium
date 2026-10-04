@@ -8,4 +8,6 @@ export interface A2AServerOptions {
     url?: string;
   };
   version?: string;
+  /** Maximum process-local tasks, including active work. Default 10000. */
+  maxTasks?: number;
 }

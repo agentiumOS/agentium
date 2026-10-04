@@ -1,6 +1,6 @@
-import { registry } from "@agentium/core";
-import { beforeEach, describe, expect, it } from "vitest";
-import { z } from "zod";
+import { modelRegistry, registry } from "@agentium/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod/v3";
 import { EntityFactory } from "../entity-factory.js";
 import type { AgentBlueprint, TeamBlueprint } from "../types.js";
 
@@ -40,6 +40,19 @@ describe("EntityFactory", () => {
 
     it("throws on unknown provider", () => {
       expect(() => factory.createAgent({ ...blueprint, provider: "fake" })).toThrow("Unknown model provider");
+    });
+
+    it("does not expose private values from provider initialization errors", () => {
+      const resolve = vi.spyOn(modelRegistry, "resolve").mockImplementation(() => {
+        throw new Error("Bad URL https://user:fixture-secret@example.test");
+      });
+      try {
+        expect(() => factory.createAgent(blueprint)).toThrow(
+          "Provider initialization failed; verify the private provider configuration",
+        );
+      } finally {
+        resolve.mockRestore();
+      }
     });
 
     it("throws on unknown tool", () => {

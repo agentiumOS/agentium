@@ -5,6 +5,7 @@ export type AgentJobPayload = {
   agentName: string;
   input: string;
   sessionId?: string;
+  tenantId?: string;
   userId?: string;
 };
 
@@ -12,7 +13,9 @@ export type WorkflowJobPayload = {
   type: "workflow";
   workflowName: string;
   initialState?: Record<string, unknown>;
+  userId?: string;
   sessionId?: string;
+  tenantId?: string;
 };
 
 export type TeamJobPayload = {
@@ -20,6 +23,7 @@ export type TeamJobPayload = {
   teamName: string;
   input: string;
   sessionId?: string;
+  tenantId?: string;
   userId?: string;
 };
 

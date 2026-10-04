@@ -16,17 +16,34 @@ export interface GoogleLiveConfig {
   apiKey?: string;
 }
 
-class GoogleLiveConnection extends EventEmitter implements RealtimeConnection {
+export class GoogleLiveConnection extends EventEmitter implements RealtimeConnection {
   private session: any;
+  readonly toolContinuation = "provider" as const;
   private closed = false;
+  get connectionState(): "open" | "closed" {
+    return this.closed ? "closed" : "open";
+  }
+  private calls = new Map<string, string>();
+  private turn = 0;
+  private generationStarted = false;
+  private suppressed = false;
+  private transcripts = { user: "", assistant: "" };
 
-  constructor(session: any) {
+  private audioStarted = false;
+  constructor(
+    session: any,
+    private manualActivity = false,
+  ) {
     super();
     this.session = session;
   }
 
   sendAudio(data: Buffer): void {
     if (this.closed) return;
+    if (this.manualActivity && !this.audioStarted) {
+      this.session.sendRealtimeInput({ activityStart: {} });
+      this.audioStarted = true;
+    }
     this.session.sendRealtimeInput({
       audio: {
         data: data.toString("base64"),
@@ -59,11 +76,13 @@ class GoogleLiveConnection extends EventEmitter implements RealtimeConnection {
 
   createResponse(_opts?: CreateResponseOpts): void {
     if (this.closed) return;
-    this.session.sendClientContent?.({ turns: "", turnComplete: true });
+    throw new Error("Gemini Live owns continuation; send user input or a tool response instead");
   }
 
   commitAudio(): void {
-    // Live API commits on VAD; nothing extra to send.
+    if (this.closed) return;
+    this.session.sendRealtimeInput(this.manualActivity ? { activityEnd: {} } : { audioStreamEnd: true });
+    this.audioStarted = false;
   }
 
   sendToolResult(callId: string, result: string): void {
@@ -75,11 +94,14 @@ class GoogleLiveConnection extends EventEmitter implements RealtimeConnection {
       responseObj = { result };
     }
 
+    const name = this.calls.get(callId);
+    if (!name) throw new Error("Unknown or already completed Gemini tool call");
+    this.calls.delete(callId);
     this.session.sendToolResponse({
       functionResponses: [
         {
           id: callId,
-          name: callId,
+          name,
           response: responseObj,
         },
       ],
@@ -87,18 +109,27 @@ class GoogleLiveConnection extends EventEmitter implements RealtimeConnection {
   }
 
   interrupt(): void {
-    // Google Live API handles interruption automatically via VAD.
-    // No explicit interrupt command available.
+    // Local cancellation: Gemini has no explicit server response.cancel command.
+    this.suppressed = true;
+    this.calls.clear();
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     try {
-      this.session.close();
+      this.session?.close();
     } catch (err) {
       console.warn("[agentium/google-live] Error closing session:", err instanceof Error ? err.message : err);
     }
+    this.emit("disconnected", {});
+  }
+
+  /** Internal: transport closure must also fence delayed SDK callbacks. */
+  _disconnected(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.calls.clear();
     this.emit("disconnected", {});
   }
 
@@ -112,24 +143,31 @@ class GoogleLiveConnection extends EventEmitter implements RealtimeConnection {
 
   /** Internal: handle server messages from the Live API. */
   _handleMessage(message: any): void {
+    if (this.closed) return;
+    if (message.serverContent && !this.generationStarted) {
+      this.generationStarted = true;
+      this.emit("generation_start", { generationId: `google:${this.turn}` });
+    }
     if (message.serverContent?.interrupted) {
+      this.calls.clear();
       this.emit("interrupted", {});
-      return;
     }
 
-    if (message.toolCall?.functionCalls) {
+    if (!this.suppressed && message.toolCall?.functionCalls) {
       for (const fc of message.toolCall.functionCalls) {
         const toolCall: RealtimeToolCall = {
           id: fc.id ?? fc.name,
           name: fc.name,
           arguments: JSON.stringify(fc.args ?? {}),
         };
-        this.emit("tool_call", toolCall);
+        if (!this.calls.has(toolCall.id)) {
+          this.calls.set(toolCall.id, toolCall.name);
+          this.emit("tool_call", toolCall);
+        }
       }
-      return;
     }
 
-    if (message.serverContent?.modelTurn?.parts) {
+    if (!this.suppressed && message.serverContent?.modelTurn?.parts) {
       for (const part of message.serverContent.modelTurn.parts) {
         if (part.inlineData?.data) {
           const mimeType = part.inlineData.mimeType ?? "audio/pcm";
@@ -137,12 +175,12 @@ class GoogleLiveConnection extends EventEmitter implements RealtimeConnection {
             typeof part.inlineData.data === "string"
               ? Buffer.from(part.inlineData.data, "base64")
               : Buffer.from(part.inlineData.data);
-          this.emit("audio", { data: buf, mimeType });
+          this.emit("audio", { data: buf, mimeType, generationId: `google:${this.turn}` });
         }
 
-        if (part.text) {
+        if (part.text && !part.thought) {
           this.emit("text", { text: part.text });
-          this.emit("transcript", { text: part.text, role: "assistant" as const });
+          // Spoken transcript is provided by outputTranscription, not model thought/text parts.
         }
 
         if (part.functionCall) {
@@ -151,24 +189,105 @@ class GoogleLiveConnection extends EventEmitter implements RealtimeConnection {
             name: part.functionCall.name,
             arguments: JSON.stringify(part.functionCall.args ?? {}),
           };
-          this.emit("tool_call", toolCall);
+          if (!this.calls.has(toolCall.id)) {
+            this.calls.set(toolCall.id, toolCall.name);
+            this.emit("tool_call", toolCall);
+          }
         }
       }
     }
+    for (const [key, role] of [
+      ["inputTranscription", "user"],
+      ["outputTranscription", "assistant"],
+    ] as const) {
+      const value = message.serverContent?.[key];
+      if (value?.text && (!this.suppressed || role === "user")) {
+        this.transcripts[role] += value.text;
+        this.emit("transcript", {
+          text: this.transcripts[role],
+          role,
+          kind: "partial",
+          segmentId: `google:${this.turn}:${role}`,
+          generationId: `google:${this.turn}`,
+        });
+      }
+    }
+    if (message.serverContent?.turnComplete) {
+      for (const role of ["user", "assistant"] as const)
+        if (this.transcripts[role] && (!this.suppressed || role === "user"))
+          this.emit("transcript", {
+            text: this.transcripts[role],
+            role,
+            kind: "final",
+            segmentId: `google:${this.turn}:${role}`,
+            generationId: `google:${this.turn}`,
+          });
+      this.emit("turn_complete", { generationId: `google:${this.turn}` });
+      this.transcripts = { user: "", assistant: "" };
+      this.turn++;
+      this.generationStarted = false;
+      this.suppressed = false;
+    }
+    if (message.usageMetadata) {
+      const usage = message.usageMetadata;
+      this.emit("usage", {
+        promptTokens: usage.promptTokenCount ?? 0,
+        completionTokens: usage.responseTokenCount ?? 0,
+        totalTokens: usage.totalTokenCount ?? 0,
+      });
+    }
+    if (message.goAway) this.emit("go_away", { timeLeft: message.goAway.timeLeft });
+    if (message.sessionResumptionUpdate)
+      this.emit("session_resume", {
+        handle: message.sessionResumptionUpdate.newHandle,
+        resumable: message.sessionResumptionUpdate.resumable === true,
+      });
   }
 }
 
 export class GoogleLiveProvider implements RealtimeProvider {
   readonly providerId = "google-live";
+  readonly capabilities = {
+    manualCommit: true,
+    images: true,
+    asyncTools: true,
+    transcripts: true,
+    resume: true,
+    recovery: "session-resumption" as const,
+    inputSampleRateHz: 16000,
+    outputSampleRateHz: 24000,
+  };
   readonly modelId: string;
   private apiKey?: string;
 
   constructor(modelId?: string, config?: GoogleLiveConfig) {
-    this.modelId = modelId ?? "gemini-3.1-flash-live-preview";
+    this.modelId = modelId ?? "gemini-3.8-live";
     this.apiKey = config?.apiKey;
   }
 
   async connect(config: RealtimeSessionConfig): Promise<RealtimeConnection> {
+    config.signal?.throwIfAborted();
+    if ((config as unknown as { prompt?: unknown }).prompt !== undefined)
+      throw new Error("Realtime prompt objects are no longer supported; resolve them to app-owned instructions");
+    if (
+      config.mcpServers?.length ||
+      (config.reasoningEffort && config.reasoningEffort !== "none") ||
+      (config.inputAudioFormat && config.inputAudioFormat !== "pcm16") ||
+      (config.outputAudioFormat && config.outputAudioFormat !== "pcm16")
+    )
+      throw new Error("Unsupported Gemini Live option; use local instructions and PCM16 audio");
+    if (
+      config.turnDetection?.type === "semantic_vad" ||
+      config.turnDetection?.createResponse === false ||
+      (config.turnDetection?.type === "server_vad" &&
+        (config.turnDetection.threshold !== undefined || config.turnDetection.idleTimeoutMs !== undefined)) ||
+      config.noiseReduction ||
+      config.transcriptionModel ||
+      config.transcriptionContext ||
+      config.translation ||
+      config.safetyIdentifier
+    )
+      throw new Error("Unsupported Gemini Live setting; use its automatic VAD or null for manual activity");
     let GoogleGenAI: any;
     let Modality: any;
     try {
@@ -193,8 +312,35 @@ export class GoogleLiveProvider implements RealtimeProvider {
 
     const liveConfig: Record<string, unknown> = {
       responseModalities: [Modality.AUDIO],
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
     };
+    if (config.sessionResumption) {
+      if (config.sessionResumption.handle !== undefined && !config.sessionResumption.handle)
+        throw new Error("Gemini session resumption handle must be nonempty");
+      liveConfig.sessionResumption = { ...config.sessionResumption };
+    }
 
+    if (config.turnDetection === null)
+      liveConfig.realtimeInputConfig = { automaticActivityDetection: { disabled: true } };
+    else if (config.turnDetection?.type === "server_vad")
+      liveConfig.realtimeInputConfig = {
+        activityHandling:
+          config.turnDetection.interruptResponse === false ? "NO_INTERRUPTION" : "START_OF_ACTIVITY_INTERRUPTS",
+        automaticActivityDetection: {
+          disabled: false,
+          ...(config.turnDetection.prefixPaddingMs === undefined
+            ? {}
+            : { prefixPaddingMs: config.turnDetection.prefixPaddingMs }),
+          ...(config.turnDetection.silenceDurationMs === undefined
+            ? {}
+            : { silenceDurationMs: config.turnDetection.silenceDurationMs }),
+        },
+      };
+    if (config.maxResponseOutputTokens !== undefined) {
+      if (config.maxResponseOutputTokens === "inf") throw new Error("Gemini maxResponseOutputTokens must be finite");
+      liveConfig.maxOutputTokens = config.maxResponseOutputTokens;
+    }
     if (config.instructions) {
       liveConfig.systemInstruction = config.instructions;
     }
@@ -219,12 +365,27 @@ export class GoogleLiveProvider implements RealtimeProvider {
       ];
     }
 
-    const connection = new GoogleLiveConnection(null as any);
+    const connection = new GoogleLiveConnection(null as any, config.turnDetection === null);
 
     return new Promise<RealtimeConnection>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("Google Live connection timed out after 15s"));
-      }, 15_000);
+      let expired = false;
+      const fail = (error: Error) => {
+        expired = true;
+        clearTimeout(timeout);
+        connection._disconnected();
+        reject(error);
+      };
+      const timeout = setTimeout(() => fail(new Error("Google Live connection timed out after 15s")), 15_000);
+      const abort = () => {
+        void connection.close();
+        fail(new Error("Gemini connection cancelled"));
+      };
+      config.signal?.addEventListener("abort", abort, { once: true });
+      connection.once("disconnected", () => config.signal?.removeEventListener("abort", abort));
+      if (config.signal?.aborted) {
+        abort();
+        return;
+      }
 
       ai.live
         .connect({
@@ -232,7 +393,6 @@ export class GoogleLiveProvider implements RealtimeProvider {
           config: liveConfig,
           callbacks: {
             onopen: () => {
-              clearTimeout(timeout);
               connection.emit("connected", {});
             },
             onmessage: (message: any) => {
@@ -241,21 +401,24 @@ export class GoogleLiveProvider implements RealtimeProvider {
             onerror: (e: any) => {
               const err = e?.error ?? e?.message ?? e;
               const error = err instanceof Error ? err : new Error(String(err));
-              connection.emit("error", { error });
+              if (connection.listenerCount("error")) connection.emit("error", { error });
+              else fail(error);
             },
-            onclose: () => {
-              connection.emit("disconnected", {});
-            },
+            onclose: () => fail(new Error("Gemini connection closed")),
           },
         })
         .then((session: any) => {
-          // Patch the connection with the actual session
+          clearTimeout(timeout);
+          if (expired || config.signal?.aborted) {
+            session.close();
+            reject(new Error("Gemini connection cancelled"));
+            return;
+          }
           (connection as any).session = session;
           resolve(connection);
         })
         .catch((err: Error) => {
-          clearTimeout(timeout);
-          reject(err);
+          fail(err);
         });
     });
   }

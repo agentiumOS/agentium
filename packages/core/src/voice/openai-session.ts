@@ -1,7 +1,8 @@
+import { transcriptionContext } from "./providers/openai-transcription.js";
 import type { AudioFormat, RealtimeSessionConfig, TurnDetectionConfig } from "./types.js";
 
 export const DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1";
-export const DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+export const DEFAULT_TRANSCRIPTION_MODEL = "gpt-transcribe";
 
 export function audioFormatToGa(fmt?: AudioFormat): { type: string; rate?: number } {
   switch (fmt) {
@@ -47,11 +48,22 @@ export function turnDetectionToGa(
 
 /** GA `session.update` body (`session.type: "realtime"`). */
 export function buildOpenAIRealtimeSession(modelId: string, config: RealtimeSessionConfig): Record<string, unknown> {
+  if (
+    config.transcriptionContext &&
+    config.transcriptionModel &&
+    config.transcriptionModel !== DEFAULT_TRANSCRIPTION_MODEL
+  )
+    throw new Error("Transcription context requires gpt-transcribe in native Realtime sessions");
+  if (config.transcriptionModel === "gpt-live-transcribe")
+    throw new Error("Use OpenAIStreamingRecognizer for dedicated gpt-live-transcribe sessions");
   const audio: Record<string, unknown> = {
     input: {
       format: audioFormatToGa(config.inputAudioFormat),
       turn_detection: turnDetectionToGa(config.turnDetection),
-      transcription: { model: config.transcriptionModel ?? DEFAULT_TRANSCRIPTION_MODEL },
+      transcription: {
+        model: config.transcriptionModel ?? DEFAULT_TRANSCRIPTION_MODEL,
+        ...transcriptionContext(config.transcriptionContext ?? {}),
+      },
       ...(config.noiseReduction ? { noise_reduction: { type: config.noiseReduction.type } } : {}),
     },
     output: {
@@ -68,20 +80,16 @@ export function buildOpenAIRealtimeSession(modelId: string, config: RealtimeSess
   };
 
   if (config.instructions) session.instructions = config.instructions;
-  if (config.temperature !== undefined) session.temperature = config.temperature;
+  if (config.temperature !== undefined)
+    throw new Error("OpenAI GA Realtime does not support temperature; remove this field");
   if (config.maxResponseOutputTokens !== undefined) {
     session.max_response_output_tokens = config.maxResponseOutputTokens;
   }
   if (config.reasoningEffort) {
     session.reasoning = { effort: config.reasoningEffort };
   }
-  if (config.prompt) {
-    session.prompt = {
-      id: config.prompt.id,
-      ...(config.prompt.version ? { version: config.prompt.version } : {}),
-      ...(config.prompt.variables ? { variables: config.prompt.variables } : {}),
-    };
-  }
+  if ((config as unknown as { prompt?: unknown }).prompt !== undefined)
+    throw new Error("Resolve reusable prompts to app-owned instructions before opening a realtime session");
   if (config.translation?.targetLanguage) {
     const extra = `Always reply in ${config.translation.targetLanguage}. Translate the user's speech if needed.`;
     session.instructions = session.instructions ? `${session.instructions}\n\n${extra}` : extra;

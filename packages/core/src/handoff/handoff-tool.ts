@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { RunContext } from "../agent/run-context.js";
 import type { ToolDef } from "../tools/types.js";
 import { HandoffSignal, type HandoffTarget } from "./types.js";
@@ -9,6 +9,8 @@ export function createHandoffTool(targets: HandoffTarget[]): ToolDef {
 
   return {
     name: "transfer_to_agent",
+    // Framework control is handled in-process after authorization and batch settlement.
+    sandbox: false,
     description: `Transfer the conversation to a specialist agent. Available agents:\n${descriptions}`,
     parameters: z.object({
       agent: z.enum(agentNames as [string, ...string[]]).describe("Name of the agent to transfer to"),

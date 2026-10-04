@@ -1,5 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { JobPayload } from "../job-types.js";
+import { AgentWorker, type WorkerConfig } from "../job-worker.js";
+
+it("rejects removed JavaScript worker retry fields before connection configuration", () => {
+  const connection = vi.fn(() => {
+    throw new Error("Connection must not be read");
+  });
+  for (const unsupported of [{ attempts: 3 }, { backoffDelay: 1000 }, { attempts: 0 }, { backoffDelay: null }]) {
+    const config = {
+      ...unsupported,
+      agentRegistry: {},
+      get connection() {
+        return connection();
+      },
+    } as unknown as WorkerConfig;
+    expect(() => new AgentWorker(config)).toThrow(/Configure retries on AgentQueue/);
+  }
+  expect(connection).not.toHaveBeenCalled();
+});
 
 describe("Queue job type guards", () => {
   it("agent job has type 'agent'", () => {

@@ -1,18 +1,18 @@
-import type { z } from "zod";
 import type { RunContext } from "../agent/run-context.js";
+import type { SchemaOutput, ToolParameterSchema } from "./schema.js";
 import type { SandboxConfig, ToolCacheConfig, ToolDef, ToolResult } from "./types.js";
 
-export function defineTool<T extends z.ZodObject<any>>(config: {
+export function defineTool<T extends ToolParameterSchema>(config: {
   name: string;
   description: string;
   parameters: T;
-  execute: (args: z.infer<T>, ctx: RunContext) => Promise<string | ToolResult>;
+  execute: (args: SchemaOutput<T>, ctx: RunContext) => Promise<string | ToolResult>;
   cache?: ToolCacheConfig;
   sandbox?: boolean | SandboxConfig;
   requiresApproval?: boolean | ((args: Record<string, unknown>) => boolean);
   strict?: boolean;
   /** N-shot examples that demonstrate valid tool calls to the LLM. */
-  inputExamples?: Array<z.infer<T>>;
+  inputExamples?: Array<SchemaOutput<T>>;
   /** Async transformer applied to the tool result before it is appended to the LLM context. */
   toModelOutput?: (result: string | ToolResult, ctx: RunContext) => Promise<string | ToolResult>;
 }): ToolDef {

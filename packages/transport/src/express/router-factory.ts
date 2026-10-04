@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import type { Registry } from "@agentium/core";
 import {
@@ -5,13 +6,15 @@ import {
   collectToolkitTools,
   describeToolLibrary,
   registry as globalRegistry,
+  schemaShape,
 } from "@agentium/core";
+import { responseLifetime, serveTextStream, textStreamLimits } from "../text-stream.js";
 import { createAdminRouter } from "./admin-router.js";
 import { buildMultiModalInput, createFileUploadMiddleware } from "./file-upload.js";
 import { createJwtMiddleware } from "./jwt-middleware.js";
-import { createRbacMiddleware } from "./rbac-middleware.js";
+import { createRbacMiddleware, routeMatches } from "./rbac-middleware.js";
 import { generateOpenAPISpec, serveSwaggerUI } from "./swagger.js";
-import type { RouterOptions } from "./types.js";
+import type { HostedIdentity, HostedResourceRequest, RouterOptions } from "./types.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -119,6 +122,18 @@ function extractApiKey(req: any, agent: any): string | undefined {
 }
 
 export function createAgentRouter(opts: RouterOptions) {
+  textStreamLimits(opts?.textStream);
+  const security = opts?.security;
+  if (!security || !["local", "authenticated"].includes(security.mode))
+    throw new Error('createAgentRouter requires explicit security: { mode: "local" } or authenticated host hooks');
+  const authenticated = security.mode === "authenticated";
+  if (
+    (!authenticated && (opts.jwt || opts.rbac)) ||
+    (authenticated &&
+      (typeof security.resolveIdentity !== "function" || typeof security.authorizeResource !== "function"))
+  )
+    throw new Error("Authenticated routers require security.resolveIdentity and security.authorizeResource");
+
   if (opts.serve?.length) {
     const discovered = classifyServables(opts.serve);
     opts = {
@@ -138,7 +153,7 @@ export function createAgentRouter(opts: RouterOptions) {
     throw new Error("express is required for createAgentRouter. Install it: npm install express");
   }
 
-  const router = express.Router();
+  const router = express.Router({ caseSensitive: true });
 
   if (opts.cors) {
     router.use(corsMiddleware(opts.cors));
@@ -149,19 +164,129 @@ export function createAgentRouter(opts: RouterOptions) {
     router.use(rateLimitMiddleware(config));
   }
 
+  const publicRequest = (req: any) =>
+    opts.rbac?.publicRoutes?.some((pattern) => routeMatches(`${req.method} ${req.path}`, pattern)) ?? false;
+  // Host middleware may verify external credentials and populate req.user.
+  for (const mw of opts.middleware ?? []) router.use(mw);
   if (opts.jwt) {
-    router.use(createJwtMiddleware(opts.jwt));
+    const verifyJwt = createJwtMiddleware(opts.jwt);
+    router.use((req: any, res: any, next: any) => (publicRequest(req) ? next() : verifyJwt(req, res, next)));
   }
+  if (opts.rbac) router.use(createRbacMiddleware(opts.rbac));
 
-  if (opts.rbac) {
-    router.use(createRbacMiddleware(opts.rbac));
+  async function permitted(req: any, operation: string, resource: HostedResourceRequest["resource"]): Promise<boolean> {
+    if (!authenticated) return true;
+    if (security?.mode !== "authenticated" || !req.agentiumIdentity) return false;
+    return (await security.authorizeResource({ identity: req.agentiumIdentity, operation, resource })) === true;
   }
-
-  if (opts.middleware) {
-    for (const mw of opts.middleware) {
-      router.use(mw);
-    }
+  function executionOptions(req: any) {
+    return authenticated
+      ? { sessionId: req.agentiumSessionId, ...(req.agentiumIdentity as HostedIdentity) }
+      : { sessionId: req.body?.sessionId, userId: req.body?.userId, tenantId: req.body?.tenantId };
   }
+  async function authorizeExecution(req: any, res: any, name: string) {
+    const supplied = req.body?.sessionId;
+    if (supplied !== undefined && (typeof supplied !== "string" || !supplied)) throw new Error("Invalid sessionId");
+    req.agentiumSessionId = supplied ?? randomUUID();
+    if (
+      !(await permitted(req, supplied ? "session:use" : "session:create", {
+        kind: "session",
+        id: req.agentiumSessionId,
+        agentName: name,
+      }))
+    )
+      throw new Error("Resource access denied");
+    res.setHeader("X-Agentium-Session-Id", req.agentiumSessionId);
+  }
+  if (authenticated)
+    router.use(async (req: any, res: any, next: any) => {
+      try {
+        if (!req.user) {
+          // Public listings/docs may omit identity. Resource controls still require it below.
+          if (
+            publicRequest(req) &&
+            req.method === "GET" &&
+            !/^\/(approvals|schedules|admin)(?:\/|$)/.test(req.path) &&
+            !req.path.includes("/checkpoints")
+          )
+            return next();
+          return res.status(401).json({ error: "Authentication required" });
+        }
+        const identity = security?.mode === "authenticated" ? await security.resolveIdentity(req.user) : null;
+        if (
+          !identity ||
+          typeof identity.userId !== "string" ||
+          !identity.userId ||
+          (identity.tenantId !== undefined && (typeof identity.tenantId !== "string" || !identity.tenantId))
+        ) {
+          return res.status(401).json({ error: "Verified identity required" });
+        }
+        req.agentiumIdentity = Object.freeze({ userId: identity.userId, tenantId: identity.tenantId });
+        for (const key of ["userId", "tenantId"]) {
+          if (req.body?.[key] !== undefined && req.body[key] !== req.agentiumIdentity[key]) {
+            return res.status(403).json({ error: "Request identity does not match verified identity" });
+          }
+        }
+        const requireResource = async (operation: string, resource: HostedResourceRequest["resource"]) => {
+          if (!(await permitted(req, operation, resource))) throw new Error("Resource access denied");
+        };
+        const execution = /^\/(agents|teams|workflows)\/([^/]+)\/(run|stream)\/?$/.exec(req.path);
+        if (
+          execution &&
+          !(opts.fileUpload && req.is?.("multipart/form-data") && execution[3] === "run" && execution[1] === "agents")
+        ) {
+          await authorizeExecution(req, res, decodeURIComponent(execution[2]));
+        }
+        const checkpoint = /^\/agents\/([^/]+)\/checkpoints\/?$/.exec(req.path);
+        if (checkpoint) {
+          if (typeof req.query.runId !== "string" || !req.query.runId)
+            return res.status(400).json({ error: "runId query param required" });
+          await requireResource("checkpoints:list", {
+            kind: "run",
+            id: req.query.runId,
+            agentName: decodeURIComponent(checkpoint[1]),
+          });
+        }
+        const rollback = /^\/agents\/([^/]+)\/rollback\/([^/]+)\/?$/.exec(req.path);
+        if (rollback)
+          await requireResource("checkpoint:restore", {
+            kind: "checkpoint",
+            id: decodeURIComponent(rollback[2]),
+            agentName: decodeURIComponent(rollback[1]),
+          });
+        const approval = /^\/approvals\/([^/]+)\/(approve|deny)\/?$/.exec(req.path);
+        if (approval)
+          await requireResource(`approval:${approval[2]}`, { kind: "approval", id: decodeURIComponent(approval[1]) });
+        const correction = /^\/agents\/([^/]+)\/corrections\/?$/.exec(req.path);
+        if (correction) {
+          const agentName = decodeURIComponent(correction[1]);
+          await requireResource("correction:create", { kind: "correction", agentName, scope: req.body?.scope });
+          for (const [key, kind] of [
+            ["sessionId", "session"],
+            ["runId", "run"],
+          ] as const) {
+            if (req.body?.[key] !== undefined) {
+              if (typeof req.body[key] !== "string" || !req.body[key])
+                return res.status(400).json({ error: `Invalid ${key}` });
+              await requireResource(`${kind}:use`, { kind, id: req.body[key], agentName });
+            }
+          }
+        }
+        if (/^\/schedules(?:\/|$)/.test(req.path))
+          await requireResource(
+            req.method === "GET" ? "schedules:list" : req.method === "POST" ? "schedule:create" : "schedule:delete",
+            {
+              kind: "schedule",
+              id: req.path.split("/")[2] ? decodeURIComponent(req.path.split("/")[2]) : req.body?.id,
+            },
+          );
+        if (/^\/admin(?:\/|$)/.test(req.path))
+          await requireResource(`admin:${req.method.toLowerCase()}`, { kind: "admin", id: req.path });
+        next();
+      } catch {
+        res.status(403).json({ error: "Resource access denied" });
+      }
+    });
 
   // ── File upload middleware (lazy-initialized) ───────────────────────────
   let uploadMiddleware: any = null;
@@ -173,9 +298,22 @@ export function createAgentRouter(opts: RouterOptions) {
   function withUpload(handler: (req: any, res: any) => Promise<void>) {
     if (!uploadMiddleware) return handler;
     return (req: any, res: any, next: any) => {
-      uploadMiddleware(req, res, (err: any) => {
+      uploadMiddleware(req, res, async (err: any) => {
+        if (req.aborted || res.destroyed) return;
         if (err) {
           return res.status(400).json({ error: err.message });
+        }
+        try {
+          if (authenticated && req.is?.("multipart/form-data")) {
+            for (const key of ["userId", "tenantId"]) {
+              if (req.body?.[key] !== undefined && req.body[key] !== req.agentiumIdentity?.[key]) {
+                return res.status(403).json({ error: "Request identity does not match verified identity" });
+              }
+            }
+            await authorizeExecution(req, res, decodeURIComponent(req.path.split("/")[2]));
+          }
+        } catch {
+          return res.status(403).json({ error: "Resource access denied" });
         }
         handler(req, res).catch(next);
       });
@@ -200,6 +338,62 @@ export function createAgentRouter(opts: RouterOptions) {
     }
   }
 
+  async function recordCorrection(req: any, res: any, agent: any, name: string) {
+    try {
+      const memory = (agent as any).memory;
+      if (!memory?.getCorrectionStore?.()) {
+        return res.status(404).json({
+          error: `Corrections are not enabled for agent "${name}". Configure memory.corrections with a vectorStore.`,
+        });
+      }
+
+      const validated = validateBody(req.body, {
+        originalValue: "string",
+        correctedValue: "string",
+        field: "string?",
+        reason: "string?",
+        entityKey: "string?",
+        runId: "string?",
+        sessionId: "string?",
+        userId: "string?",
+        tenantId: "string?",
+        scope: "string?",
+        originalInput: "string?",
+      });
+
+      const correction = await memory.recordCorrection({
+        agentName: name,
+        runId: validated.runId,
+        sessionId: validated.sessionId,
+        originalInput: validated.originalInput,
+        field: validated.field,
+        originalValue: validated.originalValue,
+        correctedValue: validated.correctedValue,
+        reason: validated.reason,
+        entityKey: validated.entityKey,
+        tags: Array.isArray(req.body?.tags) ? req.body.tags : undefined,
+        scope: validated.scope,
+        userId: executionOptions(req).userId,
+        tenantId: executionOptions(req).tenantId,
+      });
+
+      res.status(201).json(correction);
+    } catch (error: any) {
+      if (!res.destroyed) res.status(400).json({ error: error.message });
+    }
+  }
+
+  async function runResponse(res: any, run: (signal: AbortSignal) => Promise<unknown>) {
+    const lifetime = responseLifetime(res);
+    try {
+      lifetime.controller.signal.throwIfAborted();
+      const result = await run(lifetime.controller.signal);
+      if (!res.destroyed && !lifetime.controller.signal.aborted) res.json(result);
+    } finally {
+      lifetime.dispose();
+    }
+  }
+
   // ── Agent endpoints ─────────────────────────────────────────────────────
   if (opts.agents) {
     for (const [name, agent] of Object.entries(opts.agents)) {
@@ -216,14 +410,10 @@ export function createAgentRouter(opts: RouterOptions) {
             if (!input) {
               return res.status(400).json({ error: "input is required" });
             }
-
-            const sessionId = validated.sessionId as string | undefined;
-            const userId = validated.userId as string | undefined;
             const apiKey = extractApiKey(req, agent);
-            const result = await agent.run(input, { sessionId, userId, apiKey });
-            res.json(result);
+            await runResponse(res, (signal) => agent.run(input, { ...executionOptions(req), apiKey, signal }));
           } catch (error: any) {
-            res.status(400).json({ error: error.message });
+            if (!res.destroyed) res.status(400).json({ error: error.message });
           }
         }),
       );
@@ -239,78 +429,20 @@ export function createAgentRouter(opts: RouterOptions) {
           if (!input) {
             return res.status(400).json({ error: "input is required" });
           }
-
-          const sessionId = validated.sessionId as string | undefined;
-          const userId = validated.userId as string | undefined;
           const apiKey = extractApiKey(req, agent);
 
-          res.writeHead(200, {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-          });
-
-          const stream = agent.stream(input, { sessionId, userId, apiKey });
-          for await (const chunk of stream) {
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-          }
-
-          res.write("data: [DONE]\n\n");
-          res.end();
+          await serveTextStream(
+            res,
+            (signal) => agent.stream(input, { ...executionOptions(req), apiKey, signal }),
+            opts.textStream,
+          );
         } catch (error: any) {
-          if (!res.headersSent) {
-            res.status(500).json({ error: error.message });
-          } else {
-            res.write(`data: ${JSON.stringify({ type: "error", error: error.message })}\n\n`);
-            res.end();
-          }
+          if (!res.destroyed && !res.headersSent) res.status(500).json({ error: error.message });
+          else if (!res.destroyed) res.destroy();
         }
       });
 
-      router.post(`/agents/${name}/corrections`, async (req: any, res: any) => {
-        try {
-          const memory = (agent as any).memory;
-          if (!memory || !memory.getCorrectionStore?.()) {
-            return res.status(404).json({
-              error: `Corrections are not enabled for agent "${name}". Configure memory.corrections with a vectorStore.`,
-            });
-          }
-
-          const validated = validateBody(req.body, {
-            originalValue: "string",
-            correctedValue: "string",
-            field: "string?",
-            reason: "string?",
-            entityKey: "string?",
-            runId: "string?",
-            sessionId: "string?",
-            userId: "string?",
-            tenantId: "string?",
-            scope: "string?",
-            originalInput: "string?",
-          });
-
-          const correction = await memory.recordCorrection({
-            agentName: name,
-            runId: validated.runId,
-            sessionId: validated.sessionId,
-            originalInput: validated.originalInput,
-            field: validated.field,
-            originalValue: validated.originalValue,
-            correctedValue: validated.correctedValue,
-            reason: validated.reason,
-            entityKey: validated.entityKey,
-            tags: Array.isArray(req.body?.tags) ? req.body.tags : undefined,
-            scope: validated.scope,
-            userId: validated.userId,
-            tenantId: validated.tenantId,
-          });
-
-          res.status(201).json(correction);
-        } catch (error: any) {
-          res.status(400).json({ error: error.message });
-        }
-      });
+      router.post(`/agents/${name}/corrections`, (req: any, res: any) => recordCorrection(req, res, agent, name));
     }
   }
 
@@ -328,14 +460,10 @@ export function createAgentRouter(opts: RouterOptions) {
           if (!input) {
             return res.status(400).json({ error: "input is required" });
           }
-
-          const sessionId = validated.sessionId as string | undefined;
-          const userId = validated.userId as string | undefined;
           const apiKey = req.headers["x-api-key"] ?? req.body?.apiKey;
-          const result = await team.run(input, { sessionId, userId, apiKey });
-          res.json(result);
+          await runResponse(res, (signal) => team.run(input, { ...executionOptions(req), apiKey, signal }));
         } catch (error: any) {
-          res.status(500).json({ error: error.message });
+          if (!res.destroyed) res.status(500).json({ error: error.message });
         }
       });
 
@@ -350,31 +478,16 @@ export function createAgentRouter(opts: RouterOptions) {
           if (!input) {
             return res.status(400).json({ error: "input is required" });
           }
-
-          const sessionId = validated.sessionId as string | undefined;
-          const userId = validated.userId as string | undefined;
           const apiKey = req.headers["x-api-key"] ?? req.body?.apiKey;
 
-          res.writeHead(200, {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-          });
-
-          const stream = team.stream(input, { sessionId, userId, apiKey });
-          for await (const chunk of stream) {
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-          }
-
-          res.write("data: [DONE]\n\n");
-          res.end();
+          await serveTextStream(
+            res,
+            (signal) => team.stream(input, { ...executionOptions(req), apiKey, signal }),
+            opts.textStream,
+          );
         } catch (error: any) {
-          if (!res.headersSent) {
-            res.status(500).json({ error: error.message });
-          } else {
-            res.write(`data: ${JSON.stringify({ type: "error", error: error.message })}\n\n`);
-            res.end();
-          }
+          if (!res.destroyed && !res.headersSent) res.status(500).json({ error: error.message });
+          else if (!res.destroyed) res.destroy();
         }
       });
     }
@@ -385,11 +498,9 @@ export function createAgentRouter(opts: RouterOptions) {
     for (const [name, workflow] of Object.entries(opts.workflows)) {
       router.post(`/workflows/${name}/run`, async (req: any, res: any) => {
         try {
-          const { sessionId, userId } = req.body ?? {};
-          const result = await workflow.run({ sessionId, userId });
-          res.json(result);
+          await runResponse(res, (signal) => workflow.run({ ...executionOptions(req), signal }));
         } catch (error: any) {
-          res.status(500).json({ error: error.message });
+          if (!res.destroyed) res.status(500).json({ error: error.message });
         }
       });
     }
@@ -407,46 +518,35 @@ export function createAgentRouter(opts: RouterOptions) {
           const input = buildMultiModalInput(req.body, req.files) ?? validated.input;
           if (!input) return res.status(400).json({ error: "input is required" });
           const apiKey = extractApiKey(req, agent);
-          const result = await agent.run(input, {
-            sessionId: validated.sessionId as string | undefined,
-            userId: validated.userId as string | undefined,
-            apiKey,
-          });
-          res.json(result);
+          await runResponse(res, (signal) => agent.run(input, { ...executionOptions(req), apiKey, signal }));
         } catch (error: any) {
-          res.status(400).json({ error: error.message });
+          if (!res.destroyed) res.status(400).json({ error: error.message });
         }
       }),
     );
 
-    router.post("/agents/:name/stream", async (req: any, res: any) => {
+    router.post("/agents/:name/corrections", (req: any, res: any) => {
       const agent = reg.getAgent(req.params.name);
+      if (!agent) return res.status(404).json({ error: "Agent not found" });
+      return recordCorrection(req, res, agent, req.params.name);
+    });
+
+    router.post("/agents/:name/stream", async (req: any, res: any) => {
+      const agent = opts.agents?.[req.params.name] ?? reg?.getAgent(req.params.name);
       if (!agent) return res.status(404).json({ error: `Agent "${req.params.name}" not found` });
       try {
         const validated = validateBody(req.body, { input: "string", sessionId: "string?", userId: "string?" });
         const input = validated.input as string;
         if (!input) return res.status(400).json({ error: "input is required" });
         const apiKey = extractApiKey(req, agent);
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        });
-        for await (const chunk of agent.stream(input, {
-          sessionId: validated.sessionId as string | undefined,
-          userId: validated.userId as string | undefined,
-          apiKey,
-        })) {
-          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        }
-        res.write("data: [DONE]\n\n");
-        res.end();
+        await serveTextStream(
+          res,
+          (signal) => agent.stream(input, { ...executionOptions(req), apiKey, signal }),
+          opts.textStream,
+        );
       } catch (error: any) {
-        if (!res.headersSent) res.status(500).json({ error: error.message });
-        else {
-          res.write(`data: ${JSON.stringify({ type: "error", error: error.message })}\n\n`);
-          res.end();
-        }
+        if (!res.destroyed && !res.headersSent) res.status(500).json({ error: error.message });
+        else if (!res.destroyed) res.destroy();
       }
     });
 
@@ -458,14 +558,9 @@ export function createAgentRouter(opts: RouterOptions) {
         const input = validated.input as string;
         if (!input) return res.status(400).json({ error: "input is required" });
         const apiKey = req.headers["x-api-key"] ?? req.body?.apiKey;
-        const result = await team.run(input, {
-          sessionId: validated.sessionId as string | undefined,
-          userId: validated.userId as string | undefined,
-          apiKey,
-        });
-        res.json(result);
+        await runResponse(res, (signal) => team.run(input, { ...executionOptions(req), apiKey, signal }));
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        if (!res.destroyed) res.status(500).json({ error: error.message });
       }
     });
 
@@ -477,26 +572,14 @@ export function createAgentRouter(opts: RouterOptions) {
         const input = validated.input as string;
         if (!input) return res.status(400).json({ error: "input is required" });
         const apiKey = req.headers["x-api-key"] ?? req.body?.apiKey;
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        });
-        for await (const chunk of team.stream(input, {
-          sessionId: validated.sessionId as string | undefined,
-          userId: validated.userId as string | undefined,
-          apiKey,
-        })) {
-          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        }
-        res.write("data: [DONE]\n\n");
-        res.end();
+        await serveTextStream(
+          res,
+          (signal) => team.stream(input, { ...executionOptions(req), apiKey, signal }),
+          opts.textStream,
+        );
       } catch (error: any) {
-        if (!res.headersSent) res.status(500).json({ error: error.message });
-        else {
-          res.write(`data: ${JSON.stringify({ type: "error", error: error.message })}\n\n`);
-          res.end();
-        }
+        if (!res.destroyed && !res.headersSent) res.status(500).json({ error: error.message });
+        else if (!res.destroyed) res.destroy();
       }
     });
 
@@ -504,11 +587,9 @@ export function createAgentRouter(opts: RouterOptions) {
       const workflow = reg.getWorkflow(req.params.name);
       if (!workflow) return res.status(404).json({ error: `Workflow "${req.params.name}" not found` });
       try {
-        const { sessionId, userId } = req.body ?? {};
-        const result = await workflow.run({ sessionId, userId });
-        res.json(result);
+        await runResponse(res, (signal) => workflow.run({ ...executionOptions(req), signal }));
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        if (!res.destroyed) res.status(500).json({ error: error.message });
       }
     });
 
@@ -542,93 +623,109 @@ export function createAgentRouter(opts: RouterOptions) {
       if (typeof r.getAllAgentCards !== "function") return res.json([]);
       res.json(r.getAllAgentCards());
     });
-
-    // ── Approval gate endpoints ────────────────────────────────────────
-    router.get("/approvals/pending", (_req: any, res: any) => {
-      const pending: any[] = [];
-      for (const agent of reg.agents.values()) {
-        const mgr = (agent as any).approvalManager;
-        if (mgr && typeof mgr.listPending === "function") {
-          pending.push(...mgr.listPending());
-        }
-      }
-      res.json(pending);
-    });
-
-    router.post("/approvals/:requestId/approve", (req: any, res: any) => {
-      const { requestId } = req.params;
-      const { reason } = req.body ?? {};
-      for (const agent of reg.agents.values()) {
-        const mgr = (agent as any).approvalManager;
-        if (mgr && typeof mgr.approve === "function") {
-          mgr.approve(requestId, reason);
-        }
-      }
-      res.json({ status: "approved", requestId });
-    });
-
-    router.post("/approvals/:requestId/deny", (req: any, res: any) => {
-      const { requestId } = req.params;
-      const { reason } = req.body ?? {};
-      for (const agent of reg.agents.values()) {
-        const mgr = (agent as any).approvalManager;
-        if (mgr && typeof mgr.deny === "function") {
-          mgr.deny(requestId, reason);
-        }
-      }
-      res.json({ status: "denied", requestId });
-    });
-
-    // ── Checkpoint endpoints ──────────────────────────────────────────
-    router.get("/agents/:name/checkpoints", async (req: any, res: any) => {
-      const agent = reg.getAgent(req.params.name);
-      if (!agent) return res.status(404).json({ error: `Agent "${req.params.name}" not found` });
-      const checkpointMgr = (agent as any).checkpointManager ?? (agent as any).config?._checkpointManager;
-      if (!checkpointMgr) return res.json([]);
-      const runId = req.query.runId as string;
-      if (!runId) return res.status(400).json({ error: "runId query param required" });
-      try {
-        const checkpoints = await checkpointMgr.list(runId);
-        res.json(checkpoints);
-      } catch (err: any) {
-        res.status(500).json({ error: err.message });
-      }
-    });
-
-    router.post("/agents/:name/rollback/:checkpointId", async (req: any, res: any) => {
-      const agent = reg.getAgent(req.params.name);
-      if (!agent) return res.status(404).json({ error: `Agent "${req.params.name}" not found` });
-      const checkpointMgr = (agent as any).checkpointManager ?? (agent as any).config?._checkpointManager;
-      if (!checkpointMgr) return res.status(400).json({ error: "Checkpointing not enabled for this agent" });
-      try {
-        const checkpoint = await checkpointMgr.rollback(req.params.checkpointId);
-        if (!checkpoint) return res.status(404).json({ error: "Checkpoint not found" });
-        res.json(checkpoint);
-      } catch (err: any) {
-        res.status(500).json({ error: err.message });
-      }
-    });
-
-    router.get("/approvals/stream", (req: any, res: any) => {
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      });
-      const listener = (data: any) => {
-        res.write(`data: ${JSON.stringify(data)}\n\n`);
-      };
-      for (const agent of reg.agents.values()) {
-        agent.eventBus?.on("tool.approval.request", listener);
-      }
-      req.on("close", () => {
-        for (const agent of reg.agents.values()) {
-          agent.eventBus?.off("tool.approval.request", listener);
-        }
-      });
-    });
   }
 
+  function allAgents() {
+    return [...new Set([...Object.values(opts.agents ?? {}), ...(reg?.agents.values() ?? [])])];
+  }
+
+  // ── Approval gate endpoints ────────────────────────────────────────
+  router.get("/approvals/pending", async (req: any, res: any) => {
+    const pending: any[] = [];
+    for (const agent of allAgents()) {
+      const mgr = (agent as any).approvalManager;
+      if (mgr && typeof mgr.listPending === "function") {
+        for (const item of mgr.listPending()) {
+          try {
+            if (await permitted(req, "approval:read", { kind: "approval", id: item.requestId })) pending.push(item);
+          } catch {
+            /* Authorization failures are never disclosed as pending requests. */
+          }
+        }
+      }
+    }
+    res.json(pending);
+  });
+
+  router.post("/approvals/:requestId/approve", (req: any, res: any) => {
+    const { requestId } = req.params;
+    for (const agent of allAgents()) {
+      const mgr = (agent as any).approvalManager;
+      if (mgr?.listPending().some((item: any) => item.requestId === requestId)) {
+        mgr.approve(requestId, req.body?.reason);
+        return res.json({ status: "approved", requestId });
+      }
+    }
+    res.status(404).json({ error: "Approval request not found" });
+  });
+
+  router.post("/approvals/:requestId/deny", (req: any, res: any) => {
+    const { requestId } = req.params;
+    for (const agent of allAgents()) {
+      const mgr = (agent as any).approvalManager;
+      if (mgr?.listPending().some((item: any) => item.requestId === requestId)) {
+        mgr.deny(requestId, req.body?.reason);
+        return res.json({ status: "denied", requestId });
+      }
+    }
+    res.status(404).json({ error: "Approval request not found" });
+  });
+
+  // ── Checkpoint endpoints ──────────────────────────────────────────
+  router.get("/agents/:name/checkpoints", async (req: any, res: any) => {
+    const agent = opts.agents?.[req.params.name] ?? reg?.getAgent(req.params.name);
+    if (!agent) return res.status(404).json({ error: `Agent "${req.params.name}" not found` });
+    const checkpointMgr = (agent as any).checkpointManager ?? (agent as any).config?._checkpointManager;
+    if (!checkpointMgr) return res.json([]);
+    const runId = req.query.runId as string;
+    if (!runId) return res.status(400).json({ error: "runId query param required" });
+    try {
+      const checkpoints = await checkpointMgr.list(runId);
+      res.json(checkpoints);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post("/agents/:name/rollback/:checkpointId", async (req: any, res: any) => {
+    const agent = opts.agents?.[req.params.name] ?? reg?.getAgent(req.params.name);
+    if (!agent) return res.status(404).json({ error: `Agent "${req.params.name}" not found` });
+    const checkpointMgr = (agent as any).checkpointManager ?? (agent as any).config?._checkpointManager;
+    if (!checkpointMgr) return res.status(400).json({ error: "Checkpointing not enabled for this agent" });
+    try {
+      const checkpoint = await checkpointMgr.rollback(req.params.checkpointId);
+      if (!checkpoint) return res.status(404).json({ error: "Checkpoint not found" });
+      res.json(checkpoint);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get("/approvals/stream", (req: any, res: any) => {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    const listener = async (data: any) => {
+      try {
+        if (!res.destroyed && (await permitted(req, "approval:read", { kind: "approval", id: data.requestId }))) {
+          if (!res.destroyed) res.write(`data: ${JSON.stringify(data)}\n\n`);
+        }
+      } catch {
+        /* Fail closed on authorizer errors. */
+      }
+    };
+    const subscribedAgents = allAgents();
+    for (const agent of subscribedAgents) {
+      agent.eventBus?.on("tool.approval.request", listener);
+    }
+    req.on("close", () => {
+      for (const agent of subscribedAgents) {
+        agent.eventBus?.off("tool.approval.request", listener);
+      }
+    });
+  });
   // ── Schedule management routes ──────────────────────────────────────
   if (opts.scheduler) {
     const queue = opts.scheduler;
@@ -703,7 +800,8 @@ export function createAgentRouter(opts: RouterOptions) {
     const adminOpts = typeof opts.admin === "object" ? opts.admin : {};
     const { router: adminRouter } = createAdminRouter({
       mcpManager: adminOpts.mcpManager,
-      middleware: adminOpts.middleware ?? opts.middleware,
+      middleware:
+        adminOpts.middleware ?? (authenticated ? [(_req: any, _res: any, next: any) => next()] : opts.middleware),
     });
     router.use("/admin", adminRouter);
   }
@@ -723,7 +821,7 @@ export function createAgentRouter(opts: RouterOptions) {
       res.json({
         name: tool.name,
         description: tool.description,
-        parameters: Object.keys(tool.parameters.shape ?? {}),
+        parameters: Object.keys(schemaShape(tool.parameters)),
       });
     });
   }

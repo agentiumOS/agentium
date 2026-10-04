@@ -37,4 +37,12 @@ describe("RunContext", () => {
     });
     expect(ctx.metadata).toEqual({ foo: "bar" });
   });
+  it("retains an immutable execution mode outside mutable state and metadata", () => {
+    const ctx = new RunContext({ sessionId: "s1", eventBus: new EventBus(), runMode: "plan" });
+    ctx.setState("runMode", "execute");
+    ctx.metadata.runMode = "execute";
+    expect(() => Object.assign(ctx, { runMode: "execute" })).toThrow();
+    expect(ctx.runMode).toBe("plan");
+    expect(new RunContext({ sessionId: "s2", eventBus: new EventBus() }).runMode).toBe("execute");
+  });
 });

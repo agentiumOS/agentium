@@ -1,5 +1,5 @@
+import { randomUUID as uuidv4 } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { v4 as uuidv4 } from "uuid";
 import { RunContext } from "../agent/run-context.js";
 import { EventBus } from "../events/event-bus.js";
 import { Logger } from "../logger/logger.js";

@@ -1,108 +1,166 @@
 import { createRequire } from "node:module";
-import { z } from "zod";
+import { z } from "zod/v3";
+import {
+  requireSandboxMethods,
+  SandboxSessionOwner,
+  sandboxOutputLimit,
+  sandboxResult,
+  sandboxTimeout,
+} from "../sandbox/lifecycle.js";
 import type { CloudSandbox, SandboxRunOptions, SandboxRunResult } from "../sandbox/types.js";
 import type { ToolDef } from "../tools/types.js";
 import { Toolkit } from "./base.js";
 
-const _require = createRequire(import.meta.url);
-
+const requireSDK = createRequire(import.meta.url);
+export interface E2BSandboxSession {
+  runCode(
+    code: string,
+    options: {
+      language: "python" | "javascript";
+      envs?: Record<string, string>;
+      timeoutMs: number;
+      requestTimeoutMs: number;
+    },
+  ): Promise<{
+    logs: { stdout: string[]; stderr: string[] };
+    error?: { name: string; value: string; traceback: string };
+  }>;
+  commands: {
+    run(
+      command: string,
+      options: { timeoutMs: number; envs?: Record<string, string>; signal?: AbortSignal },
+    ): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  };
+  files: {
+    write(path: string, data: string | Uint8Array): Promise<unknown>;
+    read(path: string, options: { format: "bytes" }): Promise<Uint8Array>;
+  };
+  kill(): Promise<unknown>;
+}
+export interface E2BSandboxSDK {
+  Sandbox: {
+    create(options: {
+      apiKey?: string;
+      template?: string;
+      timeoutMs: number;
+      requestTimeoutMs: number;
+    }): Promise<E2BSandboxSession>;
+  };
+}
 export interface E2BSandboxConfig {
   apiKey?: string;
-  /** Template ID to spawn (default `"base"` per E2B). */
+  /** Leave unset to use the code-interpreter SDK's language-capable template. */
   template?: string;
-  /** Default timeout in seconds for sandbox operations. */
   defaultTimeoutSeconds?: number;
+  /** Sandbox lifetime; independent of per-operation timeout. Default 300 seconds. */
+  lifetimeSeconds?: number;
+  maxOutputBytes?: number;
+  /** Optional SDK injection. Every created sandbox is owned and killed by this adapter. */
+  sdk?: E2BSandboxSDK;
 }
-
-/**
- * E2B sandbox adapter (https://e2b.dev). Lazy-loads the `@e2b/sdk` peer dep so
- * users who don't use E2B don't pay the install cost.
- */
+/** @e2b/code-interpreter 2.8.x. The optional peer loads only on first use. */
 export class E2BSandbox implements CloudSandbox {
   readonly providerId = "e2b";
-  private sdk: any;
-  private session: any = null;
-  private apiKey: string | undefined;
-  private template: string;
-  private defaultTimeout: number;
-
+  private owner: SandboxSessionOwner<E2BSandboxSession>;
+  private timeout: number;
+  private outputLimit: number;
   constructor(config: E2BSandboxConfig = {}) {
-    this.apiKey = config.apiKey ?? process.env.E2B_API_KEY;
-    this.template = config.template ?? "base";
-    this.defaultTimeout = config.defaultTimeoutSeconds ?? 30;
-    try {
-      this.sdk = _require("@e2b/sdk");
-    } catch (e: any) {
-      if (e?.code === "MODULE_NOT_FOUND" || e?.code === "ERR_MODULE_NOT_FOUND") {
-        throw new Error("@e2b/sdk is required for E2BSandbox. Install it: npm install @e2b/sdk");
+    this.timeout = sandboxTimeout({}, config.defaultTimeoutSeconds ?? 30);
+    this.outputLimit = sandboxOutputLimit(config.maxOutputBytes);
+    const lifetime = sandboxTimeout({}, config.lifetimeSeconds ?? 300);
+    const apiKey = config.apiKey;
+    const template = config.template;
+    const injected = config.sdk;
+    this.owner = new SandboxSessionOwner(
+      async () => {
+        let sdk = injected;
+        if (!sdk) {
+          try {
+            sdk = requireSDK("@e2b/code-interpreter") as E2BSandboxSDK;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND")
+              throw new Error("E2BSandbox requires @e2b/code-interpreter ~2.8.0. Install that optional peer.", {
+                cause: error,
+              });
+            throw error;
+          }
+        }
+        requireSandboxMethods(sdk, ["Sandbox.create"]);
+        const session = await sdk.Sandbox.create({
+          apiKey,
+          ...(template ? { template } : {}),
+          timeoutMs: lifetime * 1000,
+          requestTimeoutMs: this.timeout * 1000,
+        });
+        return session;
+      },
+      async (session) => {
+        await session.kill();
+      },
+      (session) => requireSandboxMethods(session, ["runCode", "commands.run", "files.write", "files.read", "kill"]),
+    );
+  }
+  start(): Promise<void> {
+    return this.owner.start();
+  }
+  run(code: string, options: SandboxRunOptions = {}): Promise<SandboxRunResult> {
+    if (options.language === "shell") return this.shell(code, options);
+    const language = options.language ?? "python";
+    if (!["python", "node"].includes(language)) return Promise.reject(new Error("Unsupported E2B language"));
+    const timeoutMs = sandboxTimeout(options, this.timeout) * 1000;
+    return this.owner.use(async (session) => {
+      const result = await session.runCode(code, {
+        language: language === "node" ? "javascript" : "python",
+        envs: options.env,
+        timeoutMs,
+        requestTimeoutMs: timeoutMs,
+      });
+      const error = result.error ? `\n${result.error.name}: ${result.error.value}` : "";
+      return sandboxResult(
+        result.logs.stdout.join("") + result.logs.stderr.join("") + error,
+        result.error ? 1 : 0,
+        this.outputLimit,
+      );
+    }, options.signal);
+  }
+  shell(command: string, options: SandboxRunOptions = {}): Promise<SandboxRunResult> {
+    const timeoutMs = sandboxTimeout(options, this.timeout) * 1000;
+    return this.owner.use(async (session) => {
+      try {
+        const result = await session.commands.run(command, { timeoutMs, envs: options.env, signal: options.signal });
+        return sandboxResult(result.stdout + result.stderr, result.exitCode, this.outputLimit);
+      } catch (error) {
+        const result = error as { name?: string; stdout?: string; stderr?: string; exitCode?: number };
+        if (
+          result.name !== "CommandExitError" ||
+          typeof result.stdout !== "string" ||
+          typeof result.stderr !== "string" ||
+          !Number.isSafeInteger(result.exitCode)
+        )
+          throw error;
+        return sandboxResult(result.stdout + result.stderr, result.exitCode!, this.outputLimit);
       }
-      throw e;
-    }
+    }, options.signal);
   }
-
-  async start(): Promise<void> {
-    if (this.session) return;
-    const Sandbox = this.sdk.Sandbox ?? this.sdk.default?.Sandbox;
-    if (!Sandbox) throw new Error("E2B SDK does not expose a `Sandbox` class");
-    this.session = await Sandbox.create({ template: this.template, apiKey: this.apiKey });
+  writeFile(path: string, contents: string, encoding: "utf8" | "base64" = "utf8"): Promise<void> {
+    return this.owner.use(async (session) => {
+      await session.files.write(path, Buffer.from(contents, encoding));
+    });
   }
-
-  private async ensure(): Promise<any> {
-    if (!this.session) await this.start();
-    return this.session;
+  readFile(path: string, encoding: "utf8" | "base64" = "utf8"): Promise<string | null> {
+    return this.owner.use(async (session) => {
+      try {
+        const bytes = await session.files.read(path, { format: "bytes" });
+        if (!(bytes instanceof Uint8Array)) throw new Error("Invalid E2B file bytes");
+        return Buffer.from(bytes).toString(encoding);
+      } catch (error) {
+        if ((error as Error).name === "FileNotFoundError") return null;
+        throw error;
+      }
+    });
   }
-
-  async run(code: string, options: SandboxRunOptions = {}): Promise<SandboxRunResult> {
-    const s = await this.ensure();
-    const lang = options.language ?? "python";
-    const timeoutMs = (options.timeoutSeconds ?? this.defaultTimeout) * 1000;
-    const handle = await s.runCode(code, { language: lang, env: options.env, timeoutMs });
-    return {
-      output: (handle.logs?.stdout?.join("") ?? "") + (handle.logs?.stderr?.join("") ?? ""),
-      exitCode: (handle.exitCode ?? handle.error) ? 1 : 0,
-    };
-  }
-
-  async shell(command: string, options: { timeoutSeconds?: number } = {}): Promise<SandboxRunResult> {
-    const s = await this.ensure();
-    const timeoutMs = (options.timeoutSeconds ?? this.defaultTimeout) * 1000;
-    const handle = await s.commands?.run?.(command, { timeoutMs });
-    if (handle) {
-      return {
-        output: (handle.stdout ?? "") + (handle.stderr ?? ""),
-        exitCode: handle.exitCode ?? 0,
-      };
-    }
-    // Older SDK: fall back to running as shell code.
-    return this.run(command, { language: "shell", timeoutSeconds: options.timeoutSeconds });
-  }
-
-  async writeFile(path: string, contents: string, encoding: "utf8" | "base64" = "utf8"): Promise<void> {
-    const s = await this.ensure();
-    if (s.files?.write) {
-      await s.files.write(path, encoding === "base64" ? Buffer.from(contents, "base64") : contents);
-    } else {
-      await s.filesystem.write(path, contents);
-    }
-  }
-
-  async readFile(path: string, encoding: "utf8" | "base64" = "utf8"): Promise<string | null> {
-    const s = await this.ensure();
-    try {
-      const data = s.files?.read ? await s.files.read(path) : await s.filesystem.read(path);
-      if (data == null) return null;
-      if (Buffer.isBuffer(data)) return encoding === "base64" ? data.toString("base64") : data.toString("utf8");
-      return data as string;
-    } catch {
-      return null;
-    }
-  }
-
-  async close(): Promise<void> {
-    if (this.session) {
-      await this.session.kill?.();
-      this.session = null;
-    }
+  close(): Promise<void> {
+    return this.owner.close();
   }
 }
 
@@ -133,19 +191,23 @@ export class E2BSandboxToolkit extends Toolkit {
         parameters: z.object({
           code: z.string(),
           language: z.enum(["python", "node", "shell"]).optional(),
-          timeoutSeconds: z.number().optional(),
+          timeoutSeconds: z.number().positive().max(3600).optional(),
         }),
-        execute: async (args: any) => {
-          const r = await sandbox.run(args.code, { language: args.language, timeoutSeconds: args.timeoutSeconds });
+        execute: async (args: any, ctx) => {
+          const r = await sandbox.run(args.code, {
+            language: args.language,
+            timeoutSeconds: args.timeoutSeconds,
+            signal: ctx.signal,
+          });
           return JSON.stringify(r);
         },
       },
       {
         name: "sandbox_e2b_shell",
         description: "Run a shell command in the E2B sandbox.",
-        parameters: z.object({ command: z.string(), timeoutSeconds: z.number().optional() }),
-        execute: async (args: any) => {
-          const r = await sandbox.shell(args.command, { timeoutSeconds: args.timeoutSeconds });
+        parameters: z.object({ command: z.string(), timeoutSeconds: z.number().positive().max(3600).optional() }),
+        execute: async (args: any, ctx) => {
+          const r = await sandbox.shell(args.command, { timeoutSeconds: args.timeoutSeconds, signal: ctx.signal });
           return JSON.stringify(r);
         },
       },

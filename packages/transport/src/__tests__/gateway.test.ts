@@ -39,35 +39,56 @@ beforeEach(() => {
 describe("createAgentGateway", () => {
   it("creates namespace with default /agentium", () => {
     const io = mockIO();
-    createAgentGateway({ io: io as any, agents: {}, registry: false });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, agents: {}, registry: false });
     expect(io.of).toHaveBeenCalledWith("/agentium");
   });
 
   it("creates namespace with custom name", () => {
     const io = mockIO();
-    createAgentGateway({ io: io as any, agents: {}, namespace: "/custom", registry: false });
+    createAgentGateway({
+      security: { mode: "local" },
+      io: io as any,
+      agents: {},
+      namespace: "/custom",
+      registry: false,
+    });
     expect(io.of).toHaveBeenCalledWith("/custom");
   });
 
-  it("applies auth middleware when provided", () => {
+  it("applies auth middleware when provided", async () => {
     const io = mockIO();
     const authFn = vi.fn();
-    createAgentGateway({ io: io as any, agents: {}, authMiddleware: authFn, registry: false });
-    expect(io._nsUse).toHaveBeenCalledWith(authFn);
+    createAgentGateway({
+      security: { mode: "authenticated", resolveIdentity: () => ({ userId: "host" }), authorizeResource: () => true },
+      io: io as any,
+      agents: {},
+      authMiddleware: authFn,
+      registry: false,
+    });
+    expect(io._nsUse).toHaveBeenCalledWith(expect.any(Function));
+    const socket = mockSocket();
+    const next = vi.fn();
+    io._nsUse.mock.calls[0][0](socket, next);
+    await Promise.resolve();
+    expect(authFn).toHaveBeenCalledWith(socket, expect.any(Function));
+    expect(next).not.toHaveBeenCalled();
   });
 
   it("emits error when agent not found", async () => {
     const io = mockIO();
-    createAgentGateway({ io: io as any, agents: {}, registry: false });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, agents: {}, registry: false });
 
     const socket = mockSocket();
     io._connectSocket(socket);
 
     await socket._trigger("agent.run", { name: "unknown", input: "hi" });
 
-    expect(socket.emit).toHaveBeenCalledWith("agent.error", {
-      error: expect.stringContaining("unknown"),
-    });
+    expect(socket.emit).toHaveBeenCalledWith(
+      "agent.error",
+      expect.objectContaining({
+        error: expect.stringContaining("unknown"),
+      }),
+    );
   });
 
   it("streams agent response and emits done", async () => {
@@ -83,6 +104,7 @@ describe("createAgentGateway", () => {
     };
 
     createAgentGateway({
+      security: { mode: "local" },
       io: io as any,
       agents: { bot: fakeAgent as any },
       registry: false,
@@ -111,11 +133,7 @@ describe("createAgentGateway", () => {
       stream: vi.fn(() => fakeStream()),
     };
 
-    createAgentGateway({
-      io: io as any,
-      serve: [fakeAgent as any],
-      registry: false,
-    });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, serve: [fakeAgent as any], registry: false });
 
     const socket = mockSocket();
     io._connectSocket(socket);
@@ -135,20 +153,19 @@ describe("createAgentGateway", () => {
       run: vi.fn().mockResolvedValue({ text: "team result" }),
     };
 
-    createAgentGateway({
-      io: io as any,
-      serve: [fakeTeam as any],
-      registry: false,
-    });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, serve: [fakeTeam as any], registry: false });
 
     const socket = mockSocket();
     io._connectSocket(socket);
 
     await socket._trigger("team.run", { name: "auto-squad", input: "go" });
 
-    expect(socket.emit).toHaveBeenCalledWith("agent.done", {
-      output: { text: "team result" },
-    });
+    expect(socket.emit).toHaveBeenCalledWith(
+      "agent.done",
+      expect.objectContaining({
+        output: { text: "team result" },
+      }),
+    );
   });
 });
 
@@ -156,7 +173,7 @@ describe("createAgentGateway — live registry", () => {
   it("resolves agents added to registry AFTER gateway creation", async () => {
     const io = mockIO();
 
-    createAgentGateway({ io: io as any, registry });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, registry });
 
     async function* fakeStream() {
       yield { type: "text", text: "live" };
@@ -180,7 +197,7 @@ describe("createAgentGateway — live registry", () => {
   it("resolves teams added to registry AFTER gateway creation", async () => {
     const io = mockIO();
 
-    createAgentGateway({ io: io as any, registry });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, registry });
 
     const lateTeam = {
       kind: "team",
@@ -194,30 +211,36 @@ describe("createAgentGateway — live registry", () => {
 
     await socket._trigger("team.run", { name: "late-squad", input: "go" });
 
-    expect(socket.emit).toHaveBeenCalledWith("agent.done", {
-      output: { text: "dynamic team" },
-    });
+    expect(socket.emit).toHaveBeenCalledWith(
+      "agent.done",
+      expect.objectContaining({
+        output: { text: "dynamic team" },
+      }),
+    );
   });
 
   it("returns error for agents not in registry", async () => {
     const io = mockIO();
 
-    createAgentGateway({ io: io as any, registry });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, registry });
 
     const socket = mockSocket();
     io._connectSocket(socket);
 
     await socket._trigger("agent.run", { name: "ghost", input: "hello" });
 
-    expect(socket.emit).toHaveBeenCalledWith("agent.error", {
-      error: expect.stringContaining("ghost"),
-    });
+    expect(socket.emit).toHaveBeenCalledWith(
+      "agent.error",
+      expect.objectContaining({
+        error: expect.stringContaining("ghost"),
+      }),
+    );
   });
 
   it("uses global registry by default", async () => {
     const io = mockIO();
 
-    createAgentGateway({ io: io as any });
+    createAgentGateway({ security: { mode: "local" }, io: io as any });
 
     async function* fakeStream() {
       yield { type: "text", text: "global" };
@@ -247,7 +270,7 @@ describe("createAgentGateway — list events", () => {
       hasStructuredOutput: false,
     } as any);
 
-    createAgentGateway({ io: io as any, registry });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, registry });
 
     const socket = mockSocket();
     io._connectSocket(socket);
@@ -268,7 +291,7 @@ describe("createAgentGateway — list events", () => {
 
     registry.add({ kind: "team", name: "squad" } as any);
 
-    createAgentGateway({ io: io as any, registry });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, registry });
 
     const socket = mockSocket();
     io._connectSocket(socket);
@@ -282,7 +305,7 @@ describe("createAgentGateway — list events", () => {
 
     registry.add({ kind: "workflow", name: "pipe" } as any);
 
-    createAgentGateway({ io: io as any, registry });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, registry });
 
     const socket = mockSocket();
     io._connectSocket(socket);
@@ -297,7 +320,7 @@ describe("createAgentGateway — list events", () => {
     registry.add({ kind: "agent", name: "bot" } as any);
     registry.add({ kind: "team", name: "squad" } as any);
 
-    createAgentGateway({ io: io as any, registry });
+    createAgentGateway({ security: { mode: "local" }, io: io as any, registry });
 
     const socket = mockSocket();
     io._connectSocket(socket);
@@ -312,7 +335,12 @@ describe("createAgentGateway — list events", () => {
     const io = mockIO();
 
     const fakeAgent = { stream: vi.fn() };
-    createAgentGateway({ io: io as any, agents: { myBot: fakeAgent as any }, registry: false });
+    createAgentGateway({
+      security: { mode: "local" },
+      io: io as any,
+      agents: { myBot: fakeAgent as any },
+      registry: false,
+    });
 
     const socket = mockSocket();
     io._connectSocket(socket);

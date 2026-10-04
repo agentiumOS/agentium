@@ -41,6 +41,7 @@ export class FallbackProvider implements ModelProvider {
     let lastError: unknown;
 
     for (let i = 0; i < this.providers.length; i++) {
+      options?.signal?.throwIfAborted();
       const provider = this.providers[i];
       const key = this.getBreakerKey(provider);
       const breaker = this.breakers.get(key)!;
@@ -52,6 +53,7 @@ export class FallbackProvider implements ModelProvider {
         breaker.recordSuccess();
         return response;
       } catch (error) {
+        options?.signal?.throwIfAborted();
         lastError = error;
         const classification = breaker.recordFailure(error);
 
@@ -78,29 +80,30 @@ export class FallbackProvider implements ModelProvider {
     let lastError: unknown;
 
     for (let i = 0; i < this.providers.length; i++) {
+      options?.signal?.throwIfAborted();
       const provider = this.providers[i];
       const key = this.getBreakerKey(provider);
       const breaker = this.breakers.get(key)!;
 
       if (!breaker.canAttempt()) continue;
 
+      let committed = false;
       try {
         const gen = provider.stream(messages, options);
-        let firstChunkReceived = false;
-
         for await (const chunk of gen) {
-          if (!firstChunkReceived) {
-            firstChunkReceived = true;
-            breaker.recordSuccess();
-          }
+          options?.signal?.throwIfAborted();
+          // Every public chunk commits this attempt, including thinking and finish metadata.
+          committed = true;
           yield chunk;
         }
+        breaker.recordSuccess();
         return;
       } catch (error) {
+        options?.signal?.throwIfAborted();
         lastError = error;
         const classification = breaker.recordFailure(error);
 
-        if (classification === "fatal") throw error;
+        if (committed || classification === "fatal") throw error;
 
         const nextProvider = this.providers[i + 1];
         if (nextProvider && this.onFallback) {

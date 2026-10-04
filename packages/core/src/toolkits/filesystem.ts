@@ -1,9 +1,10 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { RunContext } from "../agent/run-context.js";
 import type { ToolDef } from "../tools/types.js";
-import { PathSecurityError, safeJoin } from "../utils/path-safety.js";
+import { canonicalSafeJoin, PathSecurityError } from "../utils/path-safety.js";
 import { Toolkit } from "./base.js";
 
 export interface FileSystemConfig {
@@ -16,7 +17,8 @@ export interface FileSystemConfig {
 /**
  * File System Toolkit — read, write, list, and inspect local files.
  *
- * All paths are sandboxed to `basePath` if configured, preventing directory traversal.
+ * Paths are confined to the canonical `basePath`, including existing symlinks.
+ * This is not isolation against concurrent filesystem replacement by an untrusted process.
  *
  * @example
  * ```ts
@@ -35,15 +37,15 @@ export class FileSystemToolkit extends Toolkit {
     this.allowWrite = config.allowWrite ?? false;
   }
 
-  private resolvePath(filePath: string): string {
+  private async resolvePath(filePath: string, allowMissing = false): Promise<string> {
     if (!this.basePath) {
       // Reject control chars / null bytes even when no base path is set.
-      if (filePath.includes("\0")) {
+      if (/[\x00-\x1f]/.test(filePath)) {
         throw new PathSecurityError("Path contains null byte");
       }
       return path.resolve(filePath);
     }
-    return safeJoin(this.basePath, filePath);
+    return canonicalSafeJoin(this.basePath, filePath, allowMissing);
   }
 
   getTools(): ToolDef[] {
@@ -56,7 +58,7 @@ export class FileSystemToolkit extends Toolkit {
           encoding: z.string().optional().describe('Encoding (default "utf-8")'),
         }),
         execute: async (args: Record<string, unknown>, _ctx: RunContext): Promise<string> => {
-          const resolved = this.resolvePath(args.path as string);
+          const resolved = await this.resolvePath(args.path as string);
           const encoding = (args.encoding as BufferEncoding) ?? "utf-8";
           const content = await fs.readFile(resolved, { encoding });
           return content;
@@ -70,7 +72,7 @@ export class FileSystemToolkit extends Toolkit {
           recursive: z.boolean().optional().describe("List recursively (default false)"),
         }),
         execute: async (args: Record<string, unknown>, _ctx: RunContext): Promise<string> => {
-          const resolved = this.resolvePath(args.path as string);
+          const resolved = await this.resolvePath(args.path as string);
           const recursive = (args.recursive as boolean) ?? false;
           const entries = await fs.readdir(resolved, { withFileTypes: true, recursive });
 
@@ -90,7 +92,7 @@ export class FileSystemToolkit extends Toolkit {
           path: z.string().describe("File or directory path"),
         }),
         execute: async (args: Record<string, unknown>, _ctx: RunContext): Promise<string> => {
-          const resolved = this.resolvePath(args.path as string);
+          const resolved = await this.resolvePath(args.path as string);
           const stat = await fs.stat(resolved);
 
           return [
@@ -114,7 +116,7 @@ export class FileSystemToolkit extends Toolkit {
           append: z.boolean().optional().describe("Append instead of overwrite (default false)"),
         }),
         execute: async (args: Record<string, unknown>, _ctx: RunContext): Promise<string> => {
-          const resolved = this.resolvePath(args.path as string);
+          const resolved = await this.resolvePath(args.path as string, true);
           const content = args.content as string;
           const append = (args.append as boolean) ?? false;
 
@@ -125,7 +127,15 @@ export class FileSystemToolkit extends Toolkit {
             return `Appended ${content.length} characters to ${resolved}`;
           }
 
-          await fs.writeFile(resolved, content, "utf-8");
+          const temporary = path.join(path.dirname(resolved), `.agentium-${randomUUID()}.tmp`);
+          try {
+            await fs.writeFile(temporary, content, { encoding: "utf-8", flag: "wx", mode: 0o600 });
+            await fs.rename(temporary, resolved);
+          } finally {
+            await fs.unlink(temporary).catch((error: NodeJS.ErrnoException) => {
+              if (error.code !== "ENOENT") throw error;
+            });
+          }
           return `Wrote ${content.length} characters to ${resolved}`;
         },
       });

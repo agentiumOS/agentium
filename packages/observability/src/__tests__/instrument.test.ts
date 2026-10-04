@@ -9,7 +9,11 @@ describe("instrument", () => {
     const exported: any[] = [];
 
     const obs = instrumentBus(bus, {
-      exporters: [new CallbackExporter((t) => exported.push(t))],
+      exporters: [
+        new CallbackExporter((t) => {
+          exported.push(t);
+        }),
+      ],
       metrics: true,
       structuredLogs: (_entry) => {},
     });

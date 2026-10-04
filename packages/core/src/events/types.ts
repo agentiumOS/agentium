@@ -12,6 +12,9 @@ export const LIFECYCLE_EVENTS = [
   "run.error",
   "run.cancelled",
   "run.stream.chunk",
+  "model.start",
+  "model.result",
+  "model.error",
   "tool.call",
   "tool.result",
   "tool.approval.request",
@@ -35,12 +38,57 @@ export const LIFECYCLE_EVENTS = [
 export type LifecycleEvent = (typeof LIFECYCLE_EVENTS)[number];
 
 export type AgentEventMap = {
-  "run.start": { runId: string; agentName: string; input: string };
+  "controller.start": { runId: string; controllerCallId: string; operation: string };
+  "controller.result": {
+    runId: string;
+    controllerCallId: string;
+    operation: string;
+    decision?: string;
+    modelRole?: string;
+    activeToolCount?: number;
+  };
+  "controller.error": { runId: string; controllerCallId: string; operation: string; status: "error" | "cancelled" };
+  "run.start": {
+    runId: string;
+    agentName: string;
+    input: string;
+    sessionId?: string;
+    userId?: string;
+    tenantId?: string;
+    parentRunId?: string;
+    rootRunId?: string;
+    attemptId?: string;
+  };
+  "model.start": { runId: string; modelCallId: string; modelId: string; providerId: string };
+  "model.result": {
+    runId: string;
+    modelCallId: string;
+    modelId: string;
+    providerId: string;
+    usage?: TokenUsage;
+    status?: "success" | "cancelled";
+  };
+  "model.error": {
+    runId: string;
+    modelCallId: string;
+    modelId: string;
+    providerId: string;
+    status?: "error" | "cancelled";
+    /** Known usage can still be billed when a call is cancelled after provider completion. */
+    usage?: TokenUsage;
+  };
   "run.complete": { runId: string; output: RunOutput };
-  "run.error": { runId: string; error: Error };
+  "run.error": { runId: string; error: Error; status?: "failed" | "cancelled" };
   "run.stream.chunk": { runId: string; chunk: string };
-  "tool.call": { runId: string; toolName: string; args: unknown };
-  "tool.result": { runId: string; toolName: string; result: unknown };
+  "tool.call": { runId: string; toolCallId?: string; toolName: string; args: unknown };
+  "tool.result": {
+    runId: string;
+    toolCallId?: string;
+    toolName: string;
+    result: unknown;
+    status?: "success" | "error" | "denied" | "cancelled";
+    cached?: boolean;
+  };
   "team.delegate": { runId: string; memberId: string; task: string };
   "workflow.step": {
     runId: string;
@@ -68,6 +116,9 @@ export type AgentEventMap = {
     args: unknown;
     agentName: string;
     runId: string;
+    sessionId?: string;
+    userId?: string;
+    tenantId?: string;
   };
   "tool.approval.response": {
     requestId: string;
@@ -93,7 +144,7 @@ export type AgentEventMap = {
   "handoff.transfer": { runId: string; fromAgent: string; toAgent: string; reason: string };
   "handoff.complete": { runId: string; chain: string[]; finalAgent: string };
 
-  "cost.tracked": { runId: string; agentName: string; modelId: string; usage: TokenUsage };
+  "cost.tracked": { runId: string; agentName: string; modelId: string; usage: TokenUsage; cost?: number };
   "cache.hit": { agentName: string; input: string; cachedId: string };
   "cache.miss": { agentName: string; input: string };
   "run.cancelled": { runId: string; agentName: string };

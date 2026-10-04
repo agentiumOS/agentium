@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID as uuidv4 } from "node:crypto";
 import type { A2ARemoteAgent } from "../a2a/a2a-remote-agent.js";
 import type { Agent } from "../agent/agent.js";
 import { RunContext } from "../agent/run-context.js";
@@ -35,6 +35,12 @@ export class Team {
     const ctx = new RunContext({
       sessionId: opts?.sessionId ?? uuidv4(),
       userId: opts?.userId,
+      tenantId: opts?.tenantId,
+      signal: opts?.signal,
+      runMode: opts?.runMode,
+      executionServices: opts?.executionServices,
+      executionPolicy: opts?.executionServices?.executionPolicy,
+      runId: opts?.runId,
       metadata: opts?.metadata ?? {},
       eventBus: this.eventBus,
       sessionState: { ...(this.config.sessionState ?? {}) },
@@ -86,7 +92,7 @@ export class Team {
     const memberDescriptions = this.buildMemberDescriptions();
     const planPrompt = this.buildCoordinatorPrompt(input, memberDescriptions, "coordinate");
 
-    const planResponse = await this.config.model.generate([
+    const planResponse = await this.generate(ctx, [
       { role: "system", content: planPrompt },
       { role: "user", content: input },
     ]);
@@ -105,14 +111,12 @@ export class Team {
         task: delegation.task,
       });
 
-      const output = await member.run(delegation.task, {
-        sessionId: ctx.sessionId,
-      });
+      const output = await member.run(delegation.task, this.memberOptions(ctx, member.name));
       memberOutputs.push({ memberId: delegation.memberId, output });
     }
 
     const synthesisPrompt = this.buildSynthesisPrompt(input, memberOutputs);
-    const synthesisResponse = await this.config.model.generate([{ role: "user", content: synthesisPrompt }]);
+    const synthesisResponse = await this.generate(ctx, [{ role: "user", content: synthesisPrompt }]);
 
     return {
       text: getTextContent(synthesisResponse.message.content),
@@ -125,7 +129,7 @@ export class Team {
     const memberDescriptions = this.buildMemberDescriptions();
     const routePrompt = this.buildCoordinatorPrompt(input, memberDescriptions, "route");
 
-    const routeResponse = await this.config.model.generate([
+    const routeResponse = await this.generate(ctx, [
       { role: "system", content: routePrompt },
       { role: "user", content: input },
     ]);
@@ -147,7 +151,7 @@ export class Team {
       task: input,
     });
 
-    return member.run(input, { sessionId: ctx.sessionId });
+    return member.run(input, this.memberOptions(ctx, member.name));
   }
 
   private async runBroadcastMode(input: string, ctx: RunContext): Promise<RunOutput> {
@@ -159,9 +163,13 @@ export class Team {
       });
     }
 
-    const outputs = await Promise.all(
-      this.config.members.map((member) => member.run(input, { sessionId: ctx.sessionId })),
+    // A failed member must not release the parent run while sibling effects are still active.
+    const settled = await Promise.allSettled(
+      this.config.members.map(async (member) => member.run(input, this.memberOptions(ctx, member.name))),
     );
+    const failure = settled.find((entry) => entry.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+    const outputs = settled.map((entry) => (entry as PromiseFulfilledResult<RunOutput>).value);
 
     const memberOutputs = this.config.members.map((member, i) => ({
       memberId: member.name,
@@ -169,7 +177,7 @@ export class Team {
     }));
 
     const synthesisPrompt = this.buildSynthesisPrompt(input, memberOutputs);
-    const synthesisResponse = await this.config.model.generate([{ role: "user", content: synthesisPrompt }]);
+    const synthesisResponse = await this.generate(ctx, [{ role: "user", content: synthesisPrompt }]);
 
     return {
       text: getTextContent(synthesisResponse.message.content),
@@ -192,9 +200,13 @@ export class Team {
         });
       }
 
-      const outputs = await Promise.all(
-        this.config.members.map((member) => member.run(currentInput, { sessionId: ctx.sessionId })),
+      // Complete every started member's cleanup before propagating a round failure.
+      const settled = await Promise.allSettled(
+        this.config.members.map(async (member) => member.run(currentInput, this.memberOptions(ctx, member.name))),
       );
+      const failure = settled.find((entry) => entry.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
+      const outputs = settled.map((entry) => (entry as PromiseFulfilledResult<RunOutput>).value);
 
       const memberOutputs = this.config.members.map((member, i) => ({
         memberId: member.name,
@@ -203,7 +215,7 @@ export class Team {
 
       const consensusPrompt = `Given the following responses to "${input}", determine if there is consensus. If yes, synthesize a final answer. If not, provide a follow-up question.\n\n${memberOutputs.map((o) => `${o.memberId}: ${o.output.text}`).join("\n\n")}\n\nRespond with either "CONSENSUS: <final answer>" or "FOLLOW_UP: <question>"`;
 
-      const consensusResponse = await this.config.model.generate([{ role: "user", content: consensusPrompt }]);
+      const consensusResponse = await this.generate(ctx, [{ role: "user", content: consensusPrompt }]);
 
       const responseText = getTextContent(consensusResponse.message.content);
 
@@ -223,7 +235,7 @@ export class Team {
 
     if (!finalOutput) {
       const lastSynthesis = this.buildSynthesisPrompt(input, []);
-      const response = await this.config.model.generate([{ role: "user", content: lastSynthesis }]);
+      const response = await this.generate(ctx, [{ role: "user", content: lastSynthesis }]);
       finalOutput = {
         text: getTextContent(response.message.content),
         toolCalls: [],
@@ -252,7 +264,7 @@ export class Team {
       });
 
       try {
-        const output = await currentAgent.run(currentInput, { sessionId: ctx.sessionId });
+        const output = await currentAgent.run(currentInput, this.memberOptions(ctx, currentAgent.name));
 
         totalUsage = {
           promptTokens: totalUsage.promptTokens + output.usage.promptTokens,
@@ -300,6 +312,29 @@ export class Team {
       toolCalls: lastOutput.toolCalls,
       usage: totalUsage,
     };
+  }
+
+  private memberOptions(ctx: RunContext, name: string): RunOpts {
+    ctx.signal?.throwIfAborted();
+    const member = this.findMember(name);
+    if (ctx.executionServices && member && !("getSubagentConfig" in member))
+      throw new Error("Remote team members cannot claim local policy coverage");
+    return {
+      sessionId: `${ctx.sessionId}:${name}`,
+      userId: ctx.userId,
+      tenantId: ctx.tenantId,
+      signal: ctx.signal,
+      runMode: ctx.runMode,
+      executionServices: ctx.executionServices,
+      metadata: { ...ctx.metadata, parentRunId: ctx.runId },
+    };
+  }
+
+  private generate(ctx: RunContext, messages: import("../models/types.js").ChatMessage[]) {
+    ctx.signal?.throwIfAborted();
+    return ctx.executionServices
+      ? ctx.executionServices.model(this.config.model, messages, undefined, ctx)
+      : this.config.model.generate(messages);
   }
 
   private buildMemberDescriptions(): string {

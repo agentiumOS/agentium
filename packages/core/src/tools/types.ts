@@ -1,5 +1,5 @@
-import type { z } from "zod";
 import type { RunContext } from "../agent/run-context.js";
+import type { ToolParameterSchema } from "./schema.js";
 
 export interface Artifact {
   type: string;
@@ -35,7 +35,7 @@ export interface SandboxConfig {
 export interface ToolDef {
   name: string;
   description: string;
-  parameters: z.ZodObject<any>;
+  parameters: ToolParameterSchema;
   execute: (args: Record<string, unknown>, ctx: RunContext) => Promise<string | ToolResult>;
   /** Raw JSON Schema to send to the LLM, bypassing Zod-to-JSON conversion (used by MCP tools). */
   rawJsonSchema?: Record<string, unknown>;
@@ -43,7 +43,10 @@ export interface ToolDef {
   cache?: ToolCacheConfig;
   /** Run this tool in a sandboxed subprocess. Off by default. */
   sandbox?: boolean | SandboxConfig;
-  /** Require human approval before executing this tool. */
+  /**
+   * Require approval before execution; no configured approval service denies the
+   * call. False overrides legacy approval defaults, never mandatory host policy.
+   */
   requiresApproval?: boolean | ((args: Record<string, unknown>) => boolean);
   /** Enable strict mode for OpenAI Structured Outputs on tool calls. Guarantees valid JSON matching the schema. */
   strict?: boolean;
@@ -65,4 +68,6 @@ export interface ToolCallResult {
   toolName: string;
   result: string | ToolResult;
   error?: string;
+  /** Structured fail-closed execution outcome. */
+  denial?: "policy" | "approval_required" | "approval_denied" | "cancelled";
 }

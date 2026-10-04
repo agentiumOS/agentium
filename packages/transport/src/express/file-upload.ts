@@ -25,10 +25,20 @@ function getPartType(mimeType: string): "image" | "audio" | "file" {
 export interface FileUploadOptions {
   maxFileSize?: number;
   maxFiles?: number;
+  maxFields?: number;
+  maxFieldSize?: number;
   allowedMimeTypes?: string[];
 }
 
 export function createFileUploadMiddleware(opts: FileUploadOptions = {}) {
+  const limits = {
+    fileSize: opts.maxFileSize ?? 50 * 1024 * 1024,
+    files: opts.maxFiles ?? 10,
+    fields: opts.maxFields ?? 32,
+    fieldSize: opts.maxFieldSize ?? 64 * 1024,
+  };
+  for (const value of Object.values(limits))
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid upload limit");
   let multer: any;
   try {
     multer = _require("multer");
@@ -39,10 +49,7 @@ export function createFileUploadMiddleware(opts: FileUploadOptions = {}) {
   const storage = multer.memoryStorage();
   const upload = multer({
     storage,
-    limits: {
-      fileSize: opts.maxFileSize ?? 50 * 1024 * 1024,
-      files: opts.maxFiles ?? 10,
-    },
+    limits: { ...limits, parts: limits.files + limits.fields },
     fileFilter: opts.allowedMimeTypes
       ? (_req: any, file: any, cb: any) => {
           if (opts.allowedMimeTypes!.includes(file.mimetype)) {
@@ -54,7 +61,17 @@ export function createFileUploadMiddleware(opts: FileUploadOptions = {}) {
       : undefined,
   });
 
-  return upload.array("files", opts.maxFiles ?? 10);
+  const middleware = upload.array("files", limits.files);
+  return (req: any, res: any, next: (error?: unknown) => void) => {
+    middleware(req, res, (error: unknown) => {
+      if (error) {
+        // Multer removes storage-owned copies; also release request-visible memory references.
+        for (const file of req.files ?? []) delete file.buffer;
+        req.files = [];
+      }
+      next(error);
+    });
+  };
 }
 
 export function filesToContentParts(files: any[]): any[] {

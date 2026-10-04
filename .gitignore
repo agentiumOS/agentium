@@ -1,5 +1,6 @@
 node_modules
 dist
+.agents
 .env
 .env.local
 .env.development.local
@@ -14,3 +15,4 @@ qdrant_storage/
 docs/
 nl-dashboard/
 demos-local/
+.DS_Store

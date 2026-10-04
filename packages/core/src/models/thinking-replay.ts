@@ -1,11 +1,25 @@
 import type { ChatMessage, ProviderOptions, ReasoningConfig } from "./types.js";
 
 export function anthropicReplayContent(msg: ChatMessage): unknown[] | undefined {
+  if (
+    msg.providerExtras?.responsesReplay ||
+    msg.providerExtras?.responsesReasoning ||
+    msg.providerExtras?.googleParts
+  ) {
+    throw new Error("Foreign provider continuation cannot be replayed through Anthropic; start a new session");
+  }
   const replay = msg.providerExtras?.anthropicContent;
   return Array.isArray(replay) ? replay : undefined;
 }
 
 export function googleReplayParts(msg: ChatMessage): unknown[] | undefined {
+  if (
+    msg.providerExtras?.responsesReplay ||
+    msg.providerExtras?.responsesReasoning ||
+    msg.providerExtras?.anthropicContent
+  ) {
+    throw new Error("Foreign provider continuation cannot be replayed through Gemini; start a new session");
+  }
   const replay = msg.providerExtras?.googleParts;
   return Array.isArray(replay) ? replay : undefined;
 }

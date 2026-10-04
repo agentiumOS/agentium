@@ -33,6 +33,7 @@ export class StepRunner<TState extends Record<string, unknown>> {
     const allResults: StepResult[] = [];
 
     for (const step of steps) {
+      ctx.signal?.throwIfAborted();
       const { state: newState, results } = await this.executeStep(step, currentState, ctx);
       currentState = newState;
       allResults.push(...results);
@@ -82,7 +83,13 @@ export class StepRunner<TState extends Record<string, unknown>> {
       const input = step.inputFrom ? step.inputFrom(state) : JSON.stringify(state);
 
       const output = await step.agent.run(input, {
-        sessionId: ctx.sessionId,
+        sessionId: `${ctx.sessionId}:${step.name}`,
+        userId: ctx.userId,
+        tenantId: ctx.tenantId,
+        signal: ctx.signal,
+        runMode: ctx.runMode,
+        executionServices: ctx.executionServices,
+        metadata: { ...ctx.metadata, parentRunId: ctx.runId },
       });
 
       const newState = {
@@ -120,7 +127,12 @@ export class StepRunner<TState extends Record<string, unknown>> {
     });
 
     const execute = async (): Promise<StepResult> => {
-      const patch = await step.run(state, ctx);
+      ctx.signal?.throwIfAborted();
+      const patch = ctx.executionServices
+        ? await ctx.executionServices.dispatchEffect(`workflow:${step.name}`, { state }, async (args) =>
+            step.run(args.state as TState, ctx),
+          )
+        : await step.run(state, ctx);
       for (const key of Object.keys(patch as any)) {
         if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
         (state as any)[key] = (patch as any)[key];
@@ -246,6 +258,7 @@ export class StepRunner<TState extends Record<string, unknown>> {
     const backoffMs = this.retryPolicy?.backoffMs ?? 1000;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      ctx.signal?.throwIfAborted();
       try {
         const result = await fn();
 
@@ -257,7 +270,8 @@ export class StepRunner<TState extends Record<string, unknown>> {
 
         return result;
       } catch (error) {
-        if (attempt === maxRetries) {
+        ctx.signal?.throwIfAborted();
+        if (ctx.executionServices || attempt === maxRetries) {
           const err = error instanceof Error ? error : new Error(String(error));
 
           ctx.eventBus.emit("workflow.step", {

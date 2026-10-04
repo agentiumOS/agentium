@@ -1,4 +1,5 @@
 import type { Agent, ModelProvider } from "@agentium/core";
+import { positive, validateConfig, validateScorers } from "../case-lifecycle.js";
 import type { Reporter } from "../types.js";
 import { ConversationRunner } from "./scenario-runner.js";
 import type { ConversationEvalResult, ConversationSuiteConfig, ConversationSuiteResult } from "./types.js";
@@ -8,6 +9,12 @@ export class ConversationSuite {
   private model: ModelProvider;
 
   constructor(config: ConversationSuiteConfig, model: ModelProvider) {
+    validateConfig(config);
+    validateScorers(config.scorers ?? []);
+    for (const scenario of config.scenarios) {
+      positive(scenario.persona.maxTurns ?? 20, "maxTurns");
+      if (!scenario.successCriteria.trim()) throw new Error("Conversation success criteria must not be empty");
+    }
     this.config = config;
     this.model = config.judgeModel ?? model;
   }
@@ -22,17 +29,12 @@ export class ConversationSuite {
     for (let i = 0; i < scenarios.length; i += concurrency) {
       const batch = scenarios.slice(i, i + concurrency);
       const batchResults = await Promise.allSettled(
-        batch.map((scenario) => {
-          if (this.config.timeoutMs) {
-            return Promise.race([
-              runner.run(agent, scenario, this.config.scorers),
-              new Promise<ConversationEvalResult>((_, reject) =>
-                setTimeout(() => reject(new Error("Scenario timed out")), this.config.timeoutMs),
-              ),
-            ]);
-          }
-          return runner.run(agent, scenario, this.config.scorers);
-        }),
+        batch.map((scenario) =>
+          runner.run(agent, scenario, this.config.scorers, {
+            timeoutMs: this.config.timeoutMs,
+            signal: this.config.signal,
+          }),
+        ),
       );
 
       for (let j = 0; j < batchResults.length; j++) {

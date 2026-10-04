@@ -1,5 +1,6 @@
 import type { EventBus } from "@agentium/core";
-
+import { Accounting, type AccountingOptions } from "./accounting.js";
+import { Attachments, boundedText, positive } from "./safety.js";
 export interface AgentMetrics {
   runs: number;
   errors: number;
@@ -34,353 +35,221 @@ export interface MetricEvent {
   data: Record<string, unknown>;
 }
 
-interface RunRecord {
-  agentName: string;
-  durationMs: number;
-  tokens: number;
-  promptTokens: number;
-  completionTokens: number;
-  reasoningTokens: number;
-  cachedTokens: number;
-  audioInputTokens: number;
-  audioOutputTokens: number;
-  providerMetrics?: Record<string, unknown>;
-  cost: number;
-  toolCalls: number;
-  success: boolean;
-  timestamp: number;
+export interface MetricsExporterOptions extends AccountingOptions {
+  maxSubscribers?: number;
+  maxSubscriberEvents?: number;
+  maxSubscriberBytes?: number;
 }
-
 export class MetricsExporter {
-  private runs: RunRecord[] = [];
-  private toolUsage: Record<string, Record<string, number>> = {};
-  private runStartTimes = new Map<string, { agentName: string; start: number }>();
-  private runToolCounts = new Map<string, number>();
-  private listeners: Array<{ event: string; handler: (...args: any[]) => void }> = [];
-  private subscribers = new Set<(event: MetricEvent) => void>();
-  private maxRecords = 50_000;
-  private corrections: Record<string, number> = {};
-  private critiqueScores: Record<string, number[]> = {};
-
-  attach(eventBus: EventBus): void {
-    const on = (event: string, handler: (data: any) => void) => {
-      (eventBus as any).on(event, handler);
-      this.listeners.push({ event, handler });
-    };
-
-    on("run.start", (data: { runId: string; agentName: string }) => {
-      this.runStartTimes.set(data.runId, { agentName: data.agentName, start: Date.now() });
-      this.runToolCounts.set(data.runId, 0);
-      this.emit({ type: "run.start", agentName: data.agentName, timestamp: Date.now(), data: { runId: data.runId } });
+  private accounting: Accounting;
+  private attachments = new Attachments();
+  private subscribers = new Set<{ queue: MetricEvent[]; bytes: number; wake?: () => void; closed: boolean }>();
+  private readonly maxSubscribers: number;
+  private readonly maxEvents: number;
+  private dropped = 0;
+  private readonly maxBytes: number;
+  constructor(private options: MetricsExporterOptions = {}) {
+    this.accounting = new Accounting(options);
+    this.maxSubscribers = positive(options.maxSubscribers ?? 32, "maxSubscribers");
+    this.maxBytes = positive(options.maxSubscriberBytes ?? 262144, "maxSubscriberBytes");
+    this.maxEvents = positive(options.maxSubscriberEvents ?? 128, "maxSubscriberEvents");
+  }
+  attach(bus: EventBus) {
+    this.attachments.attach(bus, (event, raw) => {
+      const data = raw as any;
+      const record = this.accounting.accept(event, raw);
+      if (event === "run.start" || record || event === "memory.correction.recorded")
+        this.emit({
+          type: event === "memory.correction.recorded" ? "correction.recorded" : event,
+          agentName:
+            typeof (record?.agentName ?? data.agentName) === "string"
+              ? boundedText(record?.agentName ?? data.agentName, 256)
+              : undefined,
+          timestamp: Date.now(),
+          data: {
+            ...(typeof data.runId === "string" ? { runId: data.runId.slice(0, 512) } : {}),
+            ...(record ? { durationMs: record.durationMs, tokens: record.tokens, status: record.status } : {}),
+          },
+        });
     });
-
-    on("run.complete", (data: { runId: string; output: any }) => {
-      const info = this.runStartTimes.get(data.runId);
-      if (!info) return;
-      const duration = Date.now() - info.start;
-      const usage = data.output?.usage;
-      const tokens = usage?.totalTokens ?? 0;
-      this.addRecord({
-        agentName: info.agentName,
-        durationMs: duration,
-        tokens,
-        promptTokens: usage?.promptTokens ?? 0,
-        completionTokens: usage?.completionTokens ?? 0,
-        reasoningTokens: usage?.reasoningTokens ?? 0,
-        cachedTokens: usage?.cachedTokens ?? 0,
-        audioInputTokens: usage?.audioInputTokens ?? 0,
-        audioOutputTokens: usage?.audioOutputTokens ?? 0,
-        providerMetrics: usage?.providerMetrics,
-        cost: 0,
-        toolCalls: this.runToolCounts.get(data.runId) ?? 0,
-        success: true,
-        timestamp: Date.now(),
-      });
-      this.runStartTimes.delete(data.runId);
-      this.runToolCounts.delete(data.runId);
-      this.emit({
-        type: "run.complete",
-        agentName: info.agentName,
-        timestamp: Date.now(),
-        data: { durationMs: duration, tokens },
-      });
-    });
-
-    on("run.error", (data: { runId: string }) => {
-      const info = this.runStartTimes.get(data.runId);
-      if (!info) return;
-      const duration = Date.now() - info.start;
-      this.addRecord({
-        agentName: info.agentName,
-        durationMs: duration,
-        tokens: 0,
-        promptTokens: 0,
-        completionTokens: 0,
-        reasoningTokens: 0,
-        cachedTokens: 0,
-        audioInputTokens: 0,
-        audioOutputTokens: 0,
-        cost: 0,
-        toolCalls: this.runToolCounts.get(data.runId) ?? 0,
-        success: false,
-        timestamp: Date.now(),
-      });
-      this.runStartTimes.delete(data.runId);
-      this.runToolCounts.delete(data.runId);
-      this.emit({
-        type: "run.error",
-        agentName: info.agentName,
-        timestamp: Date.now(),
-        data: { durationMs: duration },
-      });
-    });
-
-    on("tool.call", (data: { runId: string; toolName: string }) => {
-      const info = this.runStartTimes.get(data.runId);
-      const agentName = info?.agentName ?? "unknown";
-      this.runToolCounts.set(data.runId, (this.runToolCounts.get(data.runId) ?? 0) + 1);
-      if (!this.toolUsage[agentName]) this.toolUsage[agentName] = {};
-      this.toolUsage[agentName][data.toolName] = (this.toolUsage[agentName][data.toolName] ?? 0) + 1;
-    });
-
-    on("cost.tracked", (data: { runId: string; agentName: string; usage: any }) => {
-      for (let i = this.runs.length - 1; i >= 0; i--) {
-        if (this.runs[i].agentName === data.agentName) {
-          if (data.usage?.cost) this.runs[i].cost = data.usage.cost;
-          break;
-        }
+  }
+  detach(bus: EventBus) {
+    this.attachments.detach(bus);
+  }
+  private emit(event: MetricEvent) {
+    const size = Buffer.byteLength(JSON.stringify(event));
+    for (const subscriber of this.subscribers) {
+      if (size > this.maxBytes) {
+        this.dropped++;
+        continue;
       }
-    });
-
-    on("memory.correction.recorded", (data: { correctionId: string; agentName: string; entityKey?: string }) => {
-      this.corrections[data.agentName] = (this.corrections[data.agentName] ?? 0) + 1;
-      this.emit({
-        type: "correction.recorded",
-        agentName: data.agentName,
-        timestamp: Date.now(),
-        data: { correctionId: data.correctionId, entityKey: data.entityKey },
-      });
-    });
-
-    on("reflection.critique", (data: { runId: string; pass: boolean; score: number }) => {
-      const agentName = this.runStartTimes.get(data.runId)?.agentName ?? "unknown";
-      if (!this.critiqueScores[agentName]) this.critiqueScores[agentName] = [];
-      this.critiqueScores[agentName].push(data.score);
-    });
-  }
-
-  detach(eventBus: EventBus): void {
-    for (const { event, handler } of this.listeners) {
-      (eventBus as any).off(event, handler);
-    }
-    this.listeners = [];
-  }
-
-  private addRecord(record: RunRecord): void {
-    this.runs.push(record);
-    if (this.runs.length > this.maxRecords) {
-      this.runs = this.runs.slice(-this.maxRecords);
+      while (
+        subscriber.queue.length &&
+        (subscriber.queue.length >= this.maxEvents || subscriber.bytes + size > this.maxBytes)
+      ) {
+        subscriber.bytes -= Buffer.byteLength(JSON.stringify(subscriber.queue.shift()));
+        this.dropped++;
+      }
+      subscriber.queue.push(structuredClone(event));
+      subscriber.bytes += size;
+      subscriber.wake?.();
+      subscriber.wake = undefined;
     }
   }
-
-  private emit(event: MetricEvent): void {
-    for (const sub of this.subscribers) {
-      try {
-        sub(event);
-      } catch {}
-    }
-  }
-
   getMetrics(agentName?: string): AgentMetrics {
-    const filtered = agentName ? this.runs.filter((r) => r.agentName === agentName) : this.runs;
-    const successful = filtered.filter((r) => r.success);
-    const durations = filtered.map((r) => r.durationMs).sort((a, b) => a - b);
-
-    const totalRuns = filtered.length;
-    const errors = filtered.filter((r) => !r.success).length;
-    const totalTokens = filtered.reduce((s, r) => s + r.tokens, 0);
-    const promptTokens = filtered.reduce((s, r) => s + r.promptTokens, 0);
-    const completionTokens = filtered.reduce((s, r) => s + r.completionTokens, 0);
-    const reasoningTokens = filtered.reduce((s, r) => s + r.reasoningTokens, 0);
-    const cachedTokens = filtered.reduce((s, r) => s + r.cachedTokens, 0);
-    const audioInputTokens = filtered.reduce((s, r) => s + r.audioInputTokens, 0);
-    const audioOutputTokens = filtered.reduce((s, r) => s + r.audioOutputTokens, 0);
-    const totalCost = filtered.reduce((s, r) => s + r.cost, 0);
-    const totalToolCalls = filtered.reduce((s, r) => s + r.toolCalls, 0);
-    const avgDuration = durations.length > 0 ? durations.reduce((s, d) => s + d, 0) / durations.length : 0;
-    const p95Idx = Math.floor(durations.length * 0.95);
-    const p95 = durations.length > 0 ? durations[Math.min(p95Idx, durations.length - 1)] : 0;
-
-    const toolFreq: Record<string, number> = {};
-    if (agentName && this.toolUsage[agentName]) {
-      Object.assign(toolFreq, this.toolUsage[agentName]);
-    } else {
-      for (const usage of Object.values(this.toolUsage)) {
-        for (const [tool, count] of Object.entries(usage)) {
-          toolFreq[tool] = (toolFreq[tool] ?? 0) + count;
-        }
-      }
-    }
-
-    const avgContextLength = successful.length > 0 ? Math.round(promptTokens / successful.length) : 0;
-
-    const correctionsTotal = agentName
-      ? (this.corrections[agentName] ?? 0)
-      : Object.values(this.corrections).reduce((s, c) => s + c, 0);
-
-    const scores = agentName ? (this.critiqueScores[agentName] ?? []) : Object.values(this.critiqueScores).flat();
-    const avgCritiqueScore = scores.length > 0 ? scores.reduce((s, v) => s + v, 0) / scores.length : undefined;
-
+    const records = this.accounting.records.filter((r) => !agentName || r.agentName === agentName);
+    const stats = [...this.accounting.agents.entries()]
+      .filter(([name]) => !agentName || name === agentName)
+      .map(([, value]) => value);
+    const sum = (
+      key:
+        | "tokens"
+        | "promptTokens"
+        | "completionTokens"
+        | "reasoningTokens"
+        | "cachedTokens"
+        | "audioInputTokens"
+        | "audioOutputTokens"
+        | "cost"
+        | "toolCalls",
+    ) => records.reduce((n, r) => n + r[key], 0);
+    const durations = records.map((r) => r.durationMs).sort((a, b) => a - b);
+    const successes = records.filter((r) => r.success).length;
+    const tools: Record<string, number> = Object.create(null);
+    for (const r of records)
+      for (const [name, count] of Object.entries(r.toolUsage)) tools[name] = (tools[name] ?? 0) + count;
+    const corrections = stats.reduce((n, s) => n + s.corrections, 0);
+    const scoreCount = stats.reduce((n, s) => n + s.scoreCount, 0);
     return {
-      runs: totalRuns,
-      errors,
-      avgDurationMs: Math.round(avgDuration),
-      p95DurationMs: Math.round(p95),
-      totalCost,
-      totalTokens,
-      promptTokens,
-      completionTokens,
-      reasoningTokens,
-      cachedTokens,
-      audioInputTokens,
-      audioOutputTokens,
-      toolCallCount: totalToolCalls,
-      toolUsageFrequency: toolFreq,
-      errorRate: totalRuns > 0 ? errors / totalRuns : 0,
-      tokensPerRun: successful.length > 0 ? Math.round(totalTokens / successful.length) : 0,
-      correctionsTotal,
-      correctionRate: totalRuns > 0 ? correctionsTotal / totalRuns : 0,
-      avgCritiqueScore,
-      avgContextLength,
+      runs: records.length,
+      errors: records.length - successes,
+      avgDurationMs: Math.round(durations.reduce((a, b) => a + b, 0) / (durations.length || 1)),
+      p95DurationMs: Math.round(durations[Math.min(durations.length - 1, Math.floor(durations.length * 0.95))] ?? 0),
+      totalCost: sum("cost"),
+      totalTokens: sum("tokens"),
+      promptTokens: sum("promptTokens"),
+      completionTokens: sum("completionTokens"),
+      reasoningTokens: sum("reasoningTokens"),
+      cachedTokens: sum("cachedTokens"),
+      audioInputTokens: sum("audioInputTokens"),
+      audioOutputTokens: sum("audioOutputTokens"),
+      toolCallCount: sum("toolCalls"),
+      toolUsageFrequency: tools,
+      errorRate: (records.length - successes) / (records.length || 1),
+      tokensPerRun: Math.round(sum("tokens") / (successes || 1)),
+      correctionsTotal: corrections,
+      correctionRate: corrections / (records.length || 1),
+      avgCritiqueScore: scoreCount ? stats.reduce((n, s) => n + s.scoreSum, 0) / scoreCount : undefined,
+      avgContextLength: Math.round(sum("promptTokens") / (successes || 1)),
     };
   }
-
   toPrometheus(): string {
     const lines: string[] = [];
-    const allAgents = new Set([...this.runs.map((r) => r.agentName), ...Object.keys(this.corrections)]);
-
-    lines.push("# HELP agentium_agent_runs_total Total agent runs");
-    lines.push("# TYPE agentium_agent_runs_total counter");
-    for (const agent of allAgents) {
-      const m = this.getMetrics(agent);
-      lines.push(`agentium_agent_runs_total{agent="${agent}"} ${m.runs}`);
+    const definitions = {
+      runs_total: ["counter", "runs"],
+      errors_total: ["counter", "errors"],
+      tokens_total: ["counter", "tokens"],
+      cost_usd_total: ["counter", "cost"],
+      tool_calls_total: ["counter", "tools"],
+      corrections_total: ["counter", "corrections"],
+    } as const;
+    const escapeLabel = (value: string) =>
+      value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n");
+    for (const [metric, [, field]] of Object.entries(definitions)) {
+      lines.push(`# HELP agentium_agent_${metric} Cumulative since reset`, `# TYPE agentium_agent_${metric} counter`);
+      for (const [name, stats] of this.accounting.agents)
+        lines.push(`agentium_agent_${metric}{agent="${escapeLabel(name)}"} ${stats[field]}`);
     }
-
-    lines.push("# HELP agentium_agent_errors_total Total agent errors");
-    lines.push("# TYPE agentium_agent_errors_total counter");
-    for (const agent of allAgents) {
-      const m = this.getMetrics(agent);
-      lines.push(`agentium_agent_errors_total{agent="${agent}"} ${m.errors}`);
-    }
-
-    lines.push("# HELP agentium_agent_duration_ms_avg Average run duration in ms");
-    lines.push("# TYPE agentium_agent_duration_ms_avg gauge");
-    for (const agent of allAgents) {
-      const m = this.getMetrics(agent);
-      lines.push(`agentium_agent_duration_ms_avg{agent="${agent}"} ${m.avgDurationMs}`);
-    }
-
-    lines.push("# HELP agentium_agent_duration_ms_p95 P95 run duration in ms");
-    lines.push("# TYPE agentium_agent_duration_ms_p95 gauge");
-    for (const agent of allAgents) {
-      const m = this.getMetrics(agent);
-      lines.push(`agentium_agent_duration_ms_p95{agent="${agent}"} ${m.p95DurationMs}`);
-    }
-
-    lines.push("# HELP agentium_agent_tokens_total Total tokens consumed");
-    lines.push("# TYPE agentium_agent_tokens_total counter");
-    for (const agent of allAgents) {
-      const m = this.getMetrics(agent);
-      lines.push(`agentium_agent_tokens_total{agent="${agent}"} ${m.totalTokens}`);
-    }
-
-    lines.push("# HELP agentium_agent_cost_usd_total Total cost in USD");
-    lines.push("# TYPE agentium_agent_cost_usd_total counter");
-    for (const agent of allAgents) {
-      const m = this.getMetrics(agent);
-      lines.push(`agentium_agent_cost_usd_total{agent="${agent}"} ${m.totalCost}`);
-    }
-
-    lines.push("# HELP agentium_agent_tool_calls_total Total tool calls");
-    lines.push("# TYPE agentium_agent_tool_calls_total counter");
-    for (const agent of allAgents) {
-      const m = this.getMetrics(agent);
-      lines.push(`agentium_agent_tool_calls_total{agent="${agent}"} ${m.toolCallCount}`);
-    }
-
-    lines.push("# HELP agentium_agent_corrections_total Total human corrections recorded");
-    lines.push("# TYPE agentium_agent_corrections_total counter");
-    for (const agent of allAgents) {
-      const m = this.getMetrics(agent);
-      lines.push(`agentium_agent_corrections_total{agent="${agent}"} ${m.correctionsTotal}`);
-    }
-
-    lines.push("# HELP agentium_agent_correction_rate Corrections per run (inverse of first-pass accuracy)");
-    lines.push("# TYPE agentium_agent_correction_rate gauge");
-    for (const agent of allAgents) {
-      const m = this.getMetrics(agent);
-      lines.push(`agentium_agent_correction_rate{agent="${agent}"} ${m.correctionRate}`);
-    }
-
-    const agentsWithCritiques = [...allAgents].filter((a) => (this.critiqueScores[a] ?? []).length > 0);
-    if (agentsWithCritiques.length > 0) {
-      lines.push("# HELP agentium_agent_critique_score_avg Average reflection self-critique score (0-1)");
-      lines.push("# TYPE agentium_agent_critique_score_avg gauge");
-      for (const agent of agentsWithCritiques) {
-        const m = this.getMetrics(agent);
-        lines.push(`agentium_agent_critique_score_avg{agent="${agent}"} ${m.avgCritiqueScore}`);
+    const gauges = new Set<string>();
+    for (const [name] of this.accounting.agents) {
+      const metrics = this.getMetrics(name);
+      for (const [metric, value] of [
+        ["duration_ms_avg", metrics.avgDurationMs],
+        ["duration_ms_p95", metrics.p95DurationMs],
+        ["correction_rate", metrics.correctionRate],
+        ["critique_score_avg", metrics.avgCritiqueScore],
+      ] as const) {
+        if (value === undefined) continue;
+        if (!gauges.has(metric)) {
+          lines.push(`# TYPE agentium_agent_${metric} gauge`);
+          gauges.add(metric);
+        }
+        lines.push(`agentium_agent_${metric}{agent="${escapeLabel(name)}"} ${value}`);
       }
     }
-
     return `${lines.join("\n")}\n`;
   }
-
-  toJSON(): object {
-    const allAgents = new Set([...this.runs.map((r) => r.agentName), ...Object.keys(this.corrections)]);
-    const byAgent: Record<string, AgentMetrics> = {};
-    for (const agent of allAgents) {
-      byAgent[agent] = this.getMetrics(agent);
-    }
+  toJSON() {
     return {
       global: this.getMetrics(),
-      byAgent,
+      byAgent: Object.fromEntries([...this.accounting.agents.keys()].map((name) => [name, this.getMetrics(name)])),
+      window: "retained runs",
       timestamp: Date.now(),
     };
   }
-
-  async *stream(): AsyncIterable<MetricEvent> {
-    const queue: MetricEvent[] = [];
-    let resolve: (() => void) | null = null;
-
-    const handler = (event: MetricEvent) => {
-      queue.push(event);
-      if (resolve) {
-        resolve();
-        resolve = null;
-      }
+  stream(): AsyncIterableIterator<MetricEvent> {
+    if (this.subscribers.size >= this.maxSubscribers) throw new Error("Metrics subscriber limit reached");
+    const subscriber: { queue: MetricEvent[]; bytes: number; wake?: () => void; closed: boolean } = {
+      queue: [],
+      bytes: 0,
+      closed: false,
     };
-
-    this.subscribers.add(handler);
-    try {
-      while (true) {
-        while (queue.length > 0) {
-          yield queue.shift()!;
-        }
-        await new Promise<void>((r) => {
-          resolve = r;
+    this.subscribers.add(subscriber);
+    let chain: Promise<unknown> = Promise.resolve();
+    const close = () => {
+      subscriber.closed = true;
+      subscriber.queue = [];
+      subscriber.bytes = 0;
+      this.subscribers.delete(subscriber);
+      subscriber.wake?.();
+    };
+    return {
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      next: () => {
+        const work = chain.then(async (): Promise<IteratorResult<MetricEvent>> => {
+          while (!subscriber.closed && !subscriber.queue.length)
+            await new Promise<void>((resolve) => {
+              subscriber.wake = resolve;
+            });
+          if (subscriber.closed) return { done: true, value: undefined };
+          const value = subscriber.queue.shift()!;
+          subscriber.bytes -= Buffer.byteLength(JSON.stringify(value));
+          return { done: false, value };
         });
-      }
-    } finally {
-      this.subscribers.delete(handler);
-    }
+        chain = work;
+        return work;
+      },
+      return: async () => {
+        close();
+        return { done: true, value: undefined };
+      },
+      throw: async (error) => {
+        close();
+        throw error;
+      },
+    };
   }
-
-  reset(): void {
-    this.runs = [];
-    this.toolUsage = {};
-    this.runStartTimes.clear();
-    this.runToolCounts.clear();
-    this.corrections = {};
-    this.critiqueScores = {};
+  shutdown() {
+    this.attachments.close();
+    for (const subscriber of this.subscribers) {
+      subscriber.closed = true;
+      subscriber.queue = [];
+      subscriber.bytes = 0;
+      subscriber.wake?.();
+    }
+    this.subscribers.clear();
+  }
+  getDiagnostics() {
+    return {
+      ...this.accounting.stats(),
+      subscribers: this.subscribers.size,
+      subscriberBytes: [...this.subscribers].reduce((total, s) => total + s.bytes, 0),
+      droppedSubscriberEvents: this.dropped,
+    };
+  }
+  reset() {
+    this.accounting = new Accounting(this.options);
   }
 }

@@ -88,3 +88,7 @@ Join the conversation on [Discord](https://discord.gg/T86SJshP).
 ## License
 
 MIT
+
+## Sync and camera behavior
+
+Concurrent flush calls share the active delivery batch. Events queued during that request remain persisted for the next batch; only acknowledged IDs are removed. Failed deliveries retain their batch for retry, so receivers must handle duplicate delivery. Camera capture returns the complete base64 image before deleting its temporary file; applications still choose how to present the image to a multimodal model.

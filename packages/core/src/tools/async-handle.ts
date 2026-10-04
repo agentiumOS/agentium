@@ -1,7 +1,8 @@
-import { v4 as uuidv4 } from "uuid";
-import { z } from "zod";
+import { randomUUID as uuidv4 } from "node:crypto";
+import { z } from "zod/v3";
 import type { RunContext } from "../agent/run-context.js";
 import { defineTool } from "./define-tool.js";
+import type { SchemaOutput, ToolParameterSchema } from "./schema.js";
 import type { ToolDef, ToolResult } from "./types.js";
 
 /**
@@ -46,12 +47,12 @@ function getHandles(ctx: RunContext): Map<string, HandleEntry> {
   return m;
 }
 
-export interface DefineAsyncToolConfig<T extends z.ZodObject<any>> {
+export interface DefineAsyncToolConfig<T extends ToolParameterSchema> {
   name: string;
   description: string;
   parameters: T;
   /** The long-running implementation. Runs in the background. */
-  execute: (args: z.infer<T>, ctx: RunContext) => Promise<string | ToolResult>;
+  execute: (args: SchemaOutput<T>, ctx: RunContext) => Promise<string | ToolResult>;
   /** TTL for the cached result in seconds. Default 600 (10 minutes). */
   ttlSeconds?: number;
 }
@@ -61,7 +62,7 @@ export interface DefineAsyncToolConfig<T extends z.ZodObject<any>> {
  * The returned tool fires the work in the background and returns
  * `{ handle: "ah:..." }` immediately.
  */
-export function defineAsyncTool<T extends z.ZodObject<any>>(config: DefineAsyncToolConfig<T>): ToolDef {
+export function defineAsyncTool<T extends ToolParameterSchema>(config: DefineAsyncToolConfig<T>): ToolDef {
   const ttlMs = (config.ttlSeconds ?? 600) * 1000;
 
   return defineTool({
@@ -78,7 +79,7 @@ export function defineAsyncTool<T extends z.ZodObject<any>>(config: DefineAsyncT
       // Fire-and-forget; result is captured into the handle entry.
       (async () => {
         try {
-          const value = await config.execute(args as z.infer<T>, ctx);
+          const value = await config.execute(args as SchemaOutput<T>, ctx);
           entry.status = "resolved";
           entry.value = value;
         } catch (err: any) {

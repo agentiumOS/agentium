@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ToolDef } from "@agentium/core";
 import { Toolkit } from "@agentium/core";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 export interface CameraConfig {
   /** Default image width (default 1280). */
@@ -121,7 +121,7 @@ export class CameraToolkit extends Toolkit {
                 width: w,
                 height: h,
                 base64_length: b64.length,
-                data: `${b64.slice(0, 200)}...[truncated for LLM context]`,
+                data: b64,
               });
             }
 

@@ -1,5 +1,5 @@
 import { exec as execCb } from "node:child_process";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { RunContext } from "../agent/run-context.js";
 import type { ToolDef } from "../tools/types.js";
 import { Toolkit } from "./base.js";

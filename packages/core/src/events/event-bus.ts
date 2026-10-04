@@ -3,89 +3,106 @@ import type { AgentEventMap } from "./types.js";
 
 type EventKey = keyof AgentEventMap;
 export type AnyEventHandler = (event: string, data: unknown) => void;
-
-/**
- * Typed pub/sub for agent lifecycle.
- *
- * Observe with `on` / `onAny`. Do not use this bus to steer a run —
- * use `loopHooks` when you need to skip a tool or stop the loop.
- *
- * By default each Agent/Team/Workflow gets its own bus. Pass
- * `EventBus.shared` (or `sharedEventBus: true` on Agent) when one tracer
- * should see every entity in the process.
+export interface ObserverFailure {
+  event: string;
+  kind: "named" | "any";
+  /** Host-only diagnostic; never emitted back through this bus or logged implicitly. */
+  error: unknown;
+}
+export interface EventBusOptions {
+  onObserverError?: (failure: ObserverFailure) => void | Promise<void>;
+  /** Lifetime report cap. Further failures are counted, not queued. Default 100. */
+  maxObserverDiagnostics?: number;
+}
+/** Observation-only lifecycle pub/sub. Use hooks, approval and execution policy for control flow.
+ * Listeners run in registration order without awaiting promises; each failure is isolated.
  */
 export class EventBus {
-  private static readonly MAX_LISTENERS = 200;
   private static _shared: EventBus | undefined;
-
   private emitter = new EventEmitter();
   private anyHandlers = new Set<AnyEventHandler>();
-
-  /** Process-wide bus. Safe to attach a single tracer/metrics collector. */
+  private diagnosing = false;
+  private failures = 0;
+  private reported = 0;
+  private readonly diagnostic: EventBusOptions["onObserverError"];
+  private readonly diagnosticLimit: number;
   static get shared(): EventBus {
-    if (!EventBus._shared) {
-      EventBus._shared = new EventBus();
-    }
-    return EventBus._shared;
+    return (EventBus._shared ??= new EventBus());
   }
-
-  /** Reset the shared singleton. For tests only. */
   static resetShared(): void {
     EventBus._shared?.removeAllListeners();
     EventBus._shared = undefined;
   }
-
-  constructor() {
-    this.emitter.setMaxListeners(EventBus.MAX_LISTENERS);
-    this.emitter.on("error", (err) => {
-      console.error("[EventBus] Unhandled error:", err);
-    });
+  constructor(options: EventBusOptions = {}) {
+    this.emitter.setMaxListeners(200);
+    this.diagnostic = options.onObserverError;
+    this.diagnosticLimit = options.maxObserverDiagnostics ?? 100;
+    if (!Number.isSafeInteger(this.diagnosticLimit) || this.diagnosticLimit < 0)
+      throw new TypeError("Invalid observer diagnostic limit");
   }
-
   on<K extends EventKey>(event: K, handler: (data: AgentEventMap[K]) => void): this {
-    this.emitter.on(event, handler as (...args: unknown[]) => void);
+    this.emitter.on(event, handler);
     return this;
   }
-
   once<K extends EventKey>(event: K, handler: (data: AgentEventMap[K]) => void): this {
-    this.emitter.once(event, handler as (...args: unknown[]) => void);
+    this.emitter.once(event, handler);
     return this;
   }
-
   off<K extends EventKey>(event: K, handler: (data: AgentEventMap[K]) => void): this {
-    this.emitter.off(event, handler as (...args: unknown[]) => void);
+    this.emitter.off(event, handler);
     return this;
   }
-
-  /**
-   * Subscribe to every event. Preferred attachment point for tracers and
-   * metrics — avoids casting and survives new event names.
-   */
   onAny(handler: AnyEventHandler): this {
     this.anyHandlers.add(handler);
     return this;
   }
-
   offAny(handler: AnyEventHandler): this {
     this.anyHandlers.delete(handler);
     return this;
   }
-
   emit<K extends EventKey>(event: K, data: AgentEventMap[K]): boolean {
-    for (const handler of this.anyHandlers) {
-      try {
-        handler(event, data);
-      } catch (err) {
-        console.error("[EventBus] onAny handler error:", err);
-      }
-    }
-    return this.emitter.emit(event, data);
+    for (const handler of [...this.anyHandlers]) this.observe(() => handler(event, data), event, "any");
+    // rawListeners preserves EventEmitter's once wrappers (including off(original), reentrant once,
+    // snapshot delivery and duplicate listener removal), while isolating each invocation.
+    const listeners = this.emitter.rawListeners(event);
+    for (const listener of listeners) this.observe(() => listener.call(this.emitter, data), event, "named");
+    return listeners.length > 0;
   }
-
-  removeAllListeners(event?: EventKey): this {
-    if (!event) {
-      this.anyHandlers.clear();
+  private observe(call: () => unknown, event: string, kind: ObserverFailure["kind"]) {
+    try {
+      const returned = call();
+      if (returned && (typeof returned === "object" || typeof returned === "function"))
+        void Promise.resolve(returned).catch((error) => this.report({ event, kind, error }));
+    } catch (error) {
+      this.report({ event, kind, error });
     }
+  }
+  private report(failure: ObserverFailure) {
+    this.failures++;
+    if (!this.diagnostic || this.diagnosing || this.reported >= this.diagnosticLimit) return;
+    this.reported++;
+    this.diagnosing = true;
+    try {
+      const result = this.diagnostic(failure);
+      if (result && (typeof result === "object" || typeof result === "function")) {
+        void Promise.resolve(result).then(
+          () => {
+            this.diagnosing = false;
+          },
+          () => {
+            this.diagnosing = false;
+          },
+        );
+      } else this.diagnosing = false;
+    } catch {
+      this.diagnosing = false;
+    }
+  }
+  getObserverDiagnostics(): { failures: number; reported: number; suppressed: number } {
+    return { failures: this.failures, reported: this.reported, suppressed: this.failures - this.reported };
+  }
+  removeAllListeners(event?: EventKey): this {
+    if (!event) this.anyHandlers.clear();
     this.emitter.removeAllListeners(event);
     return this;
   }

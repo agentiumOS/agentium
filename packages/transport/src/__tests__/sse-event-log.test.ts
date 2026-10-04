@@ -62,3 +62,12 @@ describe("formatSSEEvent", () => {
     expect(out).toContain("event: message");
   });
 });
+
+it("encodes multiline strings as data lines and rejects injected event names", () => {
+  expect(formatSSEEvent({ id: 1, recordedAt: 0, payload: "first\r\nsecond\nthird" })).toBe(
+    "id: 1\ndata: first\ndata: second\ndata: third\n\n",
+  );
+  expect(() => formatSSEEvent({ id: 1, recordedAt: 0, event: "bad\ndata: injected", payload: "x" })).toThrow(
+    /event name/,
+  );
+});

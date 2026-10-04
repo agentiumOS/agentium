@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { RunContext } from "../../agent/run-context.js";
 import { EventBus } from "../../events/event-bus.js";
 import { defineTool } from "../define-tool.js";

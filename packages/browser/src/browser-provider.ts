@@ -406,7 +406,7 @@ export class BrowserProvider {
     if (!loc) return [];
     try {
       return (await loc.evaluate((el: any) => {
-        if (!el || el.tagName !== "SELECT") return [];
+        if (el?.tagName !== "SELECT") return [];
         return Array.from(el.options).map((opt: any) => ({
           value: opt.value,
           label: (opt.label || opt.textContent || "").trim(),
@@ -456,7 +456,7 @@ export class BrowserProvider {
     try {
       const result = await this.page.evaluate(
         // eslint-disable-next-line @typescript-eslint/no-implied-eval
-        new Function("return (async () => { " + code + " })()") as any,
+        new Function(`return (async () => { ${code} })()`) as any,
       );
       if (result === undefined) return "undefined";
       if (result === null) return "null";
@@ -775,8 +775,10 @@ export class BrowserProvider {
             var title = el.getAttribute("title") || "";
             var name = el.getAttribute("name") || "";
             var href = el.getAttribute("href") || "";
-            var value = el.value || "";
-            var label = ariaLabel || text || placeholder || title || value || name;
+            // Field contents are never labels. Password, OTP and payment values
+            // must not enter model observations or recorded DOM snapshots.
+            var isField = tag === "input" || tag === "textarea" || el.isContentEditable === true;
+            var label = ariaLabel || (isField ? "" : text) || placeholder || title || name;
             if (!label && href) label = href.slice(0, 60);
             if (!label) label = "(" + tag + (type ? (" type=" + type) : "") + ")";
 

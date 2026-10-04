@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import type { MCPToolProviderConfig } from "@agentium/core";
+import { schemaShape } from "@agentium/core";
 import { toolkitCatalog } from "@agentium/core/toolkits";
 import { MCPManager } from "./mcp-manager.js";
 
@@ -78,7 +79,7 @@ export function createAdminRouter(opts?: AdminRouterOptions) {
         tools.map((t: any) => ({
           name: t.name,
           description: t.description,
-          parameters: Object.keys(t.parameters?.shape ?? {}),
+          parameters: Object.keys(t.parameters ? schemaShape(t.parameters) : {}),
         })),
       );
     } catch (err: any) {
@@ -155,7 +156,7 @@ export function createAdminRouter(opts?: AdminRouterOptions) {
         tools.map((t: any) => ({
           name: t.name,
           description: t.description,
-          parameters: Object.keys(t.parameters?.shape ?? {}),
+          parameters: Object.keys(t.parameters ? schemaShape(t.parameters) : {}),
         })),
       );
     } catch (err: any) {

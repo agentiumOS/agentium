@@ -11,7 +11,27 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [20]
+        node-version: [22, 24]
+
+    services:
+      mongo:
+        image: mongo:8.0
+        ports:
+          - 27319:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6389:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
@@ -23,18 +43,52 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        # Delete the lockfile (generated on macOS, missing Linux native
-        # bindings like @rollup/rollup-linux-x64-gnu) and re-resolve on the
-        # Linux runner. See https://github.com/npm/cli/issues/4828
+        run: npm ci --legacy-peer-deps --include=optional
+
+      - name: Verify installed native bindings and lock consistency
         run: |
-          rm -f package-lock.json
-          npm install --legacy-peer-deps --include=optional
+          node -e "require('@rolldown/binding-linux-x64-gnu'); console.log('Linux native bindings loaded')"
+          git diff --exit-code -- package-lock.json
 
       - name: Build packages
         run: npm run build
 
+      - name: Typecheck source and test fixtures
+        run: |
+          for package in core harness transport queue browser eval observability admin edge cli; do
+            npx tsc -p "packages/$package/tsconfig.json" --noEmit --pretty false
+          done
+
       - name: Lint & format check
         run: npx biome ci .
 
-      - name: Run tests
+      - name: Verify release metadata
+        run: node --test scripts/release-lock.test.mjs
+
+      - name: Run tests, including Redis delivery and MongoDB crash recovery
         run: npx vitest run
+        env:
+          AGENTIUM_REDIS_TEST: "1"
+          AGENTIUM_DURABLE_MONGO_TEST: "1"
+
+      - name: Verify packed package consumers and CLI scaffolds
+        run: npm run test:package
+
+      - name: Install pinned optional sandbox SDK fixture dependencies
+        if: matrix.node-version == 24
+        run: npm install --prefix "$RUNNER_TEMP/agentium-sandbox-sdk-fixture" --ignore-scripts --no-audit --no-fund @e2b/code-interpreter@2.8.0 @daytona/sdk@0.220.0
+
+      - name: Verify actual sandbox SDK mappings against loopback fixtures
+        if: matrix.node-version == 24
+        run: AGENTIUM_SANDBOX_SDK_PREFIX="$RUNNER_TEMP/agentium-sandbox-sdk-fixture" npx vitest run packages/core/src/toolkits/__tests__/sandbox-sdk.integration.test.ts
+
+      - name: Install pinned OpenTelemetry conformance fixtures
+        if: matrix.node-version == 24
+        run: |
+          npm install --prefix "$RUNNER_TEMP/agentium-otel-fixture" --ignore-scripts --no-audit --no-fund @opentelemetry/api@1.9.1 @opentelemetry/sdk-trace-base@2.11.0 @opentelemetry/otlp-transformer@0.222.0
+          python3 -m venv "$RUNNER_TEMP/agentium-otel-proto-fixture"
+          "$RUNNER_TEMP/agentium-otel-proto-fixture/bin/pip" install opentelemetry-proto==1.38.0 protobuf==6.33.6
+
+      - name: Verify host OpenTelemetry SDK and independent OTLP decoding
+        if: matrix.node-version == 24
+        run: AGENTIUM_OTEL_SDK_FIXTURE="$RUNNER_TEMP/agentium-otel-fixture" AGENTIUM_OTEL_PROTO_PYTHON="$RUNNER_TEMP/agentium-otel-proto-fixture/bin/python" npx vitest run packages/observability/src/__tests__/otel-sdk.integration.test.ts

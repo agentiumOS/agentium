@@ -1,4 +1,3 @@
-import type { z } from "zod";
 import type { EventBus } from "../events/event-bus.js";
 import type { LogLevel } from "../logger/logger.js";
 import type { UnifiedMemoryConfig } from "../memory/memory-config.js";
@@ -11,7 +10,9 @@ import type {
   StreamChunk,
   TokenUsage,
 } from "../models/types.js";
-import type { ApprovalConfig } from "../tools/approval.js";
+import type { ApprovalConfig, ApprovalManager } from "../tools/approval.js";
+import type { ExecutionPolicy, RunMode } from "../tools/execution-policy.js";
+import type { AgentiumSchema } from "../tools/schema.js";
 import type { SandboxConfig, ToolCallResult, ToolDef } from "../tools/types.js";
 import type { RetryConfig } from "../utils/retry.js";
 import type { RunContext } from "./run-context.js";
@@ -31,20 +32,19 @@ export interface AgentConfig {
    */
   memory?: UnifiedMemoryConfig;
   /**
-   * Folder the agent may read and write on the host disk. Paths cannot leave
-   * this folder. Turns on filesystem tools (`fs_read_file`, `fs_list_directory`,
-   * `fs_file_info`, `fs_write_file`).
+   * Host workspace with an explicit access mode.
+   * Use `{ path, mode: "read" }` for read-only tools. Canonical paths are confined
+   * to this folder; OS isolation is still needed against concurrent path replacement.
    */
-  workspace?: string;
+  workspace?: false | { path: string; mode: "read" | "write" };
   /**
    * Folders to scan for Agent Skills (`SKILL.md`). The prompt only sees a short
    * name + description until the agent calls `get_skill_instructions`.
    */
-  skillDirs?: string[];
+  skillDirs?: string[] | false;
   /**
    * Load project instruction files (`AGENTS.md`, `CLAUDE.md`, `.agentium.md`,
    * `.cursorrules`) and add them to the system prompt. Default: false.
-   * `Agent.deep()` turns this on.
    */
   contextFiles?: boolean | import("../context/context-files.js").LoadContextFilesOptions;
   /**
@@ -54,12 +54,12 @@ export interface AgentConfig {
   filesystem?: boolean | import("../fs/agent-fs.js").AgentFileSystemConfig;
   /**
    * Isolated child agents via the `task` tool. The child gets a fresh chat and
-   * returns one final report. Default: false. `Agent.deep()` turns this on.
+   * returns one final report. Default: false.
    */
   subagents?: boolean | { maxDepth?: number };
   /**
    * Tiny standing memory files (MEMORY.md / USER.md) with a hard character cap.
-   * Default: false. `Agent.deep()` turns this on.
+   * Default: false.
    */
   fileMemory?: boolean | import("../memory/file-memory.js").FileMemoryConfig;
   /**
@@ -83,7 +83,7 @@ export interface AgentConfig {
   temperature?: number;
   /** Maximum output tokens per LLM call. */
   maxTokens?: number;
-  structuredOutput?: z.ZodSchema;
+  structuredOutput?: AgentiumSchema;
   hooks?: AgentHooks;
   guardrails?: {
     input?: InputGuardrail[];
@@ -106,6 +106,10 @@ export interface AgentConfig {
   sandbox?: boolean | SandboxConfig;
   /** Human-in-the-loop approval configuration for tool calls. */
   approval?: ApprovalConfig;
+  /** Borrow a host dispatcher (for example across child agents); Agent.close will not close it. */
+  approvalManager?: ApprovalManager;
+  /** Mandatory host policy; per-tool approval exemptions cannot override it. */
+  executionPolicy?: ExecutionPolicy;
   /**
    * Skills — pre-packaged or learned tool bundles.
    * Accepts loaded Skill objects or source strings (paths, npm packages, URLs).
@@ -138,7 +142,7 @@ export interface AgentConfig {
   toolResolver?: (ctx: RunContext) => Promise<import("../tools/types.js").ToolDef[]>;
   /** Token-aware context compaction to prevent context window overflow. */
   contextCompactor?: ContextCompactorConfig;
-  /** Auto-checkpoint after each tool roundtrip for rollback support. */
+  /** Save a transcript/state snapshot after each tool roundtrip. Snapshot rollback does not undo effects or resume execution. */
   checkpointing?: boolean | { storage: import("../storage/driver.js").StorageDriver };
   /** Context compression — auto-compress verbose tool results. Set `true` for defaults or provide a CompressionManager. */
   compressToolResults?: boolean;
@@ -188,6 +192,18 @@ export interface ToolResultLimitConfig {
 }
 
 export interface RunOpts {
+  /** Runtime-owned execution services; trusted hosts only. */
+  executionServices?: import("./execution-services.js").ExecutionServices;
+  /** Additional mandatory host policy for delegated runs; cannot relax Agent policy. */
+  executionPolicy?: import("../tools/execution-policy.js").ExecutionPolicy;
+  /** Canonical external history; used by execution-driver adapters. */
+  history?: readonly ChatMessage[];
+  /** Read supplied history without loading or persisting an Agent-owned session. */
+  ephemeral?: boolean;
+  /** Caller-assigned run identity for a lifecycle-owning driver. */
+  runId?: string;
+  /** Immutable execution mode for this run. Plan mode denies declared effects and reviews unknowns. */
+  runMode?: RunMode;
   /** Continue this conversation. Same id = the agent remembers prior turns. */
   sessionId?: string;
   /** Who is talking. Used by memory, fileMemory (USER.md), and isolation. */
@@ -252,6 +268,9 @@ export interface RunOutput {
 
   /** Enhanced metrics with timing and token breakdown. */
   metrics?: RunMetrics;
+
+  /** Newly produced canonical user/model/tool exchange, before request projection. */
+  newMessages?: ChatMessage[];
 
   /** Full conversation messages sent to the LLM (system + history + user input). */
   messages?: ChatMessage[];

@@ -70,6 +70,8 @@ describe("CameraToolkit", () => {
       const data = JSON.parse(result as string);
       expect(data).toHaveProperty("base64_length");
       expect(data.format).toBe("jpg");
+      expect(Buffer.from(data.data, "base64").toString()).toBe("fake-image-data");
+      expect(data.data.length).toBe(data.base64_length);
     });
   });
 

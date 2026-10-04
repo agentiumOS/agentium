@@ -1,8 +1,27 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## Unreleased — next breaking release
 
-## [Unreleased]
+This working tree contains intentional API removals and must not be published as a compatible patch/minor release. Package version numbers have not been changed or released.
+
+- Harness definitions, composition, runtime, policies, controllers and drivers now live in `@agentium/harness`. Core exposes only a neutral `ExecutionServices` integration contract.
+- Removed `Agent.deep()`, `legacyDeep()`, Agent's `harness`/`harnessOptions`/`replaceTools` configuration and `harnessDescription`. Use an explicit definition and `HarnessRuntime` with `agentDriver`; the package README contains a tested migration.
+- Removed redundant `LegacyMCPToolProvider`, `A2ALegacyRemoteAgent` and `createA2ALegacyServer` aliases. `MCPToolProvider`, `A2ARemoteAgent` and `createA2AServer` still implement the older protocols.
+- Renamed `ColbertReranker`/config to `CrossEncoderReranker`/config and its provider ID to `cross-encoder-local`. There is no permanent second export.
+- Workspace mode and local/authenticated HTTP mode must be explicit. Removed always-rejected worker retry fields and remote realtime prompt fields from public configuration; JavaScript callers receive migration diagnostics.
+- Public tool and structured-output schemas now accept Zod 3, Zod 4 Classic and Zod Mini. Consumers inspecting `ToolDef.parameters` should use `parseSchema`, `safeParseSchema` and `schemaShape` instead of assuming a specific Zod object. Legacy session snapshot readers, the ownership-restricted Responses reasoning reader and buffered voice remain supported.
+- Added opt-in durable tasks, actions/approvals, queue delivery, event/artifact records, protocol bridges and watch infrastructure; ordinary Agent calls do not gain distributed recovery automatically.
+- Sandbox execution now rejects the unimplemented Docker selector before host I/O. Local execution has explicit environment forwarding, bounded output and owned process/workspace cleanup. E2B and Daytona use versioned, tested optional SDK ports.
+- EventBus observers cannot turn successful execution into failure. Evaluators share cancellation/deadline handling, preserve case identity, and require successful run status plus every scorer assertion; malformed scores and canceled expected-error cases fail.
+- Socket.IO requires explicit local/authenticated security, scopes sessions/discovery to verified identity, awaits authentication outcomes, and cancels connection-owned runs. HTTP text streams share bounded backpressure and disconnect cleanup; multipart failures release request buffers.
+- Telemetry defaults to metadata capture with redaction and bounds. Model/tool/run correlation, shared outcome accounting, bounded exports, JSONL, corrected JSON OTLP, host-owned OpenTelemetry SDK bridging and a Langfuse OTLP migration are included.
+- CLI templates use supported APIs, release-aligned dependency ranges and Node engines; RAG passes retrieval evidence to the Agent. Scaffolding refuses existing destinations, skills validate local sources and require explicit application registration. Packed ESM/CJS/type checks now cover all packages and generated templates.
+- Harnesses can read explicitly approved MCP text resources with owner checks, URI/MIME grants, cancellation and size/time limits. Ordinary Agent streaming handoffs preserve live output, canonical conversation history, cancellation and execution policy.
+- Added optional outbound telephony interfaces and adapters for Twilio, Telnyx, Exotel, SignalWire and Vonage, plus a LiveKit SIP route. No provider SDK is required for unrelated capabilities. Unknown dispatch outcomes require reconciliation before another attempt.
+- Optional live-session recovery resumes safe Gemini checkpoints and permits an explicitly configured fresh OpenAI session. Recovery does not replay tool actions or speech; paid-provider and long-call validation remain application integration work.
+- Custom harness telemetry now covers controller decisions and direct model calls, including invocation correlation and known usage on failures.
+- Queue supports BullMQ 5 and 6. Legacy repeatable-job metadata requires an explicit migration using BullMQ 5 before switching to 6. All ten packages now build with tsdown and TypeScript declaration emission.
+- Runtime support is Node 22.18+ within 22.x or 24.11+ within 24.x. Refreshed network and development dependency ranges; the latest local production and full dependency audits reported zero vulnerabilities.
 
 ## [3.2.0] - 2026-10-04
 

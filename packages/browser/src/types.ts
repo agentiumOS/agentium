@@ -46,7 +46,7 @@ export type BrowserAction =
       /** If provided, scroll the element with this index into view instead. */
       index?: number;
     }
-  | { action: "navigate"; url: string; /** Open the URL in a new tab, then switch to it. */ newTab?: boolean }
+  | { action: "navigate"; url: string /** Open the URL in a new tab, then switch to it. */; newTab?: boolean }
   | { action: "search"; query: string; engine?: SearchEngine }
   | { action: "new_tab"; url?: string }
   | { action: "switch_tab"; tabId: string }
@@ -328,6 +328,10 @@ export interface BrowserAgentConfig {
    * browser can't do alone.
    */
   tools?: ToolDef[];
+  /** Applies to custom tools. Native browser operations are unavailable in plan mode. */
+  executionPolicy?: import("@agentium/core").ExecutionPolicy;
+  approval?: import("@agentium/core").ApprovalConfig;
+  approvalManager?: import("@agentium/core").ApprovalManager;
   /** Cost tracker — track vision model token usage and enforce budgets across browser runs. */
   costTracker?: CostTracker;
   logLevel?: LogLevel;
@@ -337,6 +341,11 @@ export interface BrowserAgentConfig {
 // ── Run options ──────────────────────────────────────────────────────────
 
 export interface BrowserRunOpts {
+  /** Inherit the calling Agent's identity, policy and cancellation. */
+  context?: import("@agentium/core").RunContext;
+  signal?: AbortSignal;
+  tenantId?: string;
+  runMode?: import("@agentium/core").RunMode;
   /** Override startUrl from config */
   startUrl?: string;
   /** Per-run model API key override */

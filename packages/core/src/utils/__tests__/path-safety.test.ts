@@ -1,7 +1,12 @@
+import { parse, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { assertHostAllowed, isHostAllowed, PathSecurityError, safeJoin } from "../path-safety.js";
 
 describe("safeJoin", () => {
+  it("allows children when the host explicitly grants the filesystem root", () => {
+    const root = parse(process.cwd()).root;
+    expect(safeJoin(root, "example.txt")).toBe(resolve(root, "example.txt"));
+  });
   it("returns a path inside the base", () => {
     const result = safeJoin("/var/data", "users.json");
     expect(result).toBe("/var/data/users.json");

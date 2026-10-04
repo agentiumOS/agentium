@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { defineTool } from "../tools/define-tool.js";
 import type { ToolDef } from "../tools/types.js";
 import { getArtifact, listArtifacts, storeArtifact } from "./artifact-store.js";

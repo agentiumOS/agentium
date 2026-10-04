@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { RunContext } from "../agent/run-context.js";
 import type { ToolDef } from "../tools/types.js";
 import { Toolkit } from "./base.js";
@@ -29,25 +29,42 @@ export class PdfToolkit extends Toolkit {
   constructor(config: PdfConfig = {}) {
     super();
     this.maxLength = config.maxLength ?? 50000;
+    if (!Number.isSafeInteger(this.maxLength) || this.maxLength < 1)
+      throw new Error("PdfToolkit maxLength must be a positive integer");
   }
 
-  private async parse(source: string): Promise<any> {
-    const pdfParse = _require("pdf-parse");
-    const isBase64 = !source.startsWith("/") && !source.startsWith("http");
-
+  private async parse(source: string, ctx: RunContext, pages?: number[], metadata = false): Promise<any> {
+    const { PDFParse } = _require("pdf-parse");
+    if (typeof PDFParse !== "function")
+      throw new Error("PdfToolkit requires pdf-parse ^2.4.5; v1 function API is no longer supported");
+    ctx.signal?.throwIfAborted();
     let buffer: Buffer;
-    if (isBase64) {
-      buffer = Buffer.from(source, "base64");
-    } else if (source.startsWith("http://") || source.startsWith("https://")) {
-      const res = await fetch(source);
-      if (!res.ok) throw new Error(`Failed to fetch PDF: ${res.status}`);
-      buffer = Buffer.from(await res.arrayBuffer());
-    } else {
-      const fs = await import("node:fs");
-      buffer = fs.readFileSync(source);
+    if (source.startsWith("http://") || source.startsWith("https://")) {
+      const response = await fetch(source, { signal: ctx.signal });
+      if (!response.ok) throw new Error(`Failed to fetch PDF: ${response.status}`);
+      buffer = Buffer.from(await response.arrayBuffer());
+    } else if (source.startsWith("/")) {
+      const { readFile } = await import("node:fs/promises");
+      buffer = await readFile(source, { signal: ctx.signal });
+    } else buffer = Buffer.from(source, "base64");
+    const parser = new PDFParse({ data: new Uint8Array(buffer) });
+    try {
+      const info = await parser.getInfo();
+      if (metadata) return { numpages: info.total, info: info.info };
+      if (pages?.some((page) => !Number.isSafeInteger(page) || page < 1 || page > info.total))
+        throw new Error("Requested page is outside the PDF page range");
+      ctx.signal?.throwIfAborted();
+      const text = await parser.getText(pages?.length ? { partial: pages } : {});
+      ctx.signal?.throwIfAborted();
+      return {
+        numpages: text.total,
+        info: info.info,
+        text: text.text,
+        pages: text.pages.map((page: any) => ({ page: page.num, text: page.text })),
+      };
+    } finally {
+      await parser.destroy();
     }
-
-    return pdfParse(buffer);
   }
 
   getTools(): ToolDef[] {
@@ -58,9 +75,9 @@ export class PdfToolkit extends Toolkit {
         parameters: z.object({
           source: z.string().describe("File path, URL, or base64-encoded PDF data"),
         }),
-        execute: async (args: Record<string, unknown>, _ctx: RunContext): Promise<string> => {
+        execute: async (args: Record<string, unknown>, ctx: RunContext): Promise<string> => {
           try {
-            const data = await this.parse(args.source as string);
+            const data = await this.parse(args.source as string, ctx);
             const text = (data.text as string) ?? "";
             if (text.length > this.maxLength) {
               return `${text.slice(0, this.maxLength)}\n\n...[truncated at ${this.maxLength} chars, total ${text.length}]`;
@@ -77,9 +94,9 @@ export class PdfToolkit extends Toolkit {
         parameters: z.object({
           source: z.string().describe("File path, URL, or base64-encoded PDF data"),
         }),
-        execute: async (args: Record<string, unknown>, _ctx: RunContext): Promise<string> => {
+        execute: async (args: Record<string, unknown>, ctx: RunContext): Promise<string> => {
           try {
-            const data = await this.parse(args.source as string);
+            const data = await this.parse(args.source as string, ctx, undefined, true);
             return JSON.stringify(
               {
                 pages: data.numpages,
@@ -104,38 +121,22 @@ export class PdfToolkit extends Toolkit {
         description: "Extract text from specific pages of a PDF. Returns text per page.",
         parameters: z.object({
           source: z.string().describe("File path, URL, or base64-encoded PDF data"),
-          pages: z.array(z.number()).optional().describe("Page numbers to extract (1-indexed). Omit for all pages."),
+          pages: z
+            .array(z.number().int().positive())
+            .optional()
+            .describe("Page numbers to extract (1-indexed). Omit for all pages."),
         }),
-        execute: async (args: Record<string, unknown>, _ctx: RunContext): Promise<string> => {
+        execute: async (args: Record<string, unknown>, ctx: RunContext): Promise<string> => {
           try {
             const requestedPages = args.pages as number[] | undefined;
-            const results: { page: number; text: string }[] = [];
-            const _pageNum = 0;
-
-            const data = await this.parse(args.source as string);
-            const fullText = (data.text as string) ?? "";
-            const totalPages = data.numpages ?? 1;
-
-            if (!requestedPages || requestedPages.length === 0) {
-              return JSON.stringify({
-                totalPages,
-                text:
-                  fullText.length > this.maxLength ? `${fullText.slice(0, this.maxLength)}...[truncated]` : fullText,
-              });
-            }
-
-            const perPageApprox = Math.ceil(fullText.length / totalPages);
-            for (const p of requestedPages) {
-              if (p < 1 || p > totalPages) {
-                results.push({ page: p, text: `(page ${p} out of range, PDF has ${totalPages} pages)` });
-              } else {
-                const start = (p - 1) * perPageApprox;
-                const end = Math.min(start + perPageApprox, fullText.length);
-                results.push({ page: p, text: fullText.slice(start, end) });
-              }
-            }
-
-            return JSON.stringify({ totalPages, pages: results }, null, 2);
+            const data = await this.parse(args.source as string, ctx, requestedPages);
+            let remaining = this.maxLength;
+            const pages = data.pages.map((page: { page: number; text: string }) => {
+              const text = page.text.slice(0, remaining);
+              remaining -= text.length;
+              return { ...page, text, ...(text.length < page.text.length ? { truncated: true } : {}) };
+            });
+            return JSON.stringify({ totalPages: data.numpages, pages }, null, 2);
           } catch (err: any) {
             return JSON.stringify({ error: err.message });
           }

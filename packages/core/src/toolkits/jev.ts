@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { RunContext } from "../agent/run-context.js";
 import { choice, createTypeSafeClient, noul, questionsFromSpecs, score } from "../models/jev-sdk.js";
 import type { ToolDef } from "../tools/types.js";

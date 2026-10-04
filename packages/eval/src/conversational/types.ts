@@ -60,6 +60,7 @@ export interface ConversationSuiteConfig {
   scorers?: Scorer[];
   concurrency?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   judgeModel?: ModelProvider;
 }
 

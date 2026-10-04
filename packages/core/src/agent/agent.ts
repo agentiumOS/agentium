@@ -1,16 +1,18 @@
-import { join } from "node:path";
-import { v4 as uuidv4 } from "uuid";
-import { z } from "zod";
+import { randomUUID as uuidv4 } from "node:crypto";
+import { z } from "zod/v3";
 import type { SemanticCache } from "../cache/semantic-cache.js";
+import { CheckpointManager } from "../checkpoint/checkpoint-manager.js";
 import { CompressionManager } from "../compression/compression-manager.js";
-import { ContextCompactor } from "../context/context-compactor.js";
+import { ContextCompactor, countConversationTokens, groupConversationTurns } from "../context/context-compactor.js";
 import { formatContextFiles, loadContextFiles } from "../context/context-files.js";
+import { retainRecentTurns } from "../context/conversation-history.js";
 import { applyTemplates, resolveDependencies } from "../dependencies/resolver.js";
 import { EventBus } from "../events/event-bus.js";
 import { AgentFileSystem } from "../fs/agent-fs.js";
-import { HandoffManager } from "../handoff/handoff-manager.js";
+import { getHandoffControl, getHandoffScope, setHandoffControl } from "../handoff/control.js";
+import { HandoffManager, settledHandoffPrefix } from "../handoff/handoff-manager.js";
 import { createHandoffTool } from "../handoff/handoff-tool.js";
-import { HandoffSignal } from "../handoff/types.js";
+import type { HandoffResult } from "../handoff/types.js";
 import { Logger } from "../logger/logger.js";
 import { FileMemory } from "../memory/file-memory.js";
 import type { UnifiedMemoryConfig } from "../memory/memory-config.js";
@@ -25,7 +27,9 @@ import { SkillMdManager } from "../skills/skill-md.js";
 import { createArtifactTools } from "../state/artifact-tools.js";
 import { InMemoryStorage } from "../storage/in-memory.js";
 import { FileSystemToolkit } from "../toolkits/filesystem.js";
+import { ApprovalManager } from "../tools/approval.js";
 import { defineTool } from "../tools/define-tool.js";
+import { evaluateExecutionPolicy } from "../tools/execution-policy.js";
 import { ToolExecutor } from "../tools/tool-executor.js";
 import { ToolRouter } from "../tools/tool-router.js";
 import type { ToolDef } from "../tools/types.js";
@@ -44,6 +48,11 @@ import {
 import { createTaskTool, type SubagentSpec, spawnSubagent } from "./subagent.js";
 import type { AgentConfig, LoopHooks, RunMetrics, RunOpts, RunOutput } from "./types.js";
 
+const policyComponents = new WeakMap<
+  import("../tools/execution-policy.js").ExecutionPolicy,
+  readonly import("../tools/execution-policy.js").ExecutionPolicy[]
+>();
+
 export class Agent {
   readonly kind = "agent" as const;
   readonly name: string;
@@ -51,6 +60,7 @@ export class Agent {
   readonly instructions?: string | ((ctx: RunContext) => string);
 
   private config: AgentConfig;
+  private checkpointService: CheckpointManager | null = null;
   private memoryManager: MemoryManager | null = null;
   private skillManager: SkillManager | null = null;
   private skillMd: SkillMdManager | null = null;
@@ -69,6 +79,8 @@ export class Agent {
   private llmLoop!: LLMLoop;
   private logger: Logger;
   private readyPromise: Promise<void>;
+  private approvalService: ApprovalManager | null = null;
+  private ownsApprovalService = false;
   private _toolExecutor: ToolExecutor | null = null;
   private toolRouter: ToolRouter | null = null;
   private skillsInitPromise: Promise<void> | null = null;
@@ -102,13 +114,107 @@ export class Agent {
 
   /** List the names of all currently registered tools. */
   listTools(): string[] {
-    return this.collectTools(this.config).map((t) => t.name);
+    return [...new Set(this.collectTools(this.config).map((tool) => tool.name))];
   }
 
-  private buildToolExecutorConfig(): import("../tools/tool-executor.js").ToolExecutorConfig {
+  private effectiveExecutionPolicy(
+    ...parents: Array<import("../tools/execution-policy.js").ExecutionPolicy | undefined>
+  ): import("../tools/execution-policy.js").ExecutionPolicy | undefined {
+    const policies = [
+      ...new Set(
+        [this.config.executionPolicy, ...parents].flatMap((policy) =>
+          policy ? (policyComponents.get(policy) ?? [policy]) : [],
+        ),
+      ),
+    ];
+    if (policies.length <= 1) return policies[0];
+    const combined: import("../tools/execution-policy.js").ExecutionPolicy = {
+      decide: async (call, ctx) => {
+        let result: import("../tools/execution-policy.js").ExecutionDecision = { action: "allow" };
+        for (const policy of policies) {
+          const decision = await evaluateExecutionPolicy(policy, call, ctx);
+          if (decision.action === "deny") return decision;
+          if (decision.action === "ask") result = decision;
+        }
+        return result;
+      },
+      resolveEffect: async (call, ctx) => {
+        const effects = await Promise.all(policies.map((policy) => policy.resolveEffect?.(call, ctx) ?? "unknown"));
+        return (
+          effects.find((effect) => effect !== "read" && effect !== "unknown") ??
+          (effects.every((effect) => effect === "read") ? "read" : "unknown")
+        );
+      },
+    };
+    policyComponents.set(combined, policies);
+    return combined;
+  }
+
+  private validateControlledRun(opts?: RunOpts): void {
+    if (opts && Object.hasOwn(opts, "harnessServices"))
+      throw new Error("RunOpts.harnessServices was removed; use the host-supplied executionServices port");
+    if (!opts?.executionServices) return;
+    if (this.handoffManager)
+      throw new Error("Agent handoff cannot run inside supplied execution services; use host-owned delegation");
+    if (this.reflectionManager) throw new Error("Agent reflection must be owned by the supplied execution boundary");
+    if (this.config.toolResultLimit?.strategy === "summarize" && this.config.toolResultLimit.model)
+      throw new Error("Model-backed tool-result summarization must be owned by the supplied execution boundary");
+    if (this.compressionManager || this.config.contextCompactor?.summarizeModel)
+      throw new Error("Model-backed Agent compression must be owned by the supplied execution boundary");
+  }
+
+  private normalizeControlledRun(opts?: RunOpts): RunOpts | undefined {
+    const services = opts?.executionServices;
+    if (!services) return opts;
+    const parent = services.ctx;
+    for (const key of ["userId", "tenantId"] as const) {
+      if (opts[key] !== undefined && opts[key] !== parent[key])
+        throw new Error(`Execution services ${key} cannot be overridden`);
+    }
+    const runMode = opts.runMode ?? parent.runMode;
+    if (!["plan", "execute"].includes(runMode) || (parent.runMode === "plan" && runMode !== "plan"))
+      throw new Error("Execution services runMode cannot be weakened");
+    const signal =
+      opts.signal && opts.signal !== services.signal
+        ? AbortSignal.any([services.signal, opts.signal])
+        : services.signal;
+    signal.throwIfAborted();
+    // Delegated calls retain their own run/session/history. Port-only root calls
+    // inherit the owner's canonical state instead of silently creating a new scope.
+    const root =
+      opts.runId === parent.runId ||
+      (opts.runId === undefined &&
+        opts.metadata?.parentRunId === undefined &&
+        (opts.sessionId === undefined ||
+          opts.sessionId === services.sessionKey ||
+          opts.sessionId === parent.sessionId));
+    return {
+      ...opts,
+      userId: parent.userId,
+      tenantId: parent.tenantId,
+      sessionId: opts.sessionId ?? services.sessionKey,
+      runId: opts.runId ?? (root ? parent.runId : undefined),
+      history: opts.history ?? (root ? services.history : undefined),
+      metadata: { ...parent.metadata, ...opts.metadata },
+      runMode,
+      signal,
+    };
+  }
+
+  private buildToolExecutorConfig(
+    ctx?: RunContext,
+    opts?: RunOpts,
+  ): import("../tools/tool-executor.js").ToolExecutorConfig {
     return {
       sandbox: this.config.sandbox,
-      approval: this.config.approval ? { ...this.config.approval, eventBus: this.eventBus } : undefined,
+      approvalManager: ctx?.executionServices?.approvalManager ?? this.approvalService ?? undefined,
+      // Supplied orchestration may add approvals, but cannot replace the Agent's own gate.
+      // ToolExecutor deduplicates managers by identity when the host shares one instance.
+      additionalApprovalManagers: [
+        ...(this.approvalService ? [this.approvalService] : []),
+        ...(getHandoffScope(opts)?.approvals ?? []),
+      ],
+      executionPolicy: ctx?.executionPolicy ?? this.config.executionPolicy,
       agentName: this.config.name,
       onToolCall: this.config.hooks?.onToolCall
         ? (ctx, toolName, args) => this.config.hooks!.onToolCall!(ctx, toolName, args)
@@ -179,6 +285,7 @@ export class Agent {
       retry: this.config.retry,
       toolResultLimit: this.config.toolResultLimit,
       loopHooks: this.buildLoopHooks(),
+      checkpointManager: this.checkpointService ?? undefined,
     });
   }
 
@@ -204,10 +311,10 @@ export class Agent {
   }
 
   get approvalManager() {
-    return this._toolExecutor?.getApprovalManager() ?? null;
+    return this.approvalService;
   }
 
-  get structuredOutputSchema(): import("zod").ZodSchema | undefined {
+  get structuredOutputSchema(): import("../tools/schema.js").AgentiumSchema | undefined {
     return this.config.structuredOutput;
   }
 
@@ -218,35 +325,42 @@ export class Agent {
 
   /** Access the CheckpointManager (if checkpointing is configured). */
   get checkpointManager() {
-    return (this.config as any)._checkpointManager ?? null;
-  }
-
-  /**
-   * Harness preset: project files, skills, workspace jail, durable notes,
-   * standing memory, subagents, and past-session search.
-   * Pass the same options as `new Agent()` — they override these defaults.
-   *
-   * Learnings are NOT enabled here: they need a real embedding model. Pass
-   * `learning: { vectorStore }` or `memory.learnings` to turn them on.
-   */
-  static deep(config: AgentConfig): Agent {
-    return new Agent({
-      workspace: process.cwd(),
-      skillDirs: [join(process.cwd(), "skills")],
-      contextFiles: true,
-      filesystem: true,
-      subagents: true,
-      fileMemory: true,
-      searchPastSessions: true,
-      ...config,
-    });
+    return this.checkpointService;
   }
 
   constructor(config: AgentConfig) {
+    for (const key of ["harness", "harnessOptions", "replaceTools"]) {
+      if (Object.hasOwn(config, key))
+        throw new Error(
+          `Agent.${key} was removed; compose configuration and abilities through @agentium/harness and its agent driver`,
+        );
+    }
+    if (
+      config.workspace !== undefined &&
+      config.workspace !== false &&
+      (typeof config.workspace !== "object" ||
+        !config.workspace ||
+        typeof config.workspace.path !== "string" ||
+        !config.workspace.path.trim() ||
+        !["read", "write"].includes(config.workspace.mode))
+    )
+      throw new Error(
+        'Agent workspace requires an explicit { path, mode: "read" | "write" }; string workspaces were removed',
+      );
     this.config = config;
+    this.checkpointService = config.checkpointing
+      ? new CheckpointManager(typeof config.checkpointing === "object" ? config.checkpointing.storage : undefined)
+      : null;
     this.name = config.name;
     this.instructions = config.instructions;
     this.eventBus = config.eventBus ?? config.events ?? (config.sharedEventBus ? EventBus.shared : new EventBus());
+
+    if (config.approvalManager) {
+      this.approvalService = config.approvalManager;
+    } else if (config.approval) {
+      this.approvalService = new ApprovalManager({ ...config.approval, eventBus: this.eventBus });
+      this.ownsApprovalService = true;
+    }
 
     if (config.reflection?.enabled) {
       this.reflectionManager = new ReflectionManager(config.reflection, config.model);
@@ -278,7 +392,11 @@ export class Agent {
       this.skillMd = new SkillMdManager({ dirs: config.skillDirs });
     }
     if (config.workspace) {
-      this.workspaceToolkit = new FileSystemToolkit({ basePath: config.workspace, allowWrite: true });
+      const workspace = config.workspace;
+      this.workspaceToolkit = new FileSystemToolkit({
+        basePath: workspace.path,
+        allowWrite: workspace.mode === "write",
+      });
     }
     if (config.subagents) {
       const maxDepth = typeof config.subagents === "object" ? config.subagents.maxDepth : undefined;
@@ -331,6 +449,7 @@ export class Agent {
       retry: config.retry,
       toolResultLimit: config.toolResultLimit,
       loopHooks: this.buildLoopHooks(),
+      checkpointManager: this.checkpointService ?? undefined,
     });
 
     if (config.compressionManager) {
@@ -358,7 +477,7 @@ export class Agent {
    * Returns a local LLMLoop scoped to this single run/stream call,
    * avoiding shared-state mutation during concurrent requests.
    */
-  private async buildRunLoop(query: string, ctx?: RunContext): Promise<LLMLoop> {
+  private async buildRunLoop(query: string, ctx?: RunContext, opts?: RunOpts): Promise<LLMLoop> {
     let tools = this.collectTools(this.config);
 
     // Dynamic tool resolver — merge context-dependent tools
@@ -366,8 +485,18 @@ export class Agent {
       const dynamicTools = await this.config.toolResolver(ctx);
       if (dynamicTools.length > 0) {
         const existingNames = new Set(tools.map((t) => t.name));
-        tools = [...tools, ...dynamicTools.filter((t) => !existingNames.has(t.name))];
+        tools = ctx.executionServices
+          ? [...tools, ...dynamicTools]
+          : [...tools, ...dynamicTools.filter((t) => !existingNames.has(t.name))];
       }
+    }
+
+    if (ctx?.executionServices) {
+      tools = [...tools, ...ctx.executionServices.tools];
+      if (new Set(tools.map((tool) => tool.name)).size !== tools.length)
+        throw new Error(
+          "Duplicate tool name across Agent and supplied execution services; select one owner for each tool",
+        );
     }
 
     const totalToolsBefore = tools.length;
@@ -380,9 +509,27 @@ export class Agent {
       routed: Boolean(this.toolRouter && totalToolsBefore !== tools.length),
     });
 
-    const executor = tools.length > 0 ? new ToolExecutor(tools, this.buildToolExecutorConfig()) : null;
+    const executor = tools.length > 0 ? new ToolExecutor(tools, this.buildToolExecutorConfig(ctx, opts)) : null;
 
-    return new LLMLoop(this.config.model, executor, {
+    const provider = ctx?.executionServices
+      ? {
+          providerId: this.config.model.providerId,
+          modelId: this.config.model.modelId,
+          generate: (
+            messages: ChatMessage[],
+            options?: import("../models/types.js").ModelConfig & {
+              tools?: import("../models/types.js").ToolDefinition[];
+            },
+          ) => ctx.executionServices!.model(this.config.model, messages, options, ctx),
+          stream: (
+            messages: ChatMessage[],
+            options?: import("../models/types.js").ModelConfig & {
+              tools?: import("../models/types.js").ToolDefinition[];
+            },
+          ) => ctx.executionServices!.streamModel(this.config.model, messages, options, ctx),
+        }
+      : this.config.model;
+    return new LLMLoop(provider, executor, {
       maxToolRoundtrips: this.config.maxToolRoundtrips ?? 10,
       temperature: this.config.temperature,
       maxTokens: this.config.maxTokens,
@@ -393,6 +540,8 @@ export class Agent {
       retry: this.config.retry,
       toolResultLimit: this.config.toolResultLimit,
       loopHooks: this.buildLoopHooks(),
+      checkpointManager: this.checkpointService ?? undefined,
+      controlledExecution: Boolean(ctx?.executionServices),
     });
   }
 
@@ -405,11 +554,12 @@ export class Agent {
     return new Agent(config);
   }
 
-  async close(): Promise<void> {
+  async close(options: { closeStorage?: boolean } = {}): Promise<void> {
+    if (this.ownsApprovalService) this.approvalService?.close();
     if (this.webhookManager) {
       this.webhookManager.detach(this.eventBus);
     }
-    if (this.config.memory?.storage) {
+    if (options.closeStorage !== false && this.config.memory?.storage) {
       const storage = this.config.memory.storage;
       if (typeof (storage as any).close === "function") {
         await (storage as any).close();
@@ -434,10 +584,13 @@ export class Agent {
   }
 
   async run(input: MessageContent, opts?: RunOpts): Promise<RunOutput> {
+    opts = this.normalizeControlledRun(opts);
+    this.validateControlledRun(opts);
     await this.readyPromise;
     const startTime = Date.now();
     const sessionId = opts?.sessionId ?? this.config.sessionId ?? uuidv4();
-    const userId = opts?.userId ?? this.config.userId;
+    const userId =
+      opts?.executionServices || getHandoffScope(opts) ? opts?.userId : (opts?.userId ?? this.config.userId);
     const inputText = typeof input === "string" ? input : getTextContent(input);
 
     await this.ensureSkillsLoaded();
@@ -450,7 +603,7 @@ export class Agent {
     }
 
     // Semantic cache check
-    if (this.semanticCache) {
+    if (this.semanticCache && !opts?.executionServices && !opts?.ephemeral) {
       const hit = await this.semanticCache.lookup(inputText, this.name, sessionId);
       if (hit) {
         this.eventBus.emit("cache.hit", {
@@ -467,6 +620,10 @@ export class Agent {
           const ctx = new RunContext({
             sessionId,
             userId,
+            tenantId: opts?.tenantId,
+            signal: opts?.signal,
+            runMode: opts?.runMode,
+            executionPolicy: this.config.executionPolicy,
             metadata: { ...opts?.metadata, agentName: this.name },
             eventBus: this.eventBus,
             sessionState: {},
@@ -493,8 +650,18 @@ export class Agent {
       });
     }
 
+    const ephemeral = Boolean(opts?.ephemeral || opts?.executionServices);
     let session: Session;
-    if (this.memoryManager) {
+    if (ephemeral) {
+      session = {
+        sessionId,
+        userId,
+        messages: [],
+        state: { ...opts?.executionServices?.state },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    } else if (this.memoryManager) {
       await this.memoryManager.ensureReady();
       session = await this.memoryManager.getOrCreateSession(sessionId, userId);
     } else {
@@ -507,8 +674,17 @@ export class Agent {
       tenantId: opts?.tenantId,
       metadata: { ...opts?.metadata, agentName: this.name },
       eventBus: this.eventBus,
-      sessionState: { ...session.state },
+      sessionState:
+        opts?.executionServices && opts.runId === opts.executionServices.ctx.runId
+          ? opts.executionServices.state
+          : { ...session.state, ...structuredClone(getHandoffScope(opts)?.state ?? {}) },
       signal: opts?.signal,
+      runMode: opts?.runMode,
+      executionPolicy: this.effectiveExecutionPolicy(opts?.executionServices?.executionPolicy, opts?.executionPolicy),
+      executionServices: opts?.executionServices,
+      externalHistory: opts?.history,
+      ephemeral,
+      runId: opts?.runId,
       dependencies: resolvedDeps,
       questions: opts?.questions,
     });
@@ -517,10 +693,48 @@ export class Agent {
 
     this.eventBus.emit("run.start", {
       runId: ctx.runId,
+      sessionId: ctx.sessionId,
+      userId: ctx.userId,
+      tenantId: ctx.tenantId,
+      ...(typeof ctx.metadata.parentRunId === "string" ? { parentRunId: ctx.metadata.parentRunId } : {}),
+      ...(typeof ctx.metadata.rootRunId === "string" ? { rootRunId: ctx.metadata.rootRunId } : {}),
+      ...(typeof ctx.metadata.attemptId === "string" ? { attemptId: ctx.metadata.attemptId } : {}),
       agentName: this.name,
       input: inputText,
     });
 
+    const transcript: ChatMessage[] = [];
+    let processedInput = input;
+    let persistedMessages = 0;
+    const persistHandoffTranscript = async () => {
+      if (
+        ephemeral ||
+        persistedMessages ||
+        !transcript.some((message) => message.toolCalls?.some((call) => call.name === "transfer_to_agent"))
+      )
+        return;
+      const pending = new Set<string>();
+      for (const message of transcript) {
+        for (const call of message.toolCalls ?? []) pending.add(call.id);
+        if (message.role === "tool" && message.toolCallId) pending.delete(message.toolCallId);
+      }
+      if (pending.size) return;
+      // Failed output guards/hooks must not persist an unvalidated final answer.
+      let lastTool = transcript.length - 1;
+      while (lastTool >= 0 && transcript[lastTool].role !== "tool") lastTool--;
+      const messages: ChatMessage[] = [{ role: "user", content: processedInput }, ...transcript.slice(0, lastTool + 1)];
+      const additions = messages.slice(persistedMessages);
+      if (!additions.length) return;
+      if (this.memoryManager) {
+        await this.memoryManager.appendMessages(sessionId, additions, this.config.model);
+        persistedMessages = messages.length;
+        await this.memoryManager.updateState(sessionId, ctx.sessionState);
+      } else {
+        await this.fallbackSessionManager!.appendMessages(sessionId, additions);
+        persistedMessages = messages.length;
+        await this.fallbackSessionManager!.updateState(sessionId, ctx.sessionState);
+      }
+    };
     try {
       if (opts?.signal?.aborted) throw new RunCancelledError();
 
@@ -545,19 +759,19 @@ export class Agent {
       // Reset compression state for this run
       if (this.compressionManager) this.compressionManager.reset();
 
-      const runLoop = await this.buildRunLoop(inputText, ctx);
+      const runLoop = await this.buildRunLoop(inputText, ctx, opts);
 
       // Apply dependency templates to input
-      let processedInput = input;
       if (Object.keys(resolvedDeps).length > 0 && typeof input === "string") {
         processedInput = applyTemplates(input, resolvedDeps);
       }
 
       const messages = await this.buildMessages(processedInput, session, ctx, inputText);
-      const output = await runLoop.run(messages, ctx, opts?.apiKey);
+      ctx.executionServices?.recordConversation(ctx.runId, [{ role: "user", content: processedInput }]);
+      const output = await runLoop.run(messages, ctx, opts?.apiKey, transcript);
 
       // Reflection: LLM-as-critic pass over the output, with bounded revision.
-      if (this.reflectionManager) {
+      if (this.reflectionManager && !getHandoffControl(output)) {
         const maxReflections = this.config.reflection?.maxReflections ?? 1;
         let critique = await this.reflectionManager.critiqueOutput(output, inputText, messages);
         this.eventBus.emit("reflection.critique", {
@@ -570,15 +784,14 @@ export class Agent {
         let revisions = 0;
         while (!critique.pass && revisions < maxReflections) {
           revisions++;
-          const revisionMessages: ChatMessage[] = [
-            ...messages,
-            { role: "assistant", content: output.text },
-            {
-              role: "user",
-              content: `A quality reviewer critiqued your previous response:\n${critique.feedback}\n\nProvide an improved response that addresses the critique. Respond with the full corrected answer.`,
-            },
-          ];
-          const revised = await runLoop.run(revisionMessages, ctx, opts?.apiKey);
+          const revisionPrompt: ChatMessage = {
+            role: "user",
+            content: `A quality reviewer critiqued your previous response:\n${critique.feedback}\n\nProvide an improved response that addresses the critique. Respond with the full corrected answer.`,
+          };
+          const revisionMessages = [...messages, ...transcript, revisionPrompt];
+          transcript.push(revisionPrompt);
+          ctx.executionServices?.recordConversation(ctx.runId, [revisionPrompt]);
+          const revised = await runLoop.run(revisionMessages, ctx, opts?.apiKey, transcript);
 
           output.text = revised.text;
           if (revised.structured !== undefined) output.structured = revised.structured;
@@ -589,6 +802,11 @@ export class Agent {
             completionTokens: output.usage.completionTokens + revised.usage.completionTokens,
             totalTokens: output.usage.totalTokens + revised.usage.totalTokens,
           };
+          const transfer = getHandoffControl(revised);
+          if (transfer) {
+            setHandoffControl(output, transfer);
+            break;
+          }
 
           critique = await this.reflectionManager.critiqueOutput(output, inputText, messages);
           this.eventBus.emit("reflection.critique", {
@@ -607,6 +825,58 @@ export class Agent {
         };
       }
 
+      const sourceUsage = { ...output.usage };
+      // Cost tracking after LLM call
+      if (this.config.costTracker) {
+        const entry = this.config.costTracker.track({
+          runId: ctx.runId,
+          agentName: this.name,
+          modelId: this.config.model.modelId,
+          usage: sourceUsage,
+          sessionId,
+          userId,
+        });
+        this.eventBus.emit("cost.tracked", {
+          runId: ctx.runId,
+          agentName: this.name,
+          modelId: this.config.model.modelId,
+          usage: sourceUsage,
+          cost: entry.cost,
+        });
+      }
+
+      const transfer = getHandoffControl(output);
+      if (transfer) {
+        await persistHandoffTranscript();
+        if (ctx.signal?.aborted) throw new RunCancelledError();
+        if (!this.handoffManager) throw new Error("Handoff requested without configured targets");
+        const delegated = await this.handoffManager.execute(
+          transfer,
+          this.name,
+          inputText,
+          [...messages, ...transcript],
+          ctx,
+          this.eventBus,
+          opts,
+          this.approvalService ? [this.approvalService] : [],
+        );
+        const calls = [...output.toolCalls, ...delegated.toolCalls];
+        Object.assign(output, delegated);
+        output.toolCalls = calls;
+        output.usage = {
+          ...sourceUsage,
+          promptTokens: sourceUsage.promptTokens + delegated.usage.promptTokens,
+          completionTokens: sourceUsage.completionTokens + delegated.usage.completionTokens,
+          totalTokens: sourceUsage.totalTokens + delegated.usage.totalTokens,
+        };
+        for (const key of ["reasoningTokens", "cachedTokens", "audioInputTokens", "audioOutputTokens"] as const) {
+          if (sourceUsage[key] !== undefined || delegated.usage[key] !== undefined)
+            output.usage[key] = (sourceUsage[key] ?? 0) + (delegated.usage[key] ?? 0);
+        }
+        // Target provider envelopes stay in its own session; carry only the final display answer back.
+        if (output.text) transcript.push({ role: "assistant", content: output.text });
+      }
+
       const durationMs = Date.now() - startTime;
       output.durationMs = durationMs;
       output.runId = ctx.runId;
@@ -617,26 +887,8 @@ export class Agent {
       output.modelProvider = this.config.model.providerId;
       output.status = output.status ?? "completed";
       output.createdAt = startTime;
-      output.messages = messages;
+      output.messages = [...messages, ...transcript];
       output.metrics = this.buildMetrics(output, durationMs);
-
-      // Cost tracking after LLM call
-      if (this.config.costTracker) {
-        this.config.costTracker.track({
-          runId: ctx.runId,
-          agentName: this.name,
-          modelId: this.config.model.modelId,
-          usage: output.usage,
-          sessionId,
-          userId,
-        });
-        this.eventBus.emit("cost.tracked", {
-          runId: ctx.runId,
-          agentName: this.name,
-          modelId: this.config.model.modelId,
-          usage: output.usage,
-        });
-      }
 
       if (this.config.guardrails?.output) {
         for (const guardrail of this.config.guardrails.output) {
@@ -647,13 +899,12 @@ export class Agent {
         }
       }
 
-      const newMessages: ChatMessage[] = [
-        { role: "user", content: inputText },
-        { role: "assistant", content: output.text },
-      ];
+      const newMessages: ChatMessage[] = [{ role: "user", content: processedInput }, ...transcript];
+      output.newMessages = structuredClone(newMessages);
 
-      if (this.memoryManager) {
-        await this.memoryManager.appendMessages(sessionId, newMessages, this.config.model);
+      if (!ephemeral && this.memoryManager) {
+        await this.memoryManager.appendMessages(sessionId, newMessages.slice(persistedMessages), this.config.model);
+        persistedMessages = newMessages.length;
         await this.memoryManager.updateState(sessionId, ctx.sessionState);
 
         // Pass the LAST 6 turns (history tail + current exchange) so the
@@ -663,8 +914,9 @@ export class Agent {
         this.memoryManager.afterRun(sessionId, userId, extractionWindow, this.config.model, this.name);
 
         this.eventBus.emit("memory.extract", { sessionId, userId, agentName: this.name });
-      } else {
-        await this.fallbackSessionManager!.appendMessages(sessionId, newMessages);
+      } else if (!ephemeral) {
+        await this.fallbackSessionManager!.appendMessages(sessionId, newMessages.slice(persistedMessages));
+        persistedMessages = newMessages.length;
         await this.fallbackSessionManager!.updateState(sessionId, ctx.sessionState);
       }
 
@@ -683,7 +935,7 @@ export class Agent {
       });
 
       // Semantic cache store (fire-and-forget)
-      if (this.semanticCache) {
+      if (this.semanticCache && !opts?.executionServices && !opts?.ephemeral) {
         this.semanticCache
           .store(inputText, output, this.name, sessionId)
           .catch(
@@ -695,8 +947,10 @@ export class Agent {
 
       return output;
     } catch (error) {
+      // Completed source tool groups survive a failed/cancelled target; never persist a partial batch.
+      await persistHandoffTranscript();
       // Handle cancellation
-      if (error instanceof RunCancelledError) {
+      if (error instanceof RunCancelledError || ctx.signal?.aborted) {
         this.eventBus.emit("run.cancelled", { runId: ctx.runId, agentName: this.name });
         const cancelledOutput: RunOutput = {
           text: "",
@@ -710,12 +964,6 @@ export class Agent {
           durationMs: Date.now() - startTime,
         };
         return cancelledOutput;
-      }
-
-      // Handle handoff signals
-      if (error instanceof HandoffSignal && this.handoffManager) {
-        const messages = await this.buildMessages(input, session, ctx, inputText);
-        return this.handoffManager.execute(error, this.name, inputText, messages, ctx, this.eventBus, opts);
       }
 
       const err = error instanceof Error ? error : new Error(String(error));
@@ -732,20 +980,26 @@ export class Agent {
       });
 
       throw err;
+    } finally {
+      this.approvalService?.cancelRun(ctx.runId);
+      for (const manager of getHandoffScope(opts)?.approvals ?? []) manager.cancelRun(ctx.runId);
     }
   }
 
   async *stream(input: MessageContent, opts?: RunOpts): AsyncGenerator<StreamChunk> {
+    opts = this.normalizeControlledRun(opts);
+    this.validateControlledRun(opts);
     await this.readyPromise;
     const streamStartTime = Date.now();
     const sessionId = opts?.sessionId ?? this.config.sessionId ?? uuidv4();
-    const userId = opts?.userId ?? this.config.userId;
+    const userId =
+      opts?.executionServices || getHandoffScope(opts) ? opts?.userId : (opts?.userId ?? this.config.userId);
     const inputText = typeof input === "string" ? input : getTextContent(input);
 
     await this.ensureSkillsLoaded();
 
     // Semantic cache check for streaming
-    if (this.semanticCache) {
+    if (this.semanticCache && !opts?.executionServices && !opts?.ephemeral) {
       const hit = await this.semanticCache.lookup(inputText, this.name, sessionId);
       if (hit) {
         this.eventBus.emit("cache.hit", {
@@ -763,8 +1017,18 @@ export class Agent {
       });
     }
 
+    const ephemeral = Boolean(opts?.ephemeral || opts?.executionServices);
     let session: Session;
-    if (this.memoryManager) {
+    if (ephemeral) {
+      session = {
+        sessionId,
+        userId,
+        messages: [],
+        state: { ...opts?.executionServices?.state },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    } else if (this.memoryManager) {
       await this.memoryManager.ensureReady();
       session = await this.memoryManager.getOrCreateSession(sessionId, userId);
     } else {
@@ -777,168 +1041,237 @@ export class Agent {
       tenantId: opts?.tenantId,
       metadata: { ...opts?.metadata, agentName: this.name },
       eventBus: this.eventBus,
-      sessionState: { ...session.state },
+      sessionState:
+        opts?.executionServices && opts.runId === opts.executionServices.ctx.runId
+          ? opts.executionServices.state
+          : { ...session.state, ...structuredClone(getHandoffScope(opts)?.state ?? {}) },
       signal: opts?.signal,
+      runMode: opts?.runMode,
+      executionPolicy: this.effectiveExecutionPolicy(opts?.executionServices?.executionPolicy, opts?.executionPolicy),
+      executionServices: opts?.executionServices,
+      externalHistory: opts?.history,
+      ephemeral,
+      runId: opts?.runId,
       questions: opts?.questions,
     });
 
     this.eventBus.emit("run.start", {
       runId: ctx.runId,
+      sessionId: ctx.sessionId,
+      userId: ctx.userId,
+      tenantId: ctx.tenantId,
+      ...(typeof ctx.metadata.parentRunId === "string" ? { parentRunId: ctx.metadata.parentRunId } : {}),
+      ...(typeof ctx.metadata.rootRunId === "string" ? { rootRunId: ctx.metadata.rootRunId } : {}),
+      ...(typeof ctx.metadata.attemptId === "string" ? { attemptId: ctx.metadata.attemptId } : {}),
       agentName: this.name,
       input: inputText,
     });
 
+    const inheritedStream = getHandoffScope(opts)?.stream;
+    const transcript = inheritedStream?.transcript ?? [];
+    const newMessages = (): ChatMessage[] => [
+      ...(inheritedStream?.continuation ? [] : [{ role: "user" as const, content: input }]),
+      ...transcript,
+    ];
     let fullText = "";
-    let streamOk = false;
+    let completed = false;
+    let terminalEmitted = false;
+    let persistedMessages = 0;
     let timeToFirstTokenMs: number | undefined;
-    let streamMessages: ChatMessage[] | undefined;
-    let streamUsage: import("../models/types.js").TokenUsage = {
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
+    let streamMessages: ChatMessage[] = [];
+    let delegated: HandoffResult | undefined;
+    const streamToolCalls: import("../tools/types.js").ToolCallResult[] = [];
+    const streamOutcome: { status: "completed" | "stopped" } = { status: "completed" };
+    let streamUsage: import("../models/types.js").TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    let sourceUsage: typeof streamUsage | undefined;
+    let costTracked = false;
+    const recordChunk = (chunk: StreamChunk) => {
+      if (chunk.type === "text") {
+        timeToFirstTokenMs ??= Date.now() - streamStartTime;
+        fullText += chunk.text;
+      } else if (chunk.type === "finish" && chunk.usage) {
+        const previous = streamUsage;
+        streamUsage = {
+          promptTokens: previous.promptTokens + chunk.usage.promptTokens,
+          completionTokens: previous.completionTokens + chunk.usage.completionTokens,
+          totalTokens: previous.totalTokens + chunk.usage.totalTokens,
+        };
+        for (const key of ["reasoningTokens", "cachedTokens", "audioInputTokens", "audioOutputTokens"] as const)
+          if (previous[key] !== undefined || chunk.usage[key] !== undefined)
+            streamUsage[key] = (previous[key] ?? 0) + (chunk.usage[key] ?? 0);
+      }
+    };
+    const trackSourceCost = () => {
+      if (costTracked || !this.config.costTracker) return;
+      costTracked = true;
+      const usage = sourceUsage ?? streamUsage;
+      const entry = this.config.costTracker.track({
+        runId: ctx.runId,
+        agentName: this.name,
+        modelId: this.config.model.modelId,
+        usage,
+        sessionId,
+        userId,
+      });
+      this.eventBus.emit("cost.tracked", {
+        runId: ctx.runId,
+        agentName: this.name,
+        modelId: this.config.model.modelId,
+        usage,
+        cost: entry.cost,
+      });
+    };
+    const persist = async (messages: ChatMessage[]) => {
+      if (ephemeral || messages.length <= persistedMessages) return;
+      if (this.memoryManager) {
+        await this.memoryManager.appendMessages(sessionId, messages.slice(persistedMessages), this.config.model);
+        persistedMessages = messages.length;
+        await this.memoryManager.updateState(sessionId, ctx.sessionState);
+      } else {
+        await this.fallbackSessionManager!.appendMessages(sessionId, messages.slice(persistedMessages));
+        persistedMessages = messages.length;
+        await this.fallbackSessionManager!.updateState(sessionId, ctx.sessionState);
+      }
+    };
+    const persistSettledHandoff = async () => {
+      if (!transcript.some((message) => message.toolCalls?.some((call) => call.name === "transfer_to_agent"))) return;
+      const prefix = settledHandoffPrefix(transcript);
+      if (prefix.length)
+        await persist([
+          ...(inheritedStream?.continuation ? [] : [{ role: "user" as const, content: input }]),
+          ...prefix,
+        ]);
     };
 
     try {
-      if (this.config.hooks?.beforeRun) {
-        await this.config.hooks.beforeRun(ctx);
+      if (ctx.signal?.aborted) throw new RunCancelledError();
+      await this.config.hooks?.beforeRun?.(ctx);
+      for (const guardrail of this.config.guardrails?.input ?? []) {
+        const result = await guardrail.validate(input, ctx);
+        if (!result.pass) throw new Error(`Input guardrail "${guardrail.name}" blocked: ${result.reason}`);
       }
-
-      if (this.config.guardrails?.input) {
-        for (const guardrail of this.config.guardrails.input) {
-          const result = await guardrail.validate(input, ctx);
-          if (!result.pass) {
-            throw new Error(`Input guardrail "${guardrail.name}" blocked: ${result.reason}`);
-          }
-        }
-      }
-
-      // Cost budget check
-      if (this.config.costTracker) {
-        this.config.costTracker.checkBudget(ctx.runId, sessionId, userId);
-      }
-
-      const runLoop = await this.buildRunLoop(inputText, ctx);
-
-      const messages = await this.buildMessages(input, session, ctx, inputText);
+      this.config.costTracker?.checkBudget(ctx.runId, sessionId, userId);
+      const runLoop = await this.buildRunLoop(inputText, ctx, opts);
+      const messages = await this.buildMessages(input, session, ctx, inputText, !inheritedStream?.continuation);
       streamMessages = messages;
-
-      for await (const chunk of runLoop.stream(messages, ctx, opts?.apiKey)) {
-        if (chunk.type === "text") {
-          if (timeToFirstTokenMs === undefined) {
-            timeToFirstTokenMs = Date.now() - streamStartTime;
-          }
-          fullText += chunk.text;
-        } else if (chunk.type === "finish" && chunk.usage) {
-          streamUsage = {
-            promptTokens: streamUsage.promptTokens + chunk.usage.promptTokens,
-            completionTokens: streamUsage.completionTokens + chunk.usage.completionTokens,
-            totalTokens: streamUsage.totalTokens + chunk.usage.totalTokens,
-            ...(chunk.usage.reasoningTokens
-              ? { reasoningTokens: (streamUsage.reasoningTokens ?? 0) + chunk.usage.reasoningTokens }
-              : {}),
-          };
-        }
+      ctx.executionServices?.recordConversation(ctx.runId, [{ role: "user", content: input }]);
+      for await (const chunk of runLoop.stream(
+        messages,
+        ctx,
+        opts?.apiKey,
+        transcript,
+        streamToolCalls,
+        streamOutcome,
+      )) {
+        recordChunk(chunk);
         yield chunk;
       }
-
-      streamOk = true;
-    } catch (error) {
-      if (this.handoffManager && error instanceof HandoffSignal) {
-        this.eventBus.emit("run.error", {
-          runId: ctx.runId,
-          error: new Error(`Handoff requested to ${error.targetAgent} but not supported in stream mode`),
-        });
-        throw new Error(
-          `Agent handoff to "${error.targetAgent}" is not supported in stream(). Use run() for handoff-capable agents.`,
+      sourceUsage = { ...streamUsage };
+      trackSourceCost();
+      const transfer = getHandoffControl(streamOutcome);
+      if (transfer) {
+        await persistSettledHandoff();
+        ctx.signal?.throwIfAborted();
+        const manager = this.handoffManager;
+        if (!manager) throw new Error("Handoff requested without configured targets");
+        const delegatedTranscript: ChatMessage[] = [];
+        const continuation = manager.stream(
+          transfer,
+          this.name,
+          inputText,
+          [...messages, ...transcript],
+          ctx,
+          this.eventBus,
+          opts,
+          this.approvalService ? [this.approvalService] : [],
+          delegatedTranscript,
+          this.config.model,
         );
+        // Capture the generator return without buffering its chunks or weakening iterator return/throw cleanup.
+        const forward = async function* () {
+          delegated = yield* continuation;
+        };
+        try {
+          for await (const chunk of forward()) {
+            recordChunk(chunk);
+            yield chunk;
+          }
+        } finally {
+          transcript.push(...delegatedTranscript);
+        }
+        if (!delegated) throw new Error("Handoff stream ended without a result");
+        streamToolCalls.push(...delegated.toolCalls);
+        if (delegated.status === "stopped") streamOutcome.status = "stopped";
       }
-
+      ctx.signal?.throwIfAborted();
+      const durationMs = Date.now() - streamStartTime;
+      const additions = newMessages();
+      const streamOutput: RunOutput = {
+        text: fullText,
+        toolCalls: streamToolCalls,
+        usage: streamUsage,
+        durationMs,
+        runId: ctx.runId,
+        agentName: this.name,
+        sessionId,
+        userId,
+        model: this.config.model.modelId,
+        modelProvider: this.config.model.providerId,
+        status: streamOutcome.status,
+        createdAt: streamStartTime,
+        messages: [...streamMessages, ...transcript],
+        newMessages: structuredClone(additions),
+        metrics: {
+          inputTokens: streamUsage.promptTokens,
+          outputTokens: streamUsage.completionTokens,
+          totalTokens: streamUsage.totalTokens,
+          ...(streamUsage.reasoningTokens ? { reasoningTokens: streamUsage.reasoningTokens } : {}),
+          ...(timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs } : {}),
+          durationMs,
+        },
+      };
+      if (delegated)
+        Object.assign(streamOutput, { handoffChain: delegated.handoffChain, finalAgent: delegated.finalAgent });
+      for (const guardrail of this.config.guardrails?.output ?? []) {
+        const result = await guardrail.validate(streamOutput, ctx);
+        if (!result.pass) throw new Error(`Output guardrail "${guardrail.name}" blocked: ${result.reason}`);
+      }
+      ctx.signal?.throwIfAborted();
+      await persist(additions);
+      if (!ephemeral && this.memoryManager) {
+        const tail = streamMessages
+          .slice(-4)
+          .filter((message) => message.role === "user" || message.role === "assistant");
+        this.memoryManager.afterRun(sessionId, userId, [...tail, ...additions], this.config.model, this.name);
+      }
+      await this.config.hooks?.afterRun?.(ctx, streamOutput);
+      ctx.signal?.throwIfAborted();
+      inheritedStream?.complete(streamOutput);
+      completed = true;
+      terminalEmitted = true;
+      this.eventBus.emit("run.complete", { runId: ctx.runId, output: streamOutput });
+      if (this.semanticCache && !opts?.executionServices && !opts?.ephemeral) {
+        this.semanticCache.store(inputText, streamOutput, this.name, sessionId).catch((error: unknown) => {
+          this.logger.warn(`Cache store failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+        });
+      }
+    } catch (error) {
+      await persistSettledHandoff();
       const err = error instanceof Error ? error : new Error(String(error));
-
-      if (this.config.hooks?.onError) {
-        await this.config.hooks.onError(ctx, err);
-      }
-
+      await this.config.hooks?.onError?.(ctx, err);
+      terminalEmitted = true;
       this.eventBus.emit("run.error", {
         runId: ctx.runId,
         error: err,
+        status: ctx.signal?.aborted || error instanceof RunCancelledError ? "cancelled" : "failed",
       });
-
       throw err;
     } finally {
-      if (streamOk) {
-        const durationMs = Date.now() - streamStartTime;
-
-        // Cost tracking
-        if (this.config.costTracker) {
-          this.config.costTracker.track({
-            runId: ctx.runId,
-            agentName: this.name,
-            modelId: this.config.model.modelId,
-            usage: streamUsage,
-            sessionId,
-            userId,
-          });
-        }
-
-        const newMessages: ChatMessage[] = [
-          { role: "user", content: inputText },
-          { role: "assistant", content: fullText },
-        ];
-
-        if (this.memoryManager) {
-          await this.memoryManager.appendMessages(sessionId, newMessages, this.config.model);
-          await this.memoryManager.updateState(sessionId, ctx.sessionState);
-
-          // Same as run(): give the extractor a window of recent turns.
-          const tail = (streamMessages ?? []).slice(-4).filter((m) => m.role === "user" || m.role === "assistant");
-          const extractionWindow: ChatMessage[] = [...tail, ...newMessages];
-          this.memoryManager.afterRun(sessionId, userId, extractionWindow, this.config.model, this.name);
-        } else {
-          await this.fallbackSessionManager!.appendMessages(sessionId, newMessages);
-          await this.fallbackSessionManager!.updateState(sessionId, ctx.sessionState);
-        }
-
-        const streamOutput: RunOutput = {
-          text: fullText,
-          toolCalls: [],
-          usage: streamUsage,
-          durationMs,
-          runId: ctx.runId,
-          agentName: this.name,
-          sessionId,
-          userId,
-          model: this.config.model.modelId,
-          modelProvider: this.config.model.providerId,
-          status: "completed",
-          createdAt: streamStartTime,
-          messages: streamMessages,
-          metrics: {
-            inputTokens: streamUsage.promptTokens,
-            outputTokens: streamUsage.completionTokens,
-            totalTokens: streamUsage.totalTokens,
-            ...(streamUsage.reasoningTokens ? { reasoningTokens: streamUsage.reasoningTokens } : {}),
-            ...(timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs } : {}),
-            durationMs,
-          },
-        };
-
-        this.eventBus.emit("run.complete", {
-          runId: ctx.runId,
-          output: streamOutput,
-        });
-
-        // Semantic cache store (fire-and-forget)
-        if (this.semanticCache) {
-          this.semanticCache
-            .store(inputText, { text: fullText, toolCalls: [], usage: streamUsage }, this.name, sessionId)
-            .catch(
-              (err) =>
-                this.logger?.warn?.(`Cache store failed: ${err?.message}`) ??
-                console.warn(`Cache store failed: ${err?.message}`),
-            );
-        }
-      }
+      this.approvalService?.cancelRun(ctx.runId);
+      for (const manager of getHandoffScope(opts)?.approvals ?? []) manager.cancelRun(ctx.runId);
+      trackSourceCost();
+      if (!completed) await persistSettledHandoff();
+      if (!terminalEmitted) this.eventBus.emit("run.cancelled", { runId: ctx.runId, agentName: this.name });
     }
   }
 
@@ -947,6 +1280,7 @@ export class Agent {
     session: Session,
     ctx: RunContext,
     inputText: string,
+    includeInput = true,
   ): Promise<ChatMessage[]> {
     const messages: ChatMessage[] = [];
 
@@ -961,7 +1295,7 @@ export class Agent {
       systemContent = applyTemplates(systemContent, ctx.dependencies);
     }
 
-    if (this.memoryManager) {
+    if (this.memoryManager && !ctx.ephemeral) {
       const memoryContext = await this.memoryManager.buildContext(session.sessionId, ctx.userId, inputText, this.name);
       if (memoryContext) {
         systemContent = systemContent ? `${systemContent}\n\n${memoryContext}` : memoryContext;
@@ -999,9 +1333,9 @@ export class Agent {
     }
 
     const maxMessages = this.memoryManager?.getMaxMessages() ?? 20;
-    let history = session.messages ?? [];
+    let history = ctx.externalHistory ? [...ctx.externalHistory] : (session.messages ?? []);
     if (maxMessages > 0 && history.length > maxMessages) {
-      history = history.slice(-maxMessages);
+      history = retainRecentTurns(history, maxMessages);
     }
 
     const maxTokens = this.memoryManager?.getMaxTokens();
@@ -1010,7 +1344,7 @@ export class Agent {
     }
 
     messages.push(...history);
-    messages.push({ role: "user", content: input });
+    if (includeInput) messages.push({ role: "user", content: input });
 
     this.logger.debug("prompt", {
       systemChars: systemContent.length,
@@ -1026,7 +1360,9 @@ export class Agent {
     const names = new Set(tools.map((t) => t.name));
     const add = (extra: ToolDef[]) => {
       for (const tool of extra) {
-        if (names.has(tool.name)) continue;
+        if (names.has(tool.name)) {
+          continue;
+        }
         names.add(tool.name);
         tools.push(tool);
       }
@@ -1090,6 +1426,28 @@ export class Agent {
     return spawnSubagent({ parent: this, task, spec, runOpts, maxDepth });
   }
 
+  /** Internal child recipe: fresh state and borrowed host policy/services; no copied parent tools or stores. */
+  getSubagentConfig(spec?: SubagentSpec): AgentConfig {
+    const child: AgentConfig = {
+      name: spec?.name ?? `${this.name}-sub`,
+      model: this.model,
+      instructions:
+        spec?.instructions ??
+        "You are a focused subagent. Complete the assigned task and return a concise final report. Do not spawn further subagents unless asked.",
+      tools: spec?.tools,
+      maxToolRoundtrips: Math.min(spec?.maxToolRoundtrips ?? 8, this.config.maxToolRoundtrips ?? 10),
+      executionPolicy: this.config.executionPolicy,
+      approvalManager: this.approvalService ?? undefined,
+      sandbox: this.config.sandbox,
+      eventBus: this.eventBus,
+      costTracker: this.config.costTracker,
+      maxTokens: this.config.maxTokens,
+      register: false,
+      subagents: false,
+    };
+    return child;
+  }
+
   private buildMetrics(output: RunOutput, durationMs: number): RunMetrics {
     return {
       inputTokens: output.usage.promptTokens,
@@ -1119,19 +1477,18 @@ export class Agent {
     const available = maxTokens - reservedTokens;
     if (available <= 0) return [];
 
-    const result: ChatMessage[] = [];
+    const result: ChatMessage[][] = [];
+    const turns = groupConversationTurns(history);
     let used = 0;
 
-    for (let i = history.length - 1; i >= 0; i--) {
-      const msg = history[i];
-      const text = typeof msg.content === "string" ? msg.content : "";
-      const tokens = countTokens(text, modelId);
+    for (let i = turns.length - 1; i >= 0; i--) {
+      const tokens = countConversationTokens(turns[i]);
       if (used + tokens > available) break;
       used += tokens;
-      result.unshift(msg);
+      result.unshift(turns[i]);
     }
 
-    return result;
+    return result.flat();
   }
 }
 

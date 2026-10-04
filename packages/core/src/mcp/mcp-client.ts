@@ -1,16 +1,20 @@
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { RunContext } from "../agent/run-context.js";
 import type { ToolDef, ToolResult } from "../tools/types.js";
+import { MCPToolError, mapMCPResult } from "./mcp-v2.js";
 
 export interface MCPToolProviderConfig {
   name: string;
   /**
    * Transport type:
    * - `"stdio"` — spawn a local MCP server process
-   * - `"http"` — Streamable HTTP transport (tries StreamableHTTP, falls back to SSE)
+   * - `"http"` — Streamable HTTP transport
    * - `"sse"` — SSE transport with async responses (POST → 202, response via SSE stream).
    *   Use this when the server has separate `/sse` and `/messages` endpoints.
    */
-  transport: "stdio" | "http" | "sse";
+  transport: "stdio" | "http" | "sse" | "custom";
+  /** Host supplied transport; a fresh instance is required after close. */
+  transportFactory?: () => Transport | Promise<Transport>;
   /** For stdio transport: command to spawn */
   command?: string;
   /** For stdio transport: args for the command */
@@ -34,135 +38,129 @@ export class MCPToolProvider {
   readonly name: string;
   private config: MCPToolProviderConfig;
   private client: any = null;
-  private transportInstance: any = null;
+  private pendingClient: any = null;
+  private generation = 0;
   private tools: ToolDef[] = [];
   private connected = false;
   private connectPromise: Promise<void> | null = null;
 
   constructor(config: MCPToolProviderConfig) {
     this.name = config.name;
-    this.config = config;
+    this.config = { ...config, headers: { ...config.headers }, args: config.args?.slice(), env: { ...config.env } };
+    if (config.transport === "http" || config.transport === "sse") {
+      const url = new URL(config.url ?? "");
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password)
+        throw new Error("Invalid MCP endpoint URL");
+    }
   }
 
   async connect(): Promise<void> {
-    if (this.connected) return;
     if (this.connectPromise) return this.connectPromise;
-    this.connectPromise = this._connect();
-    try {
-      await this.connectPromise;
-    } catch (e) {
-      this.connectPromise = null;
-      throw e;
-    }
+    if (this.connected) return;
+    const generation = this.generation;
+    const operation = this.open(generation).finally(() => {
+      if (this.connectPromise === operation) this.connectPromise = null;
+    });
+    this.connectPromise = operation;
+    return operation;
   }
 
-  private async _connect(): Promise<void> {
-    let ClientClass: any;
-    try {
-      const mod = await import("@modelcontextprotocol/sdk/client/index.js");
-      ClientClass = mod.Client;
-    } catch (e: any) {
-      if (e?.code === "MODULE_NOT_FOUND" || e?.code === "ERR_MODULE_NOT_FOUND") {
-        throw new Error(
-          "@modelcontextprotocol/sdk is required for MCPToolProvider. Install it: npm install @modelcontextprotocol/sdk",
-        );
-      }
-      throw e;
-    }
-
-    this.client = new ClientClass({ name: `agentium-${this.name}`, version: "1.0.0" }, { capabilities: {} });
-
-    if (this.config.transport === "stdio") {
-      if (!this.config.command) {
-        throw new Error("MCPToolProvider: 'command' is required for stdio transport");
-      }
-      const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
-
-      this.transportInstance = new StdioClientTransport({
-        command: this.config.command,
-        args: this.config.args ?? [],
-        env: { ...process.env, ...(this.config.env ?? {}) } as Record<string, string>,
-      });
-    } else if (this.config.transport === "http") {
-      if (!this.config.url) {
-        throw new Error("MCPToolProvider: 'url' is required for http transport");
-      }
-
-      let TransportClass: any;
-      try {
-        const mod = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
-        TransportClass = mod.StreamableHTTPClientTransport;
-      } catch {
-        const mod = await import("@modelcontextprotocol/sdk/client/sse.js");
-        TransportClass = mod.SSEClientTransport;
-      }
-
-      this.transportInstance = new TransportClass(new URL(this.config.url), {
-        requestInit: { headers: this.config.headers ?? {} },
-      });
-    } else if (this.config.transport === "sse") {
-      if (!this.config.url) {
-        throw new Error("MCPToolProvider: 'url' is required for sse transport");
-      }
-      this.transportInstance = new RawSSETransport(this.config.url, this.config.headers ?? {});
-    } else {
-      throw new Error(`MCPToolProvider: unsupported transport '${this.config.transport}'`);
-    }
-
-    await this.client.connect(this.transportInstance);
-    this.connected = true;
-    await this.discoverTools();
+  private assertGeneration(generation: number): void {
+    if (generation !== this.generation) throw new Error("MCP connection closed during initialization");
   }
 
-  private async discoverTools(): Promise<void> {
-    const { z } = await import("zod");
-    const result = await this.client.listTools();
-    const mcpTools: any[] = result.tools ?? [];
-
-    this.tools = mcpTools.map((mcpTool: any) => {
-      const toolName = mcpTool.name;
-      const description = mcpTool.description ?? "";
-      const inputSchema = mcpTool.inputSchema ?? { type: "object", properties: {} };
-
-      const parameters = this.jsonSchemaToZod(inputSchema, z);
-
-      const execute = async (args: Record<string, unknown>, _ctx: RunContext): Promise<string | ToolResult> => {
-        const callResult = await this.client.callTool({
-          name: toolName,
-          arguments: args,
+  private async open(generation: number): Promise<void> {
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    this.assertGeneration(generation);
+    const client = new Client({ name: `agentium-${this.name}`, version: "1.0.0" }, { capabilities: {} });
+    this.pendingClient = client;
+    let transport: Transport | undefined;
+    try {
+      if (this.config.transport === "custom") {
+        if (!this.config.transportFactory) throw new Error("MCP custom transport requires transportFactory");
+        transport = await this.config.transportFactory();
+      } else if (this.config.transport === "stdio") {
+        if (!this.config.command) throw new Error("MCPToolProvider: 'command' is required for stdio transport");
+        const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+        transport = new StdioClientTransport({
+          command: this.config.command,
+          args: this.config.args ?? [],
+          env: { ...process.env, ...this.config.env } as Record<string, string>,
         });
-
-        const contents: any[] = callResult.content ?? [];
-        const textParts = contents.filter((c: any) => c.type === "text").map((c: any) => c.text);
-
-        const text = textParts.join("\n") || JSON.stringify(callResult);
-
-        const artifacts = contents
-          .filter((c: any) => c.type !== "text")
-          .map((c: any) => ({
-            type: c.type,
-            data: c.data ?? c.blob ?? c.text,
-            mimeType: c.mimeType,
-          }));
-
-        if (artifacts.length > 0) {
-          return { content: text, artifacts };
+      } else {
+        const endpoint = new URL(this.config.url!);
+        const guardedFetch: typeof fetch = (input, init) => {
+          const target = new URL(input instanceof Request ? input.url : String(input));
+          if (target.origin !== endpoint.origin) throw new Error("MCP cross-origin request denied");
+          return fetch(input, { ...init, redirect: "error" });
+        };
+        if (this.config.transport === "sse") {
+          const { SSEClientTransport } = await import("@modelcontextprotocol/sdk/client/sse.js");
+          transport = new SSEClientTransport(endpoint, {
+            requestInit: { headers: this.config.headers, redirect: "error" },
+            fetch: guardedFetch,
+          });
+        } else {
+          const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+          transport = new StreamableHTTPClientTransport(endpoint, {
+            requestInit: { headers: this.config.headers, redirect: "error" },
+            fetch: guardedFetch,
+          });
         }
-        return text;
-      };
+      }
+      this.assertGeneration(generation);
+      await client.connect(transport);
+      const tools = await this.discoverTools(client);
+      this.assertGeneration(generation);
+      this.client = client;
+      this.tools = tools;
+      this.connected = true;
+    } catch (error) {
+      await client.close().catch(() => {});
+      await transport?.close().catch(() => {});
+      throw error;
+    } finally {
+      if (this.pendingClient === client) this.pendingClient = null;
+    }
+  }
 
+  private async discoverTools(client: any): Promise<ToolDef[]> {
+    const { z } = await import("zod/v3");
+    const mcpTools: any[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const result = await client.listTools(cursor ? { cursor } : undefined);
+      mcpTools.push(...(result.tools ?? []));
+      cursor = result.nextCursor;
+      if (cursor && cursors.has(cursor)) throw new Error("MCP tools pagination repeated a cursor");
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    const names = new Set<string>();
+    return mcpTools.map((mcpTool: any) => {
+      const toolName = mcpTool.name;
+      if (names.has(toolName)) throw new Error(`Duplicate MCP tool: ${toolName}`);
+      names.add(toolName);
+      const inputSchema = mcpTool.inputSchema ?? { type: "object", properties: {} };
       return {
         name: `${this.name}__${toolName}`,
-        description: `[${this.name}] ${description}`,
-        parameters,
-        execute,
+        description: `[${this.name}] ${mcpTool.description ?? ""}`,
+        parameters: this.jsonSchemaToZod(inputSchema, z),
         rawJsonSchema: inputSchema,
+        execute: async (args: Record<string, unknown>, ctx: RunContext): Promise<string | ToolResult> => {
+          ctx.signal?.throwIfAborted();
+          if (this.client !== client || !this.connected) throw new Error("MCP tool connection is closed");
+          const result = await client.callTool({ name: toolName, arguments: args }, undefined, { signal: ctx.signal });
+          const mapped = mapMCPResult(result);
+          if (result.isError) throw new MCPToolError(mapped);
+          return mapped;
+        },
       } satisfies ToolDef;
     });
   }
 
   private jsonSchemaToZod(schema: any, z: any): any {
-    if (!schema || !schema.properties) {
+    if (!schema?.properties) {
       return z.object({}).passthrough();
     }
 
@@ -254,128 +252,21 @@ export class MCPToolProvider {
     if (!this.connected) {
       throw new Error("MCPToolProvider: not connected. Call connect() first.");
     }
-    await this.discoverTools();
+    const client = this.client;
+    const tools = await this.discoverTools(client);
+    if (this.client !== client || !this.connected) throw new Error("MCP connection closed during refresh");
+    this.tools = tools;
   }
 
-  /** Disconnect from the MCP server. */
+  /** Disconnects immediately; transports acquired by an unfinished factory are closed on arrival. */
   async close(): Promise<void> {
-    if (this.client && this.connected) {
-      try {
-        await this.client.close();
-      } catch {
-        // ignore close errors
-      }
-      this.connected = false;
-      this.tools = [];
-    }
-  }
-}
-
-/**
- * Raw SSE transport for MCP servers that use the async pattern:
- * GET /sse → SSE stream with endpoint event, POST /messages → 202, response via SSE.
- *
- * Implements the Transport interface expected by @modelcontextprotocol/sdk Client.
- */
-class RawSSETransport {
-  private sseUrl: string;
-  private headers: Record<string, string>;
-  private messagesUrl = "";
-  private abortController: AbortController | null = null;
-  onmessage?: (message: any) => void;
-  onerror?: (error: Error) => void;
-  onclose?: () => void;
-
-  constructor(sseUrl: string, headers: Record<string, string>) {
-    this.sseUrl = sseUrl;
-    this.headers = headers;
-  }
-
-  async start(): Promise<void> {
-    this.abortController = new AbortController();
-
-    const resp = await fetch(this.sseUrl, {
-      headers: { ...this.headers, Accept: "text/event-stream" },
-      signal: this.abortController.signal,
-    });
-
-    if (!resp.ok || !resp.body) {
-      throw new Error(`SSE connection failed: HTTP ${resp.status}`);
-    }
-
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-
-    // Read until we get the endpoint event
-    while (!this.messagesUrl) {
-      const { done, value } = await reader.read();
-      if (done) throw new Error("SSE closed before endpoint event");
-      buf += dec.decode(value, { stream: true });
-      const m = buf.match(/data:\s*(\/\S+)/);
-      if (m) {
-        const base = new URL(this.sseUrl);
-        this.messagesUrl = `${base.origin}${m[1]}`;
-      }
-    }
-    buf = "";
-
-    // Background reader: dispatch incoming messages
-    (async () => {
-      let eventType = "";
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop() ?? "";
-          for (const line of lines) {
-            if (line.startsWith("event: ")) {
-              eventType = line.slice(7).trim();
-            } else if (line.startsWith("data: ") && eventType === "message") {
-              try {
-                const msg = JSON.parse(line.slice(6));
-                this.onmessage?.(msg);
-              } catch {
-                /* malformed JSON */
-              }
-              eventType = "";
-            }
-          }
-        }
-      } catch (err: any) {
-        if (err.name !== "AbortError") this.onerror?.(err);
-      }
-      this.onclose?.();
-    })();
-  }
-
-  async send(message: any): Promise<void> {
-    const resp = await fetch(this.messagesUrl, {
-      method: "POST",
-      headers: { ...this.headers, "Content-Type": "application/json" },
-      body: JSON.stringify(message),
-    });
-    if (!resp.ok) {
-      const text = await resp.text();
-      if (resp.status !== 202) {
-        throw new Error(`POST failed: HTTP ${resp.status}: ${text}`);
-      }
-    }
-    // If the response body has JSON, dispatch it directly
-    const ct = resp.headers.get("content-type") ?? "";
-    if (ct.includes("application/json")) {
-      try {
-        const data = (await resp.json()) as Record<string, unknown>;
-        if (data.jsonrpc) this.onmessage?.(data);
-      } catch {
-        /* no inline response */
-      }
-    }
-  }
-
-  async close(): Promise<void> {
-    this.abortController?.abort();
+    this.generation++;
+    const clients = new Set([this.client, this.pendingClient]);
+    this.client = null;
+    this.pendingClient = null;
+    this.connected = false;
+    this.connectPromise = null;
+    this.tools = [];
+    await Promise.all([...clients].map((client) => client?.close().catch(() => {})));
   }
 }

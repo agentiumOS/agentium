@@ -1,7 +1,7 @@
 import { InMemoryStorage, registry } from "@agentium/core";
 import express from "express";
-import { beforeEach, describe, expect, it } from "vitest";
-import { z } from "zod";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod/v3";
 import { createAdminRouter } from "../admin-router.js";
 
 const mockTool = {
@@ -183,6 +183,21 @@ describe("Admin Router", () => {
   });
 
   describe("PUT /admin/agents/:name", () => {
+    it("preserves a working agent when validation or persistence rejects its replacement", async () => {
+      const { app, storage } = createTestApp();
+      await request(app, "POST", "/admin/agents", { name: "bot", provider: "openai", model: "gpt-4o-mini" });
+      const original = registry.getAgent("bot");
+      const invalid = await request(app, "PUT", "/admin/agents/bot", { provider: "missing-provider" });
+      expect(invalid.status).toBe(422);
+      expect(registry.getAgent("bot")).toBe(original);
+      const save = vi.spyOn(storage, "set").mockRejectedValueOnce(new Error("storage unavailable"));
+      const rejected = await request(app, "PUT", "/admin/agents/bot", { model: "gpt-4o" });
+      expect(rejected.status).toBe(422);
+      expect(registry.getAgent("bot")).toBe(original);
+      save.mockRestore();
+      expect((await request(app, "GET", "/admin/agents/bot")).body.model).toBe("gpt-4o-mini");
+    });
+
     it("updates an agent", async () => {
       const { app } = createTestApp();
       await request(app, "POST", "/admin/agents", { name: "bot", provider: "openai", model: "gpt-4o-mini" });
@@ -419,5 +434,41 @@ describe("Admin Router", () => {
       const calc = res.body.find((t: any) => t.name === "calculator");
       expect(calc.description).toBe("Overridden calculator");
     });
+  });
+});
+
+describe("write-only provider config", () => {
+  beforeEach(() => registry.clear());
+  it("omits arbitrary credentials from agent and team CRUD while retaining private hydration config", async () => {
+    const { app, storage, hydrate } = createTestApp();
+    const providerConfig = {
+      apiKey: "fixture-private-key",
+      custom: { headers: { Authorization: "fixture-private-header" } },
+      baseURL: "https://fixture-private-url.example/v1",
+    };
+    for (const kind of ["agents", "teams"]) {
+      const body = {
+        name: kind === "agents" ? "private-agent" : "private-team",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        providerConfig,
+        ...(kind === "teams" ? { mode: "coordinate", members: ["private-agent"] } : {}),
+      };
+      const created = await request(app, "POST", `/admin/${kind}`, body);
+      expect(created.status).toBe(201);
+      const listed = await request(app, "GET", `/admin/${kind}`);
+      const loaded = await request(app, "GET", `/admin/${kind}/${body.name}`);
+      const updated = await request(app, "PUT", `/admin/${kind}/${body.name}`, {
+        instructions: "Updated instructions",
+      });
+      for (const response of [created, listed, loaded, updated]) {
+        expect(JSON.stringify(response.body)).not.toContain("fixture-private");
+        expect(JSON.stringify(response.body)).not.toContain("providerConfig");
+      }
+      const saved = await storage.get<any>(`agentium:admin:${kind}`, body.name);
+      expect(saved.providerConfig).toEqual(providerConfig);
+    }
+    registry.clear();
+    expect(await hydrate()).toMatchObject({ agents: 1, teams: 1 });
   });
 });

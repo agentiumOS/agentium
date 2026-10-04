@@ -234,7 +234,7 @@ describe("OpenAIProvider", () => {
       });
     });
 
-    it("handles invalid JSON in tool arguments gracefully", async () => {
+    it("rejects malformed tool arguments without substituting an executable empty object", async () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       mockCreate.mockResolvedValueOnce({
         choices: [
@@ -256,11 +256,10 @@ describe("OpenAIProvider", () => {
       });
 
       const provider = makeProvider();
-      const result = await provider.generate([{ role: "user", content: "test" }]);
-
-      expect(result.message.toolCalls).toHaveLength(1);
-      expect(result.message.toolCalls![0].arguments).toEqual({});
-      expect(warnSpy).toHaveBeenCalled();
+      await expect(provider.generate([{ role: "user", content: "test" }])).rejects.toThrow(
+        /Invalid provider tool arguments/,
+      );
+      expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     });
 

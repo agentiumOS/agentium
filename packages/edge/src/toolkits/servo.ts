@@ -1,6 +1,6 @@
 import type { ToolDef } from "@agentium/core";
 import { Toolkit } from "@agentium/core";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 export interface ServoConfig {
   /** GPIO pin number for the servo signal. */

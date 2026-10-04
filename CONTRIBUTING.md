@@ -4,7 +4,7 @@ Thanks for your interest in contributing to Agentium! This guide covers everythi
 
 ## Prerequisites
 
-- **Node.js** >= 20
+- **Node.js** 22.18+ (22.x) or 24.11+ (24.x)
 - **npm** >= 10
 
 ## Getting Started
@@ -29,6 +29,7 @@ npm test
 ```
 packages/
   core/          @agentium/core           Agents, Models, Tools, Memory, Events, Voice
+  harness/       @agentium/harness        Reusable abilities, context, middleware and presets
   transport/     @agentium/transport      Express + Socket.IO gateways
   queue/         @agentium/queue          BullMQ background jobs
   browser/       @agentium/browser        Vision-based browser automation
@@ -49,12 +50,13 @@ Examples live in the `agentiumOS` org. Docs live in [`agentium-docs`](https://gi
 ```bash
 npm run build              # Build all packages
 npm run build:core         # Build only @agentium/core
+npm run build:harness      # Build @agentium/harness after core
 npm run build:transport    # Build only @agentium/transport
 npm run build:queue        # Build only @agentium/queue
 npm run build:browser      # Build only @agentium/browser
 ```
 
-Each package uses [tsup](https://tsup.egoist.dev/) for bundling (ESM output + type declarations).
+Packages use [tsdown](https://tsdown.dev/) for ESM/CommonJS bundles and a separate TypeScript declaration pass. The shared `tsdown.config.ts` preserves toolkit, voice, telephony, harness-testing and CLI entry points. Bare package imports stay external so optional providers remain optional. Run `npm run build` followed by `npm run test:package` to check isolated packed ESM/CommonJS consumers and public TypeScript contracts.
 
 ### Testing
 
@@ -185,3 +187,5 @@ This bumps versions across all packages, commits, tags, and pushes. GitHub Actio
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.
+
+Use Node 22.18+ (22.x) or Node 24.11+ (24.x), then `npm ci --legacy-peer-deps --include=optional`. Keep the cross-platform lockfile: CI verifies Linux native bindings and rejects lock drift. Queue integration tests run with `AGENTIUM_REDIS_TEST=1` against an isolated Redis 7 instance on port6389 (override with `AGENTIUM_REDIS_PORT`).

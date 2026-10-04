@@ -55,8 +55,21 @@ export type { RedisConfig } from "./redis.js";
 export { RedisToolkit } from "./redis.js";
 export type { S3Config } from "./s3.js";
 export { S3Toolkit } from "./s3.js";
-export { DaytonaSandbox, type DaytonaSandboxConfig, DaytonaSandboxToolkit } from "./sandbox-daytona.js";
-export { E2BSandbox, type E2BSandboxConfig, E2BSandboxToolkit } from "./sandbox-e2b.js";
+export {
+  DaytonaSandbox,
+  type DaytonaSandboxClient,
+  type DaytonaSandboxConfig,
+  type DaytonaSandboxSDK,
+  type DaytonaSandboxSession,
+  DaytonaSandboxToolkit,
+} from "./sandbox-daytona.js";
+export {
+  E2BSandbox,
+  type E2BSandboxConfig,
+  type E2BSandboxSDK,
+  type E2BSandboxSession,
+  E2BSandboxToolkit,
+} from "./sandbox-e2b.js";
 export type { ScraperConfig } from "./scraper.js";
 export { ScraperToolkit } from "./scraper.js";
 export type { ShellConfig } from "./shell.js";

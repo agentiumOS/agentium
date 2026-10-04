@@ -10,8 +10,8 @@ class StubModel implements ModelProvider {
   readonly modelId = "stub-1";
   async generate(_messages: ChatMessage[]): Promise<ModelResponse> {
     return {
-      text: "ok",
-      toolCalls: [],
+      message: { role: "assistant", content: "ok" },
+      raw: {},
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       finishReason: "stop",
     };

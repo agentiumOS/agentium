@@ -1,3 +1,4 @@
+import { retainRecentTurns } from "../context/conversation-history.js";
 import type { ChatMessage } from "../models/types.js";
 import type { StorageDriver } from "../storage/driver.js";
 import type { Session } from "./types.js";
@@ -5,7 +6,7 @@ import type { Session } from "./types.js";
 const NAMESPACE = "sessions";
 
 export interface SessionManagerConfig {
-  /** Maximum messages kept in session history. Oldest are trimmed first. Default: unlimited. */
+  /** Soft message limit. Oldest whole turns are trimmed; the latest turn stays intact. Default: unlimited. */
   maxMessages?: number;
 }
 
@@ -76,7 +77,9 @@ export class SessionManager {
 
       let overflow: ChatMessage[] = [];
       if (this.maxMessages && session.messages.length > this.maxMessages) {
-        overflow = session.messages.splice(0, session.messages.length - this.maxMessages);
+        const retained = retainRecentTurns(session.messages, this.maxMessages);
+        overflow = session.messages.slice(0, session.messages.length - retained.length);
+        session.messages = retained;
       }
 
       session.updatedAt = new Date();
@@ -90,7 +93,7 @@ export class SessionManager {
     if (!session) return [];
 
     if (limit && limit > 0) {
-      return session.messages.slice(-limit);
+      return retainRecentTurns(session.messages, limit);
     }
     return session.messages;
   }

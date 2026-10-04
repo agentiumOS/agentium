@@ -1,5 +1,5 @@
-import { v4 as uuidv4 } from "uuid";
-import { z } from "zod";
+import { randomUUID as uuidv4 } from "node:crypto";
+import { z } from "zod/v3";
 import type { ModelProvider } from "../../models/provider.js";
 import type { ChatMessage } from "../../models/types.js";
 import type { StorageDriver } from "../../storage/driver.js";

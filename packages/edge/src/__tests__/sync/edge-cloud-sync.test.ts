@@ -88,6 +88,33 @@ describe("EdgeCloudSync", () => {
   });
 
   describe("flush", () => {
+    it("coalesces overlapping flushes and retains events appended during delivery", async () => {
+      let accept!: (value: unknown) => void;
+      vi.mocked(fetch).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            accept = resolve as typeof accept;
+          }),
+      );
+      const sync = new EdgeCloudSync({ cloudUrl: "https://cloud.example.com", deviceId: "pi-001" });
+      sync.pushEvent("first", { value: 1 });
+      const first = sync.flush();
+      const concurrent = sync.flush();
+      sync.pushEvent("second", { value: 2 });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      accept({ ok: true, json: async () => ({ ok: true }) });
+      expect(await first).toEqual({ sent: 1, failed: 0, remaining: 1 });
+      expect(await concurrent).toEqual({ sent: 1, failed: 0, remaining: 1 });
+      vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) } as Response);
+      await sync.flush();
+      const bodies = vi.mocked(fetch).mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
+      expect(bodies.map((body) => body.events.map((event: { type: string }) => event.type))).toEqual([
+        ["first"],
+        ["second"],
+      ]);
+      expect(sync.queueSize).toBe(0);
+    });
+
     it("sends queued events on success", async () => {
       (global.fetch as any).mockResolvedValue({
         ok: true,

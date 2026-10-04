@@ -21,7 +21,42 @@ export interface SwaggerOptions {
   specPath?: string;
 }
 
+/** Identity derived only from credentials verified by host middleware or JWT. */
+export interface HostedIdentity {
+  userId: string;
+  tenantId?: string;
+}
+
+export interface HostedResourceRequest {
+  identity: Readonly<HostedIdentity>;
+  operation: string;
+  resource: {
+    kind: "session" | "run" | "approval" | "checkpoint" | "correction" | "schedule" | "admin";
+    id?: string;
+    agentName?: string;
+    /** Requested correction visibility, for host policy evaluation. */
+    scope?: string;
+  };
+}
+
+export type HostedSecurityOptions =
+  | { mode: "local" }
+  | {
+      mode: "authenticated";
+      /** Receives req.user after trusted middleware/JWT verification; never the request body. */
+      resolveIdentity: (verifiedClaims: unknown) => HostedIdentity | null | Promise<HostedIdentity | null>;
+      /**
+       * Check authoritative owner records. Unknown/ownerless records MUST return false.
+       * session:create MUST atomically bind this new opaque ID to identity before returning true.
+       * Collection operations grant access to the entire collection; deny when that is inappropriate.
+       * Scopes (including admin:*) never bypass this authorization.
+       */
+      authorizeResource: (request: HostedResourceRequest) => boolean | Promise<boolean>;
+    };
+
 export interface RouterOptions {
+  /** Required explicit boundary. JWT/RBAC require authenticated mode and both host hooks. */
+  security: HostedSecurityOptions;
   /**
    * Use a Registry for live auto-discovery. The router creates dynamic routes
    * that resolve agents/teams/workflows at request time — any instance created
@@ -31,7 +66,7 @@ export interface RouterOptions {
    * Pass `false` to disable registry-based routing entirely (use explicit maps only).
    *
    * @example
-   * createAgentRouter({ cors: true });
+   * createAgentRouter({ security: { mode: "local" }, cors: true });
    * new Agent({ name: "bot", model: openai("gpt-4o") }); // immediately routable
    */
   registry?: Registry | false;
@@ -46,6 +81,8 @@ export interface RouterOptions {
   middleware?: any[];
   /** Swagger / OpenAPI configuration */
   swagger?: SwaggerOptions;
+  /** Connection-owned text response limits. */
+  textStream?: import("../text-stream.js").TextStreamLimits;
   /** File upload configuration for multi-modal inputs */
   fileUpload?: boolean | FileUploadOptions;
   /** CORS configuration. Pass true or '*' for permissive, a string for a single origin, or an array for multiple origins. */

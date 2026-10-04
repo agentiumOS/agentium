@@ -15,7 +15,7 @@ Agentium is a TypeScript-native agent orchestration framework with zero dependen
 ## Features
 
 - **Model-agnostic** — swap between OpenAI, Anthropic, Google Gemini, Ollama, or any OpenAI-compatible API with one line
-- **Agents** — tool-calling loop, session history, memory, guardrails, hooks. [`Agent.deep()`](https://docs.agentium.in/agents/harness) adds project files, skills, workspace, notes, and subagents
+- **Agents** — tool-calling loop, session history, memory, guardrails, hooks. [`@agentium/harness`](packages/harness/README.md) composes explicit project access, skills, tools, policies and lifecycle.
 - **Voice / Realtime Agents** — real-time voice conversations over WebSocket
 - **Sessions & Memory** — session history, standing MEMORY.md notes, long-term summaries, vector learnings
 - **Knowledge Base** — vector + BM25 hybrid search with reciprocal rank fusion
@@ -33,6 +33,7 @@ Agentium is a TypeScript-native agent orchestration framework with zero dependen
 | Package | npm | Description |
 |---------|-----|-------------|
 | [`@agentium/core`](packages/core) | [![npm](https://img.shields.io/npm/v/@agentium/core.svg)](https://www.npmjs.com/package/@agentium/core) | Agents, Teams, Workflows, Models, Tools, Memory, Voice |
+| [`@agentium/harness`](packages/harness) | New workspace package | Composable tools, context and middleware for reusable agent harnesses |
 | [`@agentium/transport`](packages/transport) | [![npm](https://img.shields.io/npm/v/@agentium/transport.svg)](https://www.npmjs.com/package/@agentium/transport) | Express router + Socket.IO + Voice/Browser gateways |
 | [`@agentium/queue`](packages/queue) | [![npm](https://img.shields.io/npm/v/@agentium/queue.svg)](https://www.npmjs.com/package/@agentium/queue) | BullMQ background jobs |
 | [`@agentium/browser`](packages/browser) | [![npm](https://img.shields.io/npm/v/@agentium/browser.svg)](https://www.npmjs.com/package/@agentium/browser) | Vision-based browser automation |
@@ -150,7 +151,7 @@ new Agent({ name: "assistant", model: openai("gpt-4o") });
 
 const app = express();
 app.use(express.json());
-app.use("/api", createAgentRouter());
+app.use("/api", createAgentRouter({ security: { mode: "local" } }));
 app.listen(3000);
 ```
 
@@ -172,7 +173,7 @@ import { Server as SocketIOServer } from "socket.io";
 import { createAgentGateway } from "@agentium/transport";
 
 const io = new SocketIOServer(httpServer);
-createAgentGateway({ io });
+createAgentGateway({ io, security: { mode: "local" } });
 ```
 
 **Events:** `agent.run` → `agent.chunk` → `agent.tool.call` → `agent.done`
@@ -180,7 +181,7 @@ createAgentGateway({ io });
 ## Background Jobs
 
 ```bash
-npm install @agentium/queue bullmq ioredis
+npm install @agentium/queue bullmq@^5.81.5 ioredis
 ```
 
 ```typescript
@@ -265,6 +266,7 @@ Provider SDKs are optional peer dependencies — install only what you use:
 ```
 packages/
   core/           @agentium/core           Agents, Teams, Workflows, Models, Tools, Memory, Voice
+  harness/        @agentium/harness        Reusable abilities, context, middleware and presets
   transport/      @agentium/transport      Express + Socket.IO + Voice/Browser gateways
   queue/          @agentium/queue          BullMQ background jobs
   browser/        @agentium/browser        Vision-based browser automation
@@ -289,3 +291,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, development workflow, and PR g
 ## License
 
 MIT
+
+## Runtime and migration compatibility
+
+Agentium supports Node 22.18+ in the 22.x line and Node 24.11+ in the 24.x line. CI tests both; release builds use Node 24. Current protocol adapters coexist with explicit legacy MCP/A2A paths. See the [core migration guidance](packages/core/README.md), [harness migration example](packages/harness/README.md), [queue compatibility notes](packages/queue/README.md), and [voice validation limits](packages/core/src/voice/README.md) for supported configuration and integration requirements.

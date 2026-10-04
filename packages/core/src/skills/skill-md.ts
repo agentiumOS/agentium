@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { defineTool } from "../tools/define-tool.js";
 import type { ToolDef } from "../tools/types.js";
 

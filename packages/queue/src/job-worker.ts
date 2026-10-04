@@ -1,12 +1,15 @@
+import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import type { Agent, Workflow } from "@agentium/core";
+import { queueConnection } from "./connection.js";
 import type { JobPayload } from "./job-types.js";
+
+const require = createRequire(import.meta.url);
 
 export interface WorkerConfig {
   connection: { host: string; port: number; password?: string; db?: number; tls?: boolean } | string;
   queueName?: string;
   concurrency?: number;
-  attempts?: number;
-  backoffDelay?: number;
   agentRegistry: Record<string, Agent>;
   workflowRegistry?: Record<string, Workflow<any>>;
   teamRegistry?: Record<string, import("@agentium/core").Team>;
@@ -16,16 +19,14 @@ export class AgentWorker {
   private worker: any;
 
   constructor(config: WorkerConfig) {
-    const queueName = config.queueName ?? "agentium:jobs";
+    const legacy = config as unknown as { attempts?: unknown; backoffDelay?: unknown };
+    if (legacy.attempts !== undefined || legacy.backoffDelay !== undefined)
+      throw new Error(
+        "Configure retries on AgentQueue defaultJobOptions or enqueue options; Worker retry options never controlled jobs",
+      );
+    const queueName = config.queueName ?? "agentium-jobs";
     const concurrency = config.concurrency ?? 5;
-    const connection = typeof config.connection === "string" ? { url: config.connection } : config.connection;
-    const defaultJobOptions = {
-      attempts: config.attempts ?? 3,
-      backoff: {
-        type: "exponential" as const,
-        delay: config.backoffDelay ?? 1000,
-      },
-    };
+    const connection = queueConnection(config.connection);
 
     try {
       const { Worker } = require("bullmq");
@@ -41,19 +42,27 @@ export class AgentWorker {
               throw new Error(`Agent "${payload.agentName}" not found in registry`);
             }
 
-            const onChunk = (_evt: any) => {
-              job.updateProgress(typeof job.progress === "number" ? job.progress + 1 : 1);
+            const runId = randomUUID();
+            let progress = 0;
+            let progressWrites = Promise.resolve();
+            const onChunk = (event: { runId: string }) => {
+              if (event.runId !== runId) return;
+              const next = ++progress;
+              progressWrites = progressWrites.then(() => job.updateProgress(next)).catch(() => {});
             };
             agent.eventBus.on("run.stream.chunk", onChunk);
 
             try {
               const result = await agent.run(payload.input, {
+                runId,
                 sessionId: payload.sessionId,
                 userId: payload.userId,
+                tenantId: payload.tenantId,
               });
               return result;
             } finally {
               agent.eventBus.off("run.stream.chunk", onChunk);
+              await progressWrites;
             }
           }
 
@@ -65,6 +74,9 @@ export class AgentWorker {
 
             const result = await workflow.run({
               sessionId: payload.sessionId,
+              initialState: payload.initialState,
+              userId: payload.userId,
+              tenantId: payload.tenantId,
             });
             return result;
           }
@@ -78,6 +90,7 @@ export class AgentWorker {
             const result = await team.run(payload.input, {
               sessionId: payload.sessionId,
               userId: payload.userId,
+              tenantId: payload.tenantId,
             });
             return result;
           }
@@ -87,7 +100,6 @@ export class AgentWorker {
         {
           connection,
           concurrency,
-          defaultJobOptions,
         },
       );
     } catch (err: any) {
@@ -103,11 +115,16 @@ export class AgentWorker {
   }
 
   async stop(timeoutMs = 30000): Promise<void> {
-    await Promise.race([
-      this.worker.close(),
-      new Promise<void>((_, reject) => setTimeout(() => reject(new Error("Worker drain timeout")), timeoutMs)),
-    ]).catch((err) => {
-      console.warn("[JobWorker] Error during stop:", err?.message ?? err);
-    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.worker.close(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Worker drain timeout")), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 }

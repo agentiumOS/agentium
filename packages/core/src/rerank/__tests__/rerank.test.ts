@@ -244,21 +244,21 @@ describe("JinaReranker", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ColbertReranker tests (local pipeline mock)
+// CrossEncoderReranker tests (local pipeline mock)
 // ---------------------------------------------------------------------------
 
-describe("ColbertReranker", () => {
-  let ColbertReranker: any;
+describe("CrossEncoderReranker", () => {
+  let CrossEncoderReranker: any;
   let mockPipelineFn: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     mockPipelineFn = vi.fn();
-    const mod = await import("../providers/colbert.js");
-    ColbertReranker = mod.ColbertReranker;
+    const mod = await import("../providers/cross-encoder-reranker.js");
+    CrossEncoderReranker = mod.CrossEncoderReranker;
   });
 
   function makeReranker(config?: Record<string, unknown>) {
-    const r = new ColbertReranker(config);
+    const r = new CrossEncoderReranker(config);
     (r as any).pipelinePromise = Promise.resolve(mockPipelineFn);
     return r;
   }

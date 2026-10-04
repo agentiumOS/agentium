@@ -135,6 +135,7 @@ export class GoogleProvider implements ModelProvider {
       ];
     }
     applyGoogleRequestExtras(config, this.modelId, options);
+    if (options?.signal) config.abortSignal = options.signal;
 
     const params: Record<string, unknown> = {
       model: this.modelId,
@@ -172,6 +173,7 @@ export class GoogleProvider implements ModelProvider {
       ];
     }
     applyGoogleRequestExtras(config, this.modelId, options);
+    if (options?.signal) config.abortSignal = options.signal;
 
     const params: Record<string, unknown> = {
       model: this.modelId,

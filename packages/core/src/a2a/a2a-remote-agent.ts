@@ -1,8 +1,9 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { RunContext } from "../agent/run-context.js";
 import type { RunOpts, RunOutput } from "../agent/types.js";
 import type { StreamChunk } from "../models/types.js";
 import type { ToolDef, ToolResult } from "../tools/types.js";
+import { legacyEndpoint, legacySignal, readLegacySSE } from "./legacy-http.js";
 import type { A2AAgentCard, A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2APart, A2ATask } from "./types.js";
 
 export interface A2ARemoteAgentConfig {
@@ -47,20 +48,21 @@ export class A2ARemoteAgent {
   }
 
   constructor(config: A2ARemoteAgentConfig) {
-    this.url = config.url.replace(/\/$/, "");
+    this.url = legacyEndpoint(config.url, config.timeoutMs ?? 60_000);
     this.name = config.name ?? "remote-agent";
     this.instructions = "";
-    this.headers = config.headers ?? {};
+    this.headers = { ...config.headers };
     this.timeoutMs = config.timeoutMs ?? 60_000;
   }
 
   /**
    * Fetch the Agent Card from /.well-known/agent.json and populate metadata.
    */
-  async discover(): Promise<A2AAgentCard> {
+  async discover(opts?: { signal?: AbortSignal }): Promise<A2AAgentCard> {
     const res = await fetch(`${this.url}/.well-known/agent.json`, {
       headers: this.headers,
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: legacySignal(this.timeoutMs, opts?.signal),
+      redirect: "error",
     });
 
     if (!res.ok) {
@@ -107,7 +109,8 @@ export class A2ARemoteAgent {
         ...this.headers,
       },
       body: JSON.stringify(rpcReq),
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: legacySignal(this.timeoutMs, opts?.signal),
+      redirect: "error",
     });
 
     if (!res.ok) {
@@ -125,6 +128,14 @@ export class A2ARemoteAgent {
 
     return {
       text,
+      status:
+        task.status?.state === "completed"
+          ? "completed"
+          : task.status?.state === "canceled"
+            ? "cancelled"
+            : ["failed", "rejected"].includes(task.status?.state)
+              ? "error"
+              : "stopped",
       toolCalls: [],
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       durationMs: Date.now() - startMs,
@@ -150,6 +161,7 @@ export class A2ARemoteAgent {
       },
     };
 
+    const signal = legacySignal(this.timeoutMs, opts?.signal);
     const res = await fetch(this.url, {
       method: "POST",
       headers: {
@@ -157,7 +169,8 @@ export class A2ARemoteAgent {
         ...this.headers,
       },
       body: JSON.stringify(rpcReq),
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal,
+      redirect: "error",
     });
 
     if (!res.ok) {
@@ -168,48 +181,32 @@ export class A2ARemoteAgent {
       throw new Error("A2A message/stream: no response body for SSE");
     }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop()!;
-
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const jsonStr = line.slice(6).trim();
-        if (!jsonStr) continue;
-
-        try {
-          const event = JSON.parse(jsonStr) as A2AJsonRpcResponse;
-          const task = event.result as A2ATask | undefined;
-          if (!task) continue;
-
-          if (task.status?.state === "working" && task.status.message?.parts?.length) {
-            for (const part of task.status.message.parts) {
-              if (part.kind === "text") {
-                yield { type: "text", text: part.text };
-              }
-            }
+    let emittedText = false;
+    for await (const value of readLegacySSE(res.body, signal)) {
+      const event = value as A2AJsonRpcResponse;
+      if (event.error) throw new Error(`A2A error: ${event.error.message}`);
+      const task = event.result as A2ATask | undefined;
+      if (!task) continue;
+      if (task.status?.state === "working" && task.status.message?.parts?.length) {
+        for (const part of task.status.message.parts) {
+          if (part.kind === "text") {
+            emittedText = true;
+            yield { type: "text", text: part.text };
           }
-
-          if (task.status?.state === "completed") {
-            yield {
-              type: "finish",
-              finishReason: "stop",
-              usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-            };
-          }
-        } catch {
-          // skip unparseable lines
         }
       }
+      if (task.status?.state === "completed") {
+        if (!emittedText && task.status.message) {
+          const text = this.partsToText(task.status.message.parts);
+          if (text) yield { type: "text", text };
+        }
+        yield { type: "finish", finishReason: "stop", usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
+        return;
+      }
+      if (["failed", "rejected", "canceled", "input-required"].includes(task.status?.state))
+        throw new Error(`A2A task ended with status ${task.status.state}`);
     }
+    throw new Error("A2A stream ended without a terminal result");
   }
 
   /**
@@ -224,7 +221,9 @@ export class A2ARemoteAgent {
         message: z.string().describe("The message to send to the remote agent"),
       }),
       async execute(args: Record<string, unknown>, _ctx: RunContext): Promise<string | ToolResult> {
-        const result = await self.run(args.message as string);
+        const result = await self.run(args.message as string, { signal: _ctx.signal, sessionId: _ctx.sessionId });
+        if (result.status && result.status !== "completed")
+          throw new Error(`A2A task ${result.status}: ${result.text}`);
         return result.text;
       },
     };

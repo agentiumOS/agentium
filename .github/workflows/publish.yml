@@ -29,26 +29,38 @@ jobs:
           # checks out the tag's SHA, so `ref` is empty / ignored.
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Use Node.js 20
+      - name: Use Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
 
       - name: Install dependencies
-        # Delete the lockfile (generated on macOS, missing Linux native
-        # bindings like @rollup/rollup-linux-x64-gnu) and re-resolve on the
-        # Linux runner. See https://github.com/npm/cli/issues/4828
+        run: npm ci --legacy-peer-deps --include=optional
+
+      - name: Verify installed native bindings and lock consistency
         run: |
-          rm -f package-lock.json
-          npm install --legacy-peer-deps --include=optional
+          node -e "require('@rolldown/binding-linux-x64-gnu'); console.log('Linux native bindings loaded')"
+          git diff --exit-code -- package-lock.json
 
       - name: Build packages
         run: npm run build
 
+      - name: Verify tests and packed public API
+        run: |
+          npm run lint
+          node --test scripts/release-lock.test.mjs
+          npm test
+          npm run test:package
+
       - name: Publish @agentium/core
         run: npm publish --workspace=packages/core --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @agentium/harness
+        run: npm publish --workspace=packages/harness --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

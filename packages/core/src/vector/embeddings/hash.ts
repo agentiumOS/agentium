@@ -1,7 +1,7 @@
 import type { EmbeddingProvider } from "../types.js";
 
 /**
- * Tiny local embedder (no API key). Good enough for tests and Agent.deep()
+ * Tiny local embedder (no API key). Good enough for deterministic tests and local prototypes
  * defaults. Swap in OpenAI/Google embeddings for production search quality.
  */
 export class HashEmbedding implements EmbeddingProvider {

@@ -1,6 +1,6 @@
 import type { ToolDef } from "@agentium/core";
 import { Toolkit } from "@agentium/core";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 export interface SensorConfig {
   /** I2C bus number (default 1 — standard on all Pi models). */

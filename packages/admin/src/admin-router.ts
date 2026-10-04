@@ -1,8 +1,10 @@
+import { createRequire } from "node:module";
 import type { ToolDef } from "@agentium/core";
-import { collectToolkitTools, describeToolLibrary, registry } from "@agentium/core";
-import { Router } from "express";
+import { collectToolkitTools, describeToolLibrary, registry, schemaShape } from "@agentium/core";
+import type { Router } from "express";
 import { ConfigStore } from "./config-store.js";
 import { EntityFactory } from "./entity-factory.js";
+import { publicBlueprint } from "./public-blueprint.js";
 import type { ToolkitConfig } from "./toolkit-manager.js";
 import { ToolkitManager } from "./toolkit-manager.js";
 import type { AdminOptions, AgentBlueprint, TeamBlueprint, WorkflowBlueprint } from "./types.js";
@@ -42,6 +44,7 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
   });
 
   const factory = new EntityFactory(getToolLibrary);
+  const { Router } = createRequire(import.meta.url)("express") as typeof import("express");
   const router = Router();
 
   if (opts.middleware) {
@@ -76,10 +79,11 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
         updatedAt: new Date().toISOString(),
       };
 
-      factory.createAgent(blueprint);
+      const created = factory.createAgent(blueprint, { register: false });
       await store.saveAgent(blueprint);
+      registry.add(created);
 
-      res.status(201).json(blueprint);
+      res.status(201).json(publicBlueprint(blueprint));
     } catch (error: any) {
       res.status(422).json({ error: error.message });
     }
@@ -88,7 +92,7 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
   router.get("/agents", async (_req: any, res: any) => {
     try {
       const agents = await store.listAgents();
-      res.json(agents);
+      res.json(agents.map(publicBlueprint));
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -100,7 +104,7 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
       if (!blueprint) {
         return res.status(404).json({ error: `Agent "${req.params.name}" not found` });
       }
-      res.json(blueprint);
+      res.json(publicBlueprint(blueprint));
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -122,11 +126,11 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
         updatedAt: new Date().toISOString(),
       };
 
-      factory.destroyAgent(name);
-      factory.createAgent(updated);
+      const replacement = factory.createAgent(updated, { register: false });
       await store.saveAgent(updated);
+      registry.add(replacement);
 
-      res.json(updated);
+      res.json(publicBlueprint(updated));
     } catch (error: any) {
       res.status(422).json({ error: error.message });
     }
@@ -175,10 +179,11 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
         updatedAt: new Date().toISOString(),
       };
 
-      factory.createTeam(blueprint);
+      const created = factory.createTeam(blueprint, { register: false });
       await store.saveTeam(blueprint);
+      registry.add(created);
 
-      res.status(201).json(blueprint);
+      res.status(201).json(publicBlueprint(blueprint));
     } catch (error: any) {
       res.status(422).json({ error: error.message });
     }
@@ -187,7 +192,7 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
   router.get("/teams", async (_req: any, res: any) => {
     try {
       const teams = await store.listTeams();
-      res.json(teams);
+      res.json(teams.map(publicBlueprint));
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -199,7 +204,7 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
       if (!blueprint) {
         return res.status(404).json({ error: `Team "${req.params.name}" not found` });
       }
-      res.json(blueprint);
+      res.json(publicBlueprint(blueprint));
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -221,11 +226,11 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
         updatedAt: new Date().toISOString(),
       };
 
-      factory.destroyTeam(name);
-      factory.createTeam(updated);
+      const replacement = factory.createTeam(updated, { register: false });
       await store.saveTeam(updated);
+      registry.add(replacement);
 
-      res.json(updated);
+      res.json(publicBlueprint(updated));
     } catch (error: any) {
       res.status(422).json({ error: error.message });
     }
@@ -271,7 +276,7 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
 
       await store.saveWorkflow(blueprint);
 
-      res.status(201).json(blueprint);
+      res.status(201).json(publicBlueprint(blueprint));
     } catch (error: any) {
       res.status(422).json({ error: error.message });
     }
@@ -292,7 +297,7 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
       if (!blueprint) {
         return res.status(404).json({ error: `Workflow "${req.params.name}" not found` });
       }
-      res.json(blueprint);
+      res.json(publicBlueprint(blueprint));
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -328,7 +333,7 @@ export function createAdminRouter(opts: AdminOptions): AdminRouterResult {
     res.json({
       name: tool.name,
       description: tool.description,
-      parameters: Object.keys(tool.parameters.shape ?? {}),
+      parameters: Object.keys(schemaShape(tool.parameters)),
     });
   });
 

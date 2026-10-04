@@ -89,10 +89,14 @@ export class InMemoryEventLog implements SSEEventLog {
 
 /** Format an `SSEEvent` for the wire. */
 export function formatSSEEvent(ev: SSEEvent): string {
+  if (ev.event !== undefined && !/^[a-zA-Z0-9_.:-]+$/.test(ev.event)) throw new Error("Invalid SSE event name");
   let out = `id: ${ev.id}\n`;
   if (ev.event) out += `event: ${ev.event}\n`;
   const data = typeof ev.payload === "string" ? ev.payload : JSON.stringify(ev.payload);
-  out += `data: ${data}\n\n`;
+  out += `${String(data)
+    .split(/\r\n|\r|\n/)
+    .map((line) => `data: ${line}`)
+    .join("\n")}\n\n`;
   return out;
 }
 

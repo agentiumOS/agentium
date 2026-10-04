@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { ModelProvider } from "../../models/provider.js";
 import { registry } from "../../serve.js";
 import { defineTool } from "../../tools/define-tool.js";
@@ -221,12 +221,16 @@ describe("Agent", () => {
     expect(agent.approvalManager).not.toBeNull();
   });
 
-  it("Agent.deep turns on harness tools", () => {
-    const agent = Agent.deep({
+  it("ordinary Agent enables explicitly requested tools", () => {
+    const agent = new Agent({
       name: "deep-agent",
       model: mockModel(),
       register: false,
-      workspace: "/tmp",
+      workspace: { path: "/tmp", mode: "write" },
+      subagents: true,
+      fileMemory: true,
+      filesystem: true,
+      searchPastSessions: true,
     });
     const names = agent.listTools();
     expect(names).toContain("task");

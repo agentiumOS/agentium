@@ -1,6 +1,8 @@
+import { Capture, type TelemetryOptions } from "../safety.js";
 import type { Span, Trace, TraceExporter } from "../types.js";
+import { endpointURL, type HttpExportOptions, postTelemetry } from "./http.js";
 
-export interface LangfuseExporterConfig {
+export interface LangfuseExporterConfig extends TelemetryOptions, HttpExportOptions {
   /** Defaults to LANGFUSE_PUBLIC_KEY env var. */
   publicKey?: string;
   /** Defaults to LANGFUSE_SECRET_KEY env var. */
@@ -22,11 +24,16 @@ function extractIO(span: Span): { input: unknown; output: unknown } {
 
 export class LangfuseExporter implements TraceExporter {
   name = "langfuse";
+  private capture: Capture;
+  private config: LangfuseExporterConfig;
   private publicKey: string;
   private secretKey: string;
   private baseUrl: string;
 
-  constructor(config?: LangfuseExporterConfig) {
+  constructor(config: LangfuseExporterConfig = {}) {
+    this.config = { ...config };
+    this.capture = new Capture(config);
+    this.capture.diagnostic.report("legacy_langfuse_ingestion_deprecated");
     this.publicKey = config?.publicKey ?? process.env.LANGFUSE_PUBLIC_KEY ?? "";
     this.secretKey = config?.secretKey ?? process.env.LANGFUSE_SECRET_KEY ?? "";
     this.baseUrl = (config?.baseUrl ?? process.env.LANGFUSE_BASE_URL ?? "https://cloud.langfuse.com").replace(
@@ -41,27 +48,10 @@ export class LangfuseExporter implements TraceExporter {
     }
   }
 
-  private async fetchWithRetry(url: string, init: RequestInit, retries = 2): Promise<Response> {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10000);
-        const res = await fetch(url, { ...init, signal: controller.signal });
-        clearTimeout(timeout);
-        if (res.status >= 500 && attempt < retries) {
-          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-          continue;
-        }
-        return res;
-      } catch (err) {
-        if (attempt === retries) throw err;
-        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-      }
-    }
-    throw new Error("Unreachable");
-  }
-
-  async export(trace: Trace): Promise<void> {
+  async export(raw: Trace, context?: { signal: AbortSignal }): Promise<void> {
+    const trace = this.capture.trace(raw);
+    if (trace.spans.some((span) => span.status === "running" || span.endTime === undefined))
+      throw new Error("Only finished Langfuse spans may be exported");
     const events: unknown[] = [];
     const now = new Date().toISOString();
 
@@ -134,27 +124,16 @@ export class LangfuseExporter implements TraceExporter {
 
     const auth = Buffer.from(`${this.publicKey}:${this.secretKey}`).toString("base64");
 
-    const res = await this.fetchWithRetry(`${this.baseUrl}/api/public/ingestion`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Basic ${auth}`,
-      },
-      body: JSON.stringify({ batch: events }),
-    });
-
-    if (!res.ok && res.status !== 207) {
-      throw new Error(`Langfuse export failed: ${res.status} ${res.statusText}`);
-    }
-
-    if (res.status === 207) {
-      const body = (await res.json()) as { errors?: Array<{ status: number; message: string }> };
-      if (body.errors && body.errors.length > 0) {
-        const realErrors = body.errors.filter((e) => e.status >= 400);
-        if (realErrors.length > 0) {
-          throw new Error(`Langfuse partial failure: ${JSON.stringify(realErrors[0])}`);
-        }
-      }
+    const res = await postTelemetry(
+      `${endpointURL(this.baseUrl)}/api/public/ingestion`,
+      JSON.stringify({ batch: events }),
+      { Authorization: `Basic ${auth}` },
+      this.config,
+      context?.signal,
+    );
+    if (res.status === 207 && Array.isArray(res.body.errors) && res.body.errors.length > 0) {
+      this.capture.diagnostic.report("legacy_langfuse_partial_failure");
+      throw new Error("Langfuse legacy ingestion partially rejected telemetry");
     }
   }
 }

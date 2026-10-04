@@ -43,12 +43,6 @@ export interface NoiseReductionConfig {
   type: "near_field" | "far_field";
 }
 
-export interface RealtimePrompt {
-  id: string;
-  version?: string;
-  variables?: Record<string, string>;
-}
-
 export interface RealtimeMcpServer {
   serverLabel: string;
   serverUrl: string;
@@ -68,6 +62,9 @@ export interface VoiceRecordingConfig {
 // ── Realtime session config (passed to provider.connect) ─────────────────
 
 export interface RealtimeSessionConfig {
+  signal?: AbortSignal;
+  /** Provider session checkpoint. Gemini only; handles must stay with their original owner/configuration. */
+  sessionResumption?: { handle?: string };
   instructions?: string;
   voice?: string;
   tools?: ToolDefinition[];
@@ -79,11 +76,35 @@ export interface RealtimeSessionConfig {
   apiKey?: string;
   reasoningEffort?: ReasoningEffort;
   transcriptionModel?: string;
+  transcriptionContext?: import("./providers/openai-transcription.js").OpenAITranscriptionContext;
   noiseReduction?: NoiseReductionConfig;
-  prompt?: RealtimePrompt;
   mcpServers?: RealtimeMcpServer[];
   safetyIdentifier?: string;
   translation?: VoiceTranslationConfig;
+}
+
+export type RealtimeRecoveryContinuity = "session-resumption" | "fresh";
+
+/** Opt-in, bounded recovery. No audio, user input, or tool results are resent. */
+export interface RealtimeRecoveryPolicy {
+  /** Default: stop when a safe provider checkpoint is unavailable. Fresh loses conversation context. */
+  fallback?: "stop" | "fresh";
+  /** Total reconnect attempts over this logical session, including successful reconnects. Default: 3. */
+  maxAttempts?: number;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  connectTimeoutMs?: number;
+  /** Maximum elapsed time for one recovery incident, including backoff. Default: 30 seconds. */
+  maxElapsedMs?: number;
+}
+
+export interface RealtimeRecoveryState {
+  status: "recovering" | "recovered" | "failed";
+  attempt: number;
+  continuity?: RealtimeRecoveryContinuity;
+  reason: "disconnected" | "go-away" | "unsafe-checkpoint" | "uncertain-tools" | "exhausted";
+  /** Replacement sessions never replay output and require new user input before forwarding output. */
+  requiresInput: boolean;
 }
 
 // ── Realtime events ──────────────────────────────────────────────────────
@@ -95,9 +116,15 @@ export interface RealtimeToolCall {
 }
 
 export type RealtimeEventMap = {
-  audio: { data: Buffer; mimeType?: string };
+  audio: { data: Buffer; mimeType?: string; generationId?: string };
   text: { text: string };
-  transcript: { text: string; role: "user" | "assistant" };
+  transcript: {
+    text: string;
+    role: "user" | "assistant";
+    segmentId?: string;
+    kind?: "partial" | "final";
+    generationId?: string;
+  };
   tool_call: RealtimeToolCall;
   usage: { promptTokens: number; completionTokens: number; totalTokens: number };
   interrupted: {};
@@ -105,6 +132,11 @@ export type RealtimeEventMap = {
   connected: {};
   disconnected: {};
   idle: {};
+  generation_start: { generationId: string };
+  turn_complete: { generationId?: string };
+  go_away: { timeLeft?: string };
+  session_resume: { handle?: string; resumable: boolean };
+  recovery: RealtimeRecoveryState;
 };
 
 export type RealtimeEvent = keyof RealtimeEventMap;
@@ -119,6 +151,10 @@ export interface CreateResponseOpts {
 // ── RealtimeConnection (provider returns this) ───────────────────────────
 
 export interface RealtimeConnection {
+  /** Native transports expose closure so a connect/close race cannot return an already dead session. */
+  readonly connectionState?: "open" | "closed";
+  /** Client owns OpenAI continuation; Gemini resumes when a tool response arrives. */
+  readonly toolContinuation?: "client" | "provider";
   sendAudio(data: Buffer): void;
   sendText(text: string): void;
   sendImage(image: Buffer | string, opts?: { mimeType?: string; text?: string }): void;
@@ -136,6 +172,17 @@ export interface RealtimeConnection {
 // ── RealtimeProvider interface ───────────────────────────────────────────
 
 export interface RealtimeProvider {
+  readonly capabilities?: {
+    manualCommit: boolean;
+    images: boolean;
+    asyncTools: boolean;
+    transcripts: boolean;
+    resume: boolean;
+    /** Advertised recovery contract; absent means recovery is unsupported. */
+    recovery?: "session-resumption" | "fresh";
+    inputSampleRateHz: number;
+    outputSampleRateHz: number;
+  };
   readonly providerId: string;
   readonly modelId: string;
 
@@ -145,8 +192,13 @@ export interface RealtimeProvider {
 // ── VoiceAgent config ────────────────────────────────────────────────────
 
 export interface VoiceAgentConfig {
+  approval?: import("../tools/approval.js").ApprovalConfig;
+  approvalManager?: import("../tools/approval.js").ApprovalManager;
+  executionPolicy?: import("../tools/execution-policy.js").ExecutionPolicy;
   name: string;
   provider: RealtimeProvider;
+  /** Off by default. Recovery state is emitted on the VoiceSession `recovery` event. */
+  recovery?: RealtimeRecoveryPolicy;
   instructions?: string;
   tools?: ToolDef[];
   voice?: string;
@@ -171,17 +223,17 @@ export interface VoiceAgentConfig {
 
   /** Realtime 2.x thinking depth. Default: `low`. */
   reasoningEffort?: ReasoningEffort;
-  /** Input transcription model. Default: `gpt-4o-mini-transcribe`. */
+  /** Input transcription model. Default: `gpt-transcribe` (native WebSocket sessions). */
   transcriptionModel?: string;
+  transcriptionContext?: import("./providers/openai-transcription.js").OpenAITranscriptionContext;
   noiseReduction?: NoiseReductionConfig;
-  prompt?: RealtimePrompt;
   /** Remote MCP servers attached to the OpenAI Realtime session. */
   mcpServers?: RealtimeMcpServer[];
   safetyIdentifier?: string;
   translation?: VoiceTranslationConfig;
   /**
-   * Talk around tool calls so long tools (browse_web / Jev) do not mute the line.
-   * Default: `speakBeforeAndAfter`.
+   * One client-owned continuation follows completed OpenAI tool calls.
+   * Legacy speakBefore variants no longer create competing out-of-band responses.
    */
   toolCallBehavior?: ToolCallBehavior;
   /** User speech cancels the current reply. Default: `always`. */
@@ -210,6 +262,8 @@ export interface VoiceSession {
   commitAudio(): void;
   interrupt(): void;
   close(): Promise<void>;
+  /** Playback-confirmed projection; unacknowledged generated text is marked unknown. */
+  acknowledgePlayback?(ack: import("./speech-types.js").PlaybackAck): void;
   getTranscript(): string;
   getRecording(): VoiceRecording;
 

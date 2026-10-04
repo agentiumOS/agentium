@@ -18,7 +18,7 @@ export interface AgentBlueprint {
   /** Tool names resolved from the toolLibrary at creation time. */
   tools?: string[];
   temperature?: number;
-  /** Provider-specific config (apiKey, baseURL, etc.) — passed to modelRegistry.resolve(). */
+  /** Write-only provider config passed to modelRegistry.resolve(). Omitted from public CRUD responses and events; stored privately for hydration. */
   providerConfig?: Record<string, unknown>;
   createdAt?: string;
   updatedAt?: string;

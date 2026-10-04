@@ -1,3 +1,4 @@
+import { Capture, type TelemetryOptions } from "../safety.js";
 import type { Span, Trace, TraceExporter } from "../types.js";
 
 const C = {
@@ -43,8 +44,13 @@ function kindColor(kind: string): string {
 
 export class ConsoleExporter implements TraceExporter {
   name = "console";
+  private capture: Capture;
+  constructor(options: TelemetryOptions = {}) {
+    this.capture = new Capture(options);
+  }
 
-  async export(trace: Trace): Promise<void> {
+  async export(raw: Trace): Promise<void> {
+    const trace = this.capture.trace(raw);
     const line = c(C.dim, "─".repeat(80));
     console.log(`\n${line}`);
     console.log(
@@ -67,14 +73,22 @@ export class ConsoleExporter implements TraceExporter {
 
     const root = trace.spans.find((s) => s.spanId === trace.rootSpanId);
     if (root) {
-      this.printSpan(root, spanMap, 0, trace.startTime);
+      this.printSpan(root, spanMap, 0, trace.startTime, new Set());
     }
 
     console.log(line);
     console.log("");
   }
 
-  private printSpan(span: Span, childMap: Map<string, Span[]>, depth: number, traceStart: number): void {
+  private printSpan(
+    span: Span,
+    childMap: Map<string, Span[]>,
+    depth: number,
+    traceStart: number,
+    seen: Set<string>,
+  ): void {
+    if (seen.has(span.spanId) || depth > 32) return;
+    seen.add(span.spanId);
     const indent = `  ${"│ ".repeat(depth)}`;
     const connector = depth > 0 ? "├─ " : "";
     const offset = span.startTime - traceStart;
@@ -109,7 +123,7 @@ export class ConsoleExporter implements TraceExporter {
 
     const children = childMap.get(span.spanId) ?? [];
     for (const child of children) {
-      this.printSpan(child, childMap, depth + 1, traceStart);
+      this.printSpan(child, childMap, depth + 1, traceStart, seen);
     }
   }
 }

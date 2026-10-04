@@ -1,5 +1,5 @@
-import { v4 as uuidv4 } from "uuid";
-import { z } from "zod";
+import { randomUUID as uuidv4 } from "node:crypto";
+import { z } from "zod/v3";
 import type { StorageDriver } from "../../storage/driver.js";
 import type { ToolDef } from "../../tools/types.js";
 import type { VectorStore } from "../../vector/types.js";

@@ -1,6 +1,6 @@
 import type { ToolDef } from "@agentium/core";
 import { Toolkit } from "@agentium/core";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 export interface GpioConfig {
   /** GPIO chip number. Use 4 for Pi 5, 0 for Pi 4 and earlier. Default: 0. */

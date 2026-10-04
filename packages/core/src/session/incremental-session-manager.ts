@@ -1,3 +1,4 @@
+import { retainRecentTurns } from "../context/conversation-history.js";
 import type { ChatMessage } from "../models/types.js";
 import type { StorageDriver } from "../storage/driver.js";
 import type { Session } from "./types.js";
@@ -10,7 +11,7 @@ import type { Session } from "./types.js";
  * Storage layout (per sessionId):
  *
  *   ns="sessions:meta"       key=<sessionId>           -> Session minus messages
- *   ns="sessions:snapshot"   key=<sessionId>           -> ChatMessage[] (collapsed)
+ *   ns="sessions:snapshot"   key=<sessionId>           -> { messages, nextSeq } (collapsed)
  *   ns="sessions:msg"        key=<sessionId>:<seq>     -> ChatMessage (incremental)
  *
  * `seq` is a zero-padded monotonically increasing integer so that
@@ -19,7 +20,7 @@ import type { Session } from "./types.js";
 export interface IncrementalSessionConfig {
   /** Take a full snapshot every N message appends. Default: 25. */
   snapshotFrequency?: number;
-  /** Maximum messages kept in session history (oldest trimmed). Default: unlimited. */
+  /** Soft message limit applied to whole turns at snapshot time. Default: unlimited. */
   maxMessages?: number;
 }
 
@@ -29,6 +30,12 @@ const NS_MSG = "sessions:msg";
 
 function padSeq(n: number): string {
   return n.toString().padStart(10, "0");
+}
+
+interface SessionSnapshot {
+  messages: ChatMessage[];
+  /** Loose entries below this sequence are already included in the snapshot. */
+  nextSeq: number;
 }
 
 interface SessionMeta {
@@ -75,9 +82,11 @@ export class IncrementalSessionManager {
   private async getOrInitMeta(sessionId: string, userId?: string): Promise<SessionMeta> {
     const existing = await this.storage.get<SessionMeta>(NS_META, sessionId);
     if (existing) {
+      const snapshot = await this.readSnapshot(sessionId);
       // Re-hydrate Date instances (storage drivers may have JSON-serialized them).
       return {
         ...existing,
+        nextSeq: Math.max(existing.nextSeq, snapshot.nextSeq),
         createdAt: existing.createdAt instanceof Date ? existing.createdAt : new Date(existing.createdAt),
         updatedAt: existing.updatedAt instanceof Date ? existing.updatedAt : new Date(existing.updatedAt),
       };
@@ -95,12 +104,28 @@ export class IncrementalSessionManager {
     return meta;
   }
 
+  private async readSnapshot(sessionId: string): Promise<SessionSnapshot> {
+    const stored = await this.storage.get<SessionSnapshot | ChatMessage[]>(NS_SNAP, sessionId);
+    // Existing installations stored bare arrays. Their loose entries have no watermark.
+    if (!stored || Array.isArray(stored)) return { messages: stored ?? [], nextSeq: 0 };
+    return stored;
+  }
+
+  private async readLoose(sessionId: string): Promise<Array<{ key: string; value: ChatMessage }>> {
+    const prefix = `${sessionId}:`;
+    const entries = await this.storage.list<ChatMessage>(NS_MSG, prefix);
+    // A prefix scan also returns sessions such as "parent:child". Only this
+    // session's numeric sequence suffix belongs to this read or cleanup.
+    return entries
+      .filter((entry) => /^\d{10,}$/.test(entry.key.slice(prefix.length)))
+      .sort((a, b) => a.key.localeCompare(b.key));
+  }
+
   private async readMessages(sessionId: string): Promise<ChatMessage[]> {
-    const snapshot = (await this.storage.get<ChatMessage[]>(NS_SNAP, sessionId)) ?? [];
-    const loose = await this.storage.list<ChatMessage>(NS_MSG, `${sessionId}:`);
-    // `list` doesn't guarantee order; sort by key suffix (which is zero-padded seq).
-    loose.sort((a, b) => a.key.localeCompare(b.key));
-    return [...snapshot, ...loose.map((e) => e.value)];
+    const snapshot = await this.readSnapshot(sessionId);
+    const loose = await this.readLoose(sessionId);
+    const pending = loose.filter((entry) => Number(entry.key.slice(sessionId.length + 1)) >= snapshot.nextSeq);
+    return [...snapshot.messages, ...pending.map((entry) => entry.value)];
   }
 
   async getOrCreate(sessionId: string, userId?: string): Promise<Session> {
@@ -148,10 +173,12 @@ export class IncrementalSessionManager {
   private async snapshot(sessionId: string, meta: SessionMeta): Promise<void> {
     let all = await this.readMessages(sessionId);
     if (this.maxMessages && all.length > this.maxMessages) {
-      all = all.slice(all.length - this.maxMessages);
+      all = retainRecentTurns(all, this.maxMessages);
     }
-    await this.storage.set(NS_SNAP, sessionId, all);
-    const loose = await this.storage.list<ChatMessage>(NS_MSG, `${sessionId}:`);
+    // Commit the messages and watermark in one storage value. A failed cleanup
+    // must never replay the same tool call from both the snapshot and loose log.
+    await this.storage.set<SessionSnapshot>(NS_SNAP, sessionId, { messages: all, nextSeq: meta.nextSeq });
+    const loose = await this.readLoose(sessionId);
     for (const entry of loose) {
       await this.storage.delete(NS_MSG, entry.key);
     }
@@ -164,8 +191,8 @@ export class IncrementalSessionManager {
    */
   async snapshotNow(sessionId: string): Promise<void> {
     return this.withLock(sessionId, async () => {
-      const meta = await this.storage.get<SessionMeta>(NS_META, sessionId);
-      if (!meta) return;
+      if (!(await this.storage.get<SessionMeta>(NS_META, sessionId))) return;
+      const meta = await this.getOrInitMeta(sessionId);
       await this.snapshot(sessionId, {
         ...meta,
         createdAt: meta.createdAt instanceof Date ? meta.createdAt : new Date(meta.createdAt),
@@ -175,9 +202,11 @@ export class IncrementalSessionManager {
   }
 
   async getHistory(sessionId: string, limit?: number): Promise<ChatMessage[]> {
-    const messages = await this.readMessages(sessionId);
-    if (limit && limit > 0) return messages.slice(-limit);
-    return messages;
+    return this.withLock(sessionId, async () => {
+      const messages = await this.readMessages(sessionId);
+      if (limit && limit > 0) return retainRecentTurns(messages, limit);
+      return messages;
+    });
   }
 
   async updateState(sessionId: string, patch: Record<string, unknown>): Promise<void> {
@@ -198,7 +227,7 @@ export class IncrementalSessionManager {
     return this.withLock(sessionId, async () => {
       await this.storage.delete(NS_META, sessionId);
       await this.storage.delete(NS_SNAP, sessionId);
-      const loose = await this.storage.list<ChatMessage>(NS_MSG, `${sessionId}:`);
+      const loose = await this.readLoose(sessionId);
       for (const entry of loose) {
         await this.storage.delete(NS_MSG, entry.key);
       }

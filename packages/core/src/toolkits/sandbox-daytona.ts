@@ -1,106 +1,191 @@
 import { createRequire } from "node:module";
-import { z } from "zod";
+import { z } from "zod/v3";
+import {
+  requireSandboxMethods,
+  SandboxSessionOwner,
+  sandboxOutputLimit,
+  sandboxResult,
+  sandboxTimeout,
+} from "../sandbox/lifecycle.js";
 import type { CloudSandbox, SandboxRunOptions, SandboxRunResult } from "../sandbox/types.js";
 import type { ToolDef } from "../tools/types.js";
 import { Toolkit } from "./base.js";
 
-const _require = createRequire(import.meta.url);
-
+const requireSDK = createRequire(import.meta.url);
+export interface DaytonaSandboxSession {
+  process: {
+    codeRun(
+      code: string,
+      params: { env?: Record<string, string> },
+      timeout: number,
+    ): Promise<{ result: string; exitCode: number }>;
+    executeCommand(
+      command: string,
+      cwd: undefined,
+      env: Record<string, string> | undefined,
+      timeout: number,
+    ): Promise<{ result: string; exitCode: number }>;
+  };
+  fs: {
+    uploadFile(data: Buffer, path: string, timeout: number): Promise<void>;
+    downloadFile(path: string, timeout: number): Promise<Buffer>;
+  };
+  delete(timeout: number, wait: boolean): Promise<void>;
+}
+export interface DaytonaSandboxClient {
+  create(
+    params: { name?: string; language: "python" | "javascript"; autoStopInterval: number; autoDeleteInterval: number },
+    options: { timeout: number },
+  ): Promise<DaytonaSandboxSession>;
+}
+export interface DaytonaSandboxSDK {
+  Daytona: new (config: {
+    apiKey?: string;
+    apiUrl?: string;
+    otelEnabled: false;
+    requestTimeoutMs: number;
+  }) => DaytonaSandboxClient;
+}
 export interface DaytonaSandboxConfig {
   apiKey?: string;
-  /** Optional override for the Daytona API host. */
+  /** Maps to the current SDK's apiUrl. */
   baseURL?: string;
-  /** Workspace / project name. */
+  /** Optional explicit sandbox name. Omit for a provider-generated unique name. */
   workspace?: string;
-  /** Default timeout in seconds. */
+  /** Daytona codeRun language is fixed when the sandbox is created. */
+  language?: "python" | "node";
   defaultTimeoutSeconds?: number;
+  maxOutputBytes?: number;
+  /** Borrowed client; created sandboxes are owned and deleted. Client disposal remains the host's responsibility. */
+  client?: DaytonaSandboxClient;
+  sdk?: DaytonaSandboxSDK;
 }
-
-/**
- * Daytona sandbox adapter (https://daytona.io). Lazy-loads the `@daytonaio/sdk`
- * peer dep so users who don't use Daytona don't pay the install cost.
- */
+/** @daytona/sdk 0.220.x. SDK imports are lazy and optional. */
 export class DaytonaSandbox implements CloudSandbox {
   readonly providerId = "daytona";
-  private sdk: any;
-  private session: any = null;
-  private apiKey: string | undefined;
-  private baseURL?: string;
-  private workspace: string;
-  private defaultTimeout: number;
-
+  private owner: SandboxSessionOwner<DaytonaSandboxSession>;
+  private language: "python" | "node";
+  private timeout: number;
+  private outputLimit: number;
+  private ownedClient?: DaytonaSandboxClient & { [Symbol.asyncDispose]?: () => Promise<void> };
+  private closing?: Promise<void>;
   constructor(config: DaytonaSandboxConfig = {}) {
-    this.apiKey = config.apiKey ?? process.env.DAYTONA_API_KEY;
-    this.baseURL = config.baseURL;
-    this.workspace = config.workspace ?? "default";
-    this.defaultTimeout = config.defaultTimeoutSeconds ?? 30;
-    try {
-      this.sdk = _require("@daytonaio/sdk");
-    } catch (e: any) {
-      if (e?.code === "MODULE_NOT_FOUND" || e?.code === "ERR_MODULE_NOT_FOUND") {
-        throw new Error("@daytonaio/sdk is required for DaytonaSandbox. Install it: npm install @daytonaio/sdk");
+    this.language = config.language ?? "python";
+    if (!["python", "node"].includes(this.language)) throw new Error("Unsupported Daytona language");
+    this.timeout = sandboxTimeout({}, config.defaultTimeoutSeconds ?? 30);
+    this.outputLimit = sandboxOutputLimit(config.maxOutputBytes);
+    const snapshot = { ...config };
+    this.owner = new SandboxSessionOwner(
+      async () => {
+        let client = snapshot.client;
+        if (!client) {
+          let sdk = snapshot.sdk;
+          if (!sdk) {
+            try {
+              sdk = requireSDK("@daytona/sdk") as DaytonaSandboxSDK;
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND")
+                throw new Error("DaytonaSandbox requires @daytona/sdk ~0.220.0. Install that optional peer.", {
+                  cause: error,
+                });
+              throw error;
+            }
+          }
+          requireSandboxMethods(sdk, ["Daytona"]);
+          this.ownedClient ??= new sdk.Daytona({
+            apiKey: snapshot.apiKey,
+            apiUrl: snapshot.baseURL,
+            otelEnabled: false,
+            requestTimeoutMs: this.timeout * 1000,
+          });
+          client = this.ownedClient;
+        }
+        requireSandboxMethods(client, ["create"]);
+        const session = await client
+          .create(
+            {
+              ...(snapshot.workspace ? { name: snapshot.workspace } : {}),
+              language: this.language === "node" ? "javascript" : "python",
+              autoStopInterval: 5,
+              autoDeleteInterval: 0,
+            },
+            { timeout: this.timeout },
+          )
+          .catch(async (error: unknown) => {
+            try {
+              await this.disposeClient();
+            } catch (cleanup) {
+              throw new AggregateError([error, cleanup], "Daytona creation and client cleanup failed; retry close()");
+            }
+            throw error;
+          });
+        return session;
+      },
+      (session) => session.delete(this.timeout, true),
+      (session) =>
+        requireSandboxMethods(session, [
+          "process.codeRun",
+          "process.executeCommand",
+          "fs.uploadFile",
+          "fs.downloadFile",
+          "delete",
+        ]),
+    );
+  }
+  start(): Promise<void> {
+    return this.owner.start();
+  }
+  run(code: string, options: SandboxRunOptions = {}): Promise<SandboxRunResult> {
+    if (options.language === "shell") return this.shell(code, options);
+    if ((options.language ?? this.language) !== this.language)
+      return Promise.reject(
+        new Error(
+          "Daytona code language is fixed at creation; configure a separate adapter with the required language",
+        ),
+      );
+    const timeout = sandboxTimeout(options, this.timeout);
+    return this.owner.use(async (session) => {
+      const result = await session.process.codeRun(code, { env: options.env }, timeout);
+      return sandboxResult(result.result, result.exitCode, this.outputLimit);
+    }, options.signal);
+  }
+  shell(command: string, options: SandboxRunOptions = {}): Promise<SandboxRunResult> {
+    const timeout = sandboxTimeout(options, this.timeout);
+    return this.owner.use(async (session) => {
+      const result = await session.process.executeCommand(command, undefined, options.env, timeout);
+      return sandboxResult(result.result, result.exitCode, this.outputLimit);
+    }, options.signal);
+  }
+  writeFile(path: string, contents: string, encoding: "utf8" | "base64" = "utf8"): Promise<void> {
+    return this.owner.use((session) => session.fs.uploadFile(Buffer.from(contents, encoding), path, this.timeout));
+  }
+  readFile(path: string, encoding: "utf8" | "base64" = "utf8"): Promise<string | null> {
+    return this.owner.use(async (session) => {
+      try {
+        const bytes = await session.fs.downloadFile(path, this.timeout);
+        if (!(bytes instanceof Uint8Array)) throw new Error("Invalid Daytona file bytes");
+        return Buffer.from(bytes).toString(encoding);
+      } catch (error) {
+        if ((error as { code?: string }).code === "FILE_NOT_FOUND") return null;
+        throw error;
       }
-      throw e;
-    }
+    });
   }
-
-  async start(): Promise<void> {
-    if (this.session) return;
-    const Daytona = this.sdk.Daytona ?? this.sdk.default?.Daytona;
-    if (!Daytona) throw new Error("Daytona SDK does not expose a `Daytona` client");
-    const client = new Daytona({ apiKey: this.apiKey, baseURL: this.baseURL });
-    this.session = await client.create({ workspaceName: this.workspace });
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    this.closing = (async () => {
+      await this.owner.close();
+      await this.disposeClient();
+    })().finally(() => {
+      this.closing = undefined;
+    });
+    return this.closing;
   }
-
-  private async ensure(): Promise<any> {
-    if (!this.session) await this.start();
-    return this.session;
-  }
-
-  async run(code: string, options: SandboxRunOptions = {}): Promise<SandboxRunResult> {
-    const s = await this.ensure();
-    const lang = options.language ?? "python";
-    const timeoutMs = (options.timeoutSeconds ?? this.defaultTimeout) * 1000;
-    const res = await s.runCode(code, { language: lang, env: options.env, timeoutMs });
-    return {
-      output: (res.stdout ?? "") + (res.stderr ?? ""),
-      exitCode: res.exitCode ?? 0,
-    };
-  }
-
-  async shell(command: string, options: { timeoutSeconds?: number } = {}): Promise<SandboxRunResult> {
-    const s = await this.ensure();
-    const timeoutMs = (options.timeoutSeconds ?? this.defaultTimeout) * 1000;
-    const res = await s.exec(command, { timeoutMs });
-    return {
-      output: (res.stdout ?? "") + (res.stderr ?? ""),
-      exitCode: res.exitCode ?? 0,
-    };
-  }
-
-  async writeFile(path: string, contents: string, encoding: "utf8" | "base64" = "utf8"): Promise<void> {
-    const s = await this.ensure();
-    const body = encoding === "base64" ? Buffer.from(contents, "base64") : contents;
-    if (s.fs?.write) await s.fs.write(path, body);
-    else await s.writeFile?.(path, body);
-  }
-
-  async readFile(path: string, encoding: "utf8" | "base64" = "utf8"): Promise<string | null> {
-    const s = await this.ensure();
-    try {
-      const data = s.fs?.read ? await s.fs.read(path) : await s.readFile?.(path);
-      if (data == null) return null;
-      if (Buffer.isBuffer(data)) return encoding === "base64" ? data.toString("base64") : data.toString("utf8");
-      return data as string;
-    } catch {
-      return null;
-    }
-  }
-
-  async close(): Promise<void> {
-    if (this.session) {
-      await this.session.delete?.();
-      this.session = null;
+  private async disposeClient(): Promise<void> {
+    const client = this.ownedClient;
+    if (client) {
+      await client[Symbol.asyncDispose]?.();
+      this.ownedClient = undefined;
     }
   }
 }
@@ -123,19 +208,23 @@ export class DaytonaSandboxToolkit extends Toolkit {
         parameters: z.object({
           code: z.string(),
           language: z.enum(["python", "node", "shell"]).optional(),
-          timeoutSeconds: z.number().optional(),
+          timeoutSeconds: z.number().positive().max(3600).optional(),
         }),
-        execute: async (args: any) => {
-          const r = await sandbox.run(args.code, { language: args.language, timeoutSeconds: args.timeoutSeconds });
+        execute: async (args: any, ctx) => {
+          const r = await sandbox.run(args.code, {
+            language: args.language,
+            timeoutSeconds: args.timeoutSeconds,
+            signal: ctx.signal,
+          });
           return JSON.stringify(r);
         },
       },
       {
         name: "sandbox_daytona_shell",
         description: "Run a shell command in the Daytona sandbox.",
-        parameters: z.object({ command: z.string(), timeoutSeconds: z.number().optional() }),
-        execute: async (args: any) => {
-          const r = await sandbox.shell(args.command, { timeoutSeconds: args.timeoutSeconds });
+        parameters: z.object({ command: z.string(), timeoutSeconds: z.number().positive().max(3600).optional() }),
+        execute: async (args: any, ctx) => {
+          const r = await sandbox.shell(args.command, { timeoutSeconds: args.timeoutSeconds, signal: ctx.signal });
           return JSON.stringify(r);
         },
       },

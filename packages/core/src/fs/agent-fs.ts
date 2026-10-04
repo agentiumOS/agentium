@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { StorageDriver } from "../storage/driver.js";
 import { InMemoryStorage } from "../storage/in-memory.js";
 import { defineTool } from "../tools/define-tool.js";

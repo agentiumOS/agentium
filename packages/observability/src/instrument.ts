@@ -2,6 +2,7 @@ import type { Agent, EventBus } from "@agentium/core";
 import { ConsoleExporter } from "./exporters/console.js";
 import { JsonFileExporter } from "./exporters/json-file.js";
 import { LangfuseExporter } from "./exporters/langfuse.js";
+import { LangfuseOTLPExporter } from "./exporters/langfuse-otlp.js";
 import { OTelExporter } from "./exporters/otel.js";
 import { MetricsCollector } from "./metrics.js";
 import { StructuredLogger } from "./structured-logger.js";
@@ -13,19 +14,21 @@ export interface InstrumentResult {
   metrics: MetricsCollector | null;
   logger: StructuredLogger | null;
   detach: () => void;
+  shutdown: () => Promise<void>;
 }
 
-function resolveExporters(raw: ObservabilityConfig["exporters"]): TraceExporter[] {
+function resolveExporters(raw: ObservabilityConfig["exporters"], config?: ObservabilityConfig): TraceExporter[] {
   if (!raw || raw.length === 0) return [];
 
   return raw.map((e) => {
     if (typeof e !== "string") return e;
 
     const shorthand: Record<ExporterShorthand, () => TraceExporter> = {
-      console: () => new ConsoleExporter(),
-      langfuse: () => new LangfuseExporter(),
-      "json-file": () => new JsonFileExporter(),
-      otel: () => new OTelExporter(),
+      console: () => new ConsoleExporter(config),
+      langfuse: () => new LangfuseExporter(config),
+      "langfuse-otlp": () => new LangfuseOTLPExporter(config),
+      "json-file": () => new JsonFileExporter(config),
+      otel: () => new OTelExporter(config),
     };
 
     const factory = shorthand[e];
@@ -35,9 +38,9 @@ function resolveExporters(raw: ObservabilityConfig["exporters"]): TraceExporter[
 }
 
 function buildResult(eventBus: EventBus, config?: ObservabilityConfig): InstrumentResult {
-  const exporters = resolveExporters(config?.exporters);
+  const exporters = resolveExporters(config?.exporters, config);
 
-  const tracer = new Tracer(exporters);
+  const tracer = new Tracer(exporters, config);
   tracer.attach(eventBus);
 
   let metrics: MetricsCollector | null = null;
@@ -49,7 +52,7 @@ function buildResult(eventBus: EventBus, config?: ObservabilityConfig): Instrume
   let logger: StructuredLogger | null = null;
   if (config?.structuredLogs) {
     const drain = config.structuredLogs === true ? "json" : config.structuredLogs;
-    logger = new StructuredLogger(drain, tracer);
+    logger = new StructuredLogger(drain, tracer, config);
     logger.attach(eventBus);
   }
 
@@ -59,7 +62,17 @@ function buildResult(eventBus: EventBus, config?: ObservabilityConfig): Instrume
     logger?.detach(eventBus);
   };
 
-  return { tracer, metrics, logger, detach };
+  return {
+    tracer,
+    metrics,
+    logger,
+    detach,
+    shutdown: async () => {
+      detach();
+      metrics?.shutdown();
+      await Promise.all([tracer.shutdown(), logger?.shutdown()]);
+    },
+  };
 }
 
 /**

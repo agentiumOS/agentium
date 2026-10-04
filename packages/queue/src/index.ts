@@ -1,4 +1,11 @@
-export type { QueueConfig } from "./job-producer.js";
+export type {
+  DurableDriverRegistration,
+  DurableJobEnvelope,
+  DurableQueueConfig,
+  DurableWorkerConfig,
+} from "./durable.js";
+export { DurableAgentQueue, DurableAgentWorker } from "./durable.js";
+export type { QueueConfig, ScheduleOptions } from "./job-producer.js";
 export { AgentQueue } from "./job-producer.js";
 export type {
   AgentJobPayload,

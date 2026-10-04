@@ -65,7 +65,8 @@ describe("Tracer", () => {
 
     const trace = tracer.getAllTraces()[0];
     expect(trace.spans[0].status).toBe("error");
-    expect(trace.spans[0].attributes.error).toBe("boom");
+    expect(trace.spans[0].attributes.error).toBeUndefined();
+    expect(trace.spans[0].attributes.errorType).toBe("Error");
   });
 
   it("tracks handoff spans", async () => {
@@ -169,4 +170,33 @@ describe("Tracer", () => {
     tracer.clear();
     expect(tracer.getAllTraces()).toHaveLength(0);
   });
+});
+
+it("pairs concurrent same-tool outcomes by call ID even when completion order reverses", () => {
+  const bus = new EventBus();
+  const tracer = new Tracer([], { capture: { mode: "content" } });
+  tracer.attach(bus);
+  bus.emit("run.start", { runId: "r", agentName: "same", input: "work" });
+  bus.emit("tool.call", { runId: "r", toolCallId: "a", toolName: "search", args: { query: "first" } });
+  bus.emit("tool.call", { runId: "r", toolCallId: "b", toolName: "search", args: { query: "second" } });
+  bus.emit("tool.result", { runId: "r", toolCallId: "b", toolName: "search", result: "second-result" });
+  bus.emit("tool.result", { runId: "r", toolCallId: "a", toolName: "search", result: "first-result" });
+  const spans = tracer.getAllTraces()[0].spans;
+  expect(spans.find((span) => span.attributes.toolCallId === "a")?.attributes.output).toBe("first-result");
+  expect(spans.find((span) => span.attributes.toolCallId === "b")?.attributes.output).toBe("second-result");
+});
+
+it.each(["cancelled", "stopped"] as const)("preserves %s completion status in the root span", (status) => {
+  const bus = new EventBus();
+  const tracer = new Tracer();
+  tracer.attach(bus);
+  bus.emit("run.start", { runId: "partial", agentName: "worker", input: "work" });
+  bus.emit("run.complete", {
+    runId: "partial",
+    output: { text: "partial", toolCalls: [], status, usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } },
+  });
+  const span = tracer.getAllTraces()[0].spans[0];
+  expect(span.status).toBe("error");
+  expect(span.attributes.runStatus).toBe(status);
+  tracer.detach(bus);
 });

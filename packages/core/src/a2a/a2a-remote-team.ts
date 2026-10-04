@@ -1,4 +1,5 @@
 import type { RunOpts, RunOutput, StreamChunk } from "../agent/types.js";
+import { legacyEndpoint, legacySignal, readLegacySSE } from "./legacy-http.js";
 
 export interface A2ARemoteTeamConfig {
   url: string;
@@ -19,15 +20,15 @@ export class A2ARemoteTeam {
   private timeoutMs: number;
 
   constructor(config: A2ARemoteTeamConfig) {
-    this.url = config.url.replace(/\/$/, "");
+    this.url = legacyEndpoint(config.url, config.timeoutMs ?? 120_000);
     this.name = config.name ?? "remote-team";
-    this.headers = config.headers ?? {};
+    this.headers = { ...config.headers };
     this.timeoutMs = config.timeoutMs ?? 120_000;
   }
 
   async run(input: string, opts?: RunOpts): Promise<RunOutput> {
     const startMs = Date.now();
-    const res = await fetch(`${this.url}/teams/${this.name}/run`, {
+    const res = await fetch(`${this.url}/teams/${encodeURIComponent(this.name)}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.headers },
       body: JSON.stringify({
@@ -35,7 +36,8 @@ export class A2ARemoteTeam {
         sessionId: opts?.sessionId,
         userId: opts?.userId,
       }),
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: legacySignal(this.timeoutMs, opts?.signal),
+      redirect: "error",
     });
 
     if (!res.ok) {
@@ -48,7 +50,8 @@ export class A2ARemoteTeam {
   }
 
   async *stream(input: string, opts?: RunOpts): AsyncGenerator<StreamChunk> {
-    const res = await fetch(`${this.url}/teams/${this.name}/stream`, {
+    const signal = legacySignal(this.timeoutMs, opts?.signal);
+    const res = await fetch(`${this.url}/teams/${encodeURIComponent(this.name)}/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.headers },
       body: JSON.stringify({
@@ -56,7 +59,8 @@ export class A2ARemoteTeam {
         sessionId: opts?.sessionId,
         userId: opts?.userId,
       }),
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal,
+      redirect: "error",
     });
 
     if (!res.ok) {
@@ -65,30 +69,6 @@ export class A2ARemoteTeam {
 
     if (!res.body) throw new Error("No response body for SSE");
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop()!;
-
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const jsonStr = line.slice(6).trim();
-        if (!jsonStr || jsonStr === "[DONE]") continue;
-
-        try {
-          const chunk = JSON.parse(jsonStr) as StreamChunk;
-          yield chunk;
-        } catch {
-          // skip unparseable
-        }
-      }
-    }
+    for await (const value of readLegacySSE(res.body, signal)) yield value as StreamChunk;
   }
 }

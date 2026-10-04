@@ -27,13 +27,15 @@ agentium init rag-app --template rag
 agentium init browser-app --template browser
 ```
 
+Requires Node 22.18+ (22.x) or 24.11+ (24.x). Names must be lowercase npm names without scopes or paths. Existing destinations are refused before writing. Generated projects use the CLI release range, bounded optional SDK ranges, and include `typecheck` and setup instructions. Set `OPENAI_API_KEY` in your shell and `OPENAI_MODEL` for text/browser examples. Browser projects also need `npx playwright install chromium`.
+
 Templates:
 
 | Template | What you get |
 |----------|--------------|
-| `basic`  | Minimal `Agent` + Express server |
-| `rag`    | Knowledge base with hybrid search wired up |
-| `voice`  | Voice agent with WebSocket gateway |
+| `basic`  | One `Agent` request with resource cleanup |
+| `rag`    | In-memory vector retrieval passed as evidence to an Agent |
+| `voice`  | Configured `VoiceAgent` with an OpenAI Realtime provider; supply your own media transport |
 | `browser`| `BrowserAgent` with Playwright |
 
 ### `agentium dev`
@@ -46,7 +48,7 @@ agentium dev --entry ./src/index.ts
 
 ### `agentium skills install <source>`
 
-Install a skill (pre-packaged tool bundle + instructions) from a git URL, npm package, or local path. Skills are persisted under `.agentium/skills/` and auto-attached the next time the agent starts.
+Install an npm/Git package using npm with install scripts disabled, or validate a local directory containing `SKILL.md` (or the file itself). Register the package tools or skill directory explicitly in your application or harness configuration. This command does not create a runtime manifest or attach skills automatically.
 
 ```bash
 agentium skills install github:agentiumOS/skill-gmail

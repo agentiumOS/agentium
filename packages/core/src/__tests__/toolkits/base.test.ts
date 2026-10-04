@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { collectToolkitTools, describeToolLibrary, Toolkit } from "../../toolkits/base.js";
 import type { ToolDef } from "../../tools/types.js";
 
@@ -11,13 +11,13 @@ class MockToolkit extends Toolkit {
         name: "mock_add",
         description: "Add two numbers",
         parameters: z.object({ a: z.number(), b: z.number() }),
-        execute: async ({ a, b }: { a: number; b: number }) => String(a + b),
+        execute: async ({ a, b }) => String(Number(a) + Number(b)),
       },
       {
         name: "mock_greet",
         description: "Say hello",
         parameters: z.object({ name: z.string() }),
-        execute: async ({ name }: { name: string }) => `Hello, ${name}!`,
+        execute: async ({ name }) => `Hello, ${name}!`,
       },
     ];
   }

@@ -27,9 +27,16 @@ function toDataUrl(image: Buffer | string, mimeType = "image/png"): string {
   return `data:${mimeType};base64,${image.toString("base64")}`;
 }
 
-class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnection {
+export class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnection {
   private ws: any;
+  readonly toolContinuation = "client" as const;
   private closed = false;
+  get connectionState(): "open" | "closed" {
+    return this.closed || this.ws.readyState !== 1 ? "closed" : "open";
+  }
+  private activeResponse?: string;
+  private cancelledResponses = new Set<string>();
+  private transcriptText = new Map<string, string>();
   private pendingFunctionCalls = new Map<string, { name: string; args: string }>();
 
   constructor(ws: any) {
@@ -70,7 +77,6 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
       type: "conversation.item.create",
       item: { type: "function_call_output", call_id: callId, output: result },
     });
-    this.send({ type: "response.create" });
   }
 
   createResponse(opts?: CreateResponseOpts): void {
@@ -89,6 +95,10 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
 
   interrupt(): void {
     if (this.closed) return;
+    if (this.activeResponse) this.cancelledResponses.add(this.activeResponse);
+    if (this.cancelledResponses.size > 256)
+      this.cancelledResponses.delete(this.cancelledResponses.values().next().value!);
+    this.pendingFunctionCalls.clear();
     this.send({ type: "response.cancel" });
   }
 
@@ -112,7 +122,10 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
   }
 
   private send(event: Record<string, unknown>): void {
-    if (this.ws.readyState === 1) this.ws.send(JSON.stringify(event));
+    const payload = JSON.stringify(event);
+    if ((this.ws.bufferedAmount ?? 0) + Buffer.byteLength(payload) > 1024 * 1024)
+      throw new Error("Realtime send backpressure limit exceeded");
+    if (this.ws.readyState === 1) this.ws.send(payload);
   }
 
   _bindServerEvents(): void {
@@ -137,7 +150,13 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
   }
 
   private handleServerEvent(event: any): void {
+    if (this.closed) return;
+    if (event.response_id && this.cancelledResponses.has(event.response_id) && event.type !== "response.done") return;
     switch (event.type) {
+      case "response.created":
+        this.activeResponse = event.response?.id;
+        if (this.activeResponse) this.emit("generation_start", { generationId: this.activeResponse });
+        break;
       case "session.created":
         this.emit("connected", {});
         break;
@@ -145,14 +164,44 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
       case "response.audio.delta":
       case "response.output_audio.delta":
         if (event.delta) {
-          this.emit("audio", { data: Buffer.from(event.delta, "base64"), mimeType: "audio/pcm" });
+          this.emit("audio", {
+            data: Buffer.from(event.delta, "base64"),
+            mimeType: "audio/pcm",
+            generationId: event.response_id,
+          });
         }
         break;
 
       case "response.audio_transcript.delta":
       case "response.output_audio_transcript.delta":
-        if (event.delta) this.emit("transcript", { text: event.delta, role: "assistant" });
+        if (event.delta) {
+          const segmentId = event.item_id ?? event.response_id ?? "assistant";
+          const text = (this.transcriptText.get(segmentId) ?? "") + event.delta;
+          if (text.length > 64_000 || this.transcriptText.size > 1024)
+            throw new Error("Realtime transcript bound exceeded");
+          this.transcriptText.set(segmentId, text);
+          this.emit("transcript", {
+            text,
+            role: "assistant",
+            segmentId,
+            kind: "partial",
+            generationId: event.response_id,
+          });
+        }
         break;
+      case "response.audio_transcript.done":
+      case "response.output_audio_transcript.done": {
+        const segmentId = event.item_id ?? event.response_id ?? "assistant";
+        this.emit("transcript", {
+          text: event.transcript ?? this.transcriptText.get(segmentId) ?? "",
+          role: "assistant",
+          segmentId,
+          kind: "final",
+          generationId: event.response_id,
+        });
+        this.transcriptText.delete(segmentId);
+        break;
+      }
 
       case "response.text.delta":
       case "response.output_text.delta":
@@ -160,6 +209,7 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
         break;
 
       case "input_audio_buffer.speech_started":
+        if (this.activeResponse) this.cancelledResponses.add(this.activeResponse);
         this.emit("interrupted", {});
         break;
 
@@ -168,7 +218,8 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
         break;
 
       case "conversation.item.input_audio_transcription.completed":
-        if (event.transcript) this.emit("transcript", { text: event.transcript, role: "user" });
+        if (event.transcript)
+          this.emit("transcript", { text: event.transcript, role: "user", segmentId: event.item_id, kind: "final" });
         break;
 
       case "response.function_call_arguments.delta":
@@ -191,13 +242,14 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
           const toolCall: RealtimeToolCall = {
             id: event.item.call_id ?? event.item.id,
             name: pending?.name ?? event.item.name ?? "",
-            arguments: pending?.args ?? event.item.arguments ?? "{}",
+            arguments: event.item.arguments || pending?.args || "{}",
           };
           this.emit("tool_call", toolCall);
         }
         break;
 
       case "response.done":
+        this.emit("turn_complete", { generationId: event.response?.id });
         if (event.response?.usage) {
           const u = event.response.usage;
           this.emit("usage", {
@@ -217,6 +269,16 @@ class OpenAIRealtimeConnection extends EventEmitter implements RealtimeConnectio
 
 export class OpenAIRealtimeProvider implements RealtimeProvider {
   readonly providerId = "openai-realtime";
+  readonly capabilities = {
+    manualCommit: true,
+    images: true,
+    asyncTools: true,
+    transcripts: true,
+    resume: false,
+    recovery: "fresh" as const,
+    inputSampleRateHz: 24000,
+    outputSampleRateHz: 24000,
+  };
   readonly modelId: string;
   private apiKey?: string;
   private baseURL?: string;
@@ -228,6 +290,10 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
   }
 
   async connect(config: RealtimeSessionConfig): Promise<RealtimeConnection> {
+    if (config.sessionResumption)
+      throw new Error("OpenAI native WebSocket sessions do not support session resumption handles");
+    config.signal?.throwIfAborted();
+    const sessionPayload = buildOpenAIRealtimeSession(this.modelId, config);
     let WebSocket: any;
     try {
       WebSocket = _require("ws");
@@ -248,50 +314,63 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
     const headers: Record<string, string> = { Authorization: `Bearer ${key}` };
     if (config.safetyIdentifier) headers["OpenAI-Safety-Identifier"] = config.safetyIdentifier;
 
-    const ws = new WebSocket(url, { headers });
+    const ws = new WebSocket(url, { headers, maxPayload: 1024 * 1024 });
     const connection = new OpenAIRealtimeConnection(ws);
 
     return new Promise<RealtimeConnection>((resolve, reject) => {
-      const TIMEOUT_MS = 30_000;
-      const timeout = setTimeout(() => {
-        reject(new Error(`OpenAI Realtime connection timed out after ${TIMEOUT_MS / 1000}s`));
+      let settled = false;
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        ws.off("message", setupMessage);
+        config.signal?.removeEventListener("abort", abort);
+        void connection.close();
+        reject(error);
+      };
+      const timeout = setTimeout(() => fail(new Error("OpenAI Realtime setup timed out after 30s")), 30_000);
+      const abort = () => {
+        fail(new Error("Realtime connection cancelled"));
+        void connection.close();
+      };
+      const setupMessage = (raw: Buffer | string) => {
+        let event: unknown;
         try {
-          ws.close();
-        } catch (err) {
-          console.warn(
-            "[agentium/openai-realtime] Error closing WebSocket on timeout:",
-            err instanceof Error ? err.message : err,
-          );
+          event = JSON.parse(raw.toString());
+        } catch {
+          return;
         }
-      }, TIMEOUT_MS);
-
+        if (!event || typeof event !== "object" || !("type" in event)) return;
+        if (event.type === "session.updated" && !settled) {
+          settled = true;
+          clearTimeout(timeout);
+          ws.off("message", setupMessage);
+          resolve(connection);
+        }
+      };
+      // Install before setup so server errors reject connection instead of being lost before callers attach.
+      connection.on("error", ({ error }) => fail(error));
+      connection._bindServerEvents();
+      ws.on("message", setupMessage);
+      config.signal?.addEventListener("abort", abort, { once: true });
+      ws.on("close", () => {
+        config.signal?.removeEventListener("abort", abort);
+        fail(new Error("OpenAI Realtime closed before session setup completed"));
+      });
       ws.on("open", () => {
-        clearTimeout(timeout);
-        connection._bindServerEvents();
-        ws.send(
-          JSON.stringify({
-            type: "session.update",
-            session: buildOpenAIRealtimeSession(this.modelId, config),
-          }),
-        );
-        resolve(connection);
+        if (settled) return;
+        if (config.signal?.aborted) {
+          abort();
+          return;
+        }
+        ws.send(JSON.stringify({ type: "session.update", session: sessionPayload }));
       });
-
-      ws.on("error", (err: Error) => {
-        clearTimeout(timeout);
-        reject(new Error(`OpenAI Realtime WebSocket error: ${err.message}`));
+      ws.on("error", (error: Error) => fail(new Error(`OpenAI Realtime WebSocket error: ${error.message}`)));
+      ws.on("unexpected-response", (_req: unknown, res: { statusCode?: number; resume(): void }) => {
+        res.resume();
+        fail(new Error(`OpenAI Realtime rejected (HTTP ${res.statusCode})`));
       });
-
-      ws.on("unexpected-response", (_req: any, res: any) => {
-        clearTimeout(timeout);
-        let body = "";
-        res.on("data", (chunk: Buffer) => {
-          body += chunk.toString();
-        });
-        res.on("end", () => {
-          reject(new Error(`OpenAI Realtime rejected (HTTP ${res.statusCode}): ${body}`));
-        });
-      });
+      if (config.signal?.aborted) abort();
     });
   }
 }

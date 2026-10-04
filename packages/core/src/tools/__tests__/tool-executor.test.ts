@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { RunContext } from "../../agent/run-context.js";
 import { EventBus } from "../../events/event-bus.js";
 import { ToolExecutor } from "../tool-executor.js";
@@ -23,6 +23,58 @@ function makeCtx(): RunContext {
 }
 
 describe("ToolExecutor", () => {
+  it.each([0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY])("rejects invalid concurrency %s", (concurrency) => {
+    expect(() => new ToolExecutor([makeTool()], { concurrency })).toThrow(/positive safe integer/);
+  });
+
+  it("rejects ambiguous duplicate tool names", () => {
+    expect(() => new ToolExecutor([makeTool(), makeTool()])).toThrow(/Duplicate tool name/);
+  });
+
+  it("keeps nested cached inputs distinct and scopes cached results to the run", async () => {
+    let calls = 0;
+    const executor = new ToolExecutor([
+      makeTool({
+        parameters: z.object({ filter: z.object({ tenant: z.string() }) }),
+        cache: { ttl: 10000 },
+        execute: async (args, ctx) => {
+          calls++;
+          return `${(args.filter as { tenant: string }).tenant}:${ctx.userId}`;
+        },
+      }),
+    ]);
+    const ctx = new RunContext({ sessionId: "session", userId: "alice", eventBus: new EventBus() });
+    const first = { id: "a", name: "echo", arguments: { filter: { tenant: "one" } } };
+    const second = { id: "b", name: "echo", arguments: { filter: { tenant: "two" } } };
+    expect((await executor.executeAll([first], ctx))[0].result).toBe("one:alice");
+    expect((await executor.executeAll([second], ctx))[0].result).toBe("two:alice");
+    await executor.executeAll([first], ctx);
+    expect(calls).toBe(2);
+    const other = new RunContext({ sessionId: "session", userId: "bob", eventBus: new EventBus() });
+    expect((await executor.executeAll([first], other))[0].result).toBe("one:bob");
+    expect(calls).toBe(3);
+  });
+
+  it("discards transformed output if cancellation occurs during the transform", async () => {
+    const controller = new AbortController();
+    const bus = new EventBus();
+    const published: unknown[] = [];
+    bus.on("tool.result", ({ result }) => published.push(result));
+    const executor = new ToolExecutor([
+      makeTool({
+        cache: { ttl: 10000 },
+        toModelOutput: async () => {
+          controller.abort();
+          return "must not publish";
+        },
+      }),
+    ]);
+    const ctx = new RunContext({ sessionId: "session", eventBus: bus, signal: controller.signal });
+    const [result] = await executor.executeAll([{ id: "a", name: "echo", arguments: { text: "hello" } }], ctx);
+    expect(result.denial).toBe("cancelled");
+    expect(published).not.toContain("must not publish");
+  });
+
   it("executes a tool and returns result", async () => {
     const executor = new ToolExecutor([makeTool()]);
     const results = await executor.executeAll([{ id: "tc1", name: "echo", arguments: { text: "hello" } }], makeCtx());

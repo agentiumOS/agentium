@@ -14,9 +14,14 @@ export interface ScorerResult {
   reason?: string;
 }
 
+export interface ScorerContext {
+  signal: AbortSignal;
+  deadline: number;
+}
+
 export interface Scorer {
   name: string;
-  score(input: string, output: RunOutput, expected?: string): Promise<ScorerResult>;
+  score(input: string, output: RunOutput, expected?: string, context?: ScorerContext): Promise<ScorerResult>;
 }
 
 export interface EvalResult {
@@ -27,6 +32,9 @@ export interface EvalResult {
   durationMs: number;
   pass: boolean;
   error?: string;
+  failureKind?: "timeout" | "cancelled" | "infrastructure" | "execution";
+  /** Callback ignored cancellation and is still settling; its session remains reserved. */
+  cleanupPending?: boolean;
 }
 
 export interface EvalSuiteResult {
@@ -47,6 +55,7 @@ export interface EvalSuiteConfig {
   threshold?: number;
   concurrency?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface Reporter {

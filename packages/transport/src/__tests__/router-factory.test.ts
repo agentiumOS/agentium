@@ -34,6 +34,7 @@ describe("createAgentRouter", () => {
     };
 
     const router = createAgentRouter({
+      security: { mode: "local" },
       agents: { assistant: fakeAgent as any },
       registry: false,
     });
@@ -49,7 +50,11 @@ describe("createAgentRouter", () => {
       stream: vi.fn(),
     };
 
-    const router = createAgentRouter({ agents: { bot: fakeAgent as any }, registry: false });
+    const router = createAgentRouter({
+      security: { mode: "local" },
+      agents: { bot: fakeAgent as any },
+      registry: false,
+    });
     expect(router.post).toHaveBeenCalled();
 
     const postPaths = (router.post as any).mock.calls.map(([path]: any) => path);
@@ -82,7 +87,11 @@ describe("createAgentRouter", () => {
 
     it("returns 404 when corrections are not enabled on the agent", async () => {
       const fakeAgent = { providerId: "test", run: vi.fn(), stream: vi.fn(), memory: null };
-      const router = createAgentRouter({ agents: { bot: fakeAgent as any }, registry: false });
+      const router = createAgentRouter({
+        security: { mode: "local" },
+        agents: { bot: fakeAgent as any },
+        registry: false,
+      });
 
       const res = makeRes();
       await getCorrectionsHandler(router)({ body: { originalValue: "a", correctedValue: "b" }, headers: {} }, res);
@@ -99,7 +108,11 @@ describe("createAgentRouter", () => {
         stream: vi.fn(),
         memory: { getCorrectionStore: () => ({}), recordCorrection },
       };
-      const router = createAgentRouter({ agents: { bot: fakeAgent as any }, registry: false });
+      const router = createAgentRouter({
+        security: { mode: "local" },
+        agents: { bot: fakeAgent as any },
+        registry: false,
+      });
 
       const res = makeRes();
       await getCorrectionsHandler(router)(
@@ -136,7 +149,11 @@ describe("createAgentRouter", () => {
         stream: vi.fn(),
         memory: { getCorrectionStore: () => ({}), recordCorrection: vi.fn() },
       };
-      const router = createAgentRouter({ agents: { bot: fakeAgent as any }, registry: false });
+      const router = createAgentRouter({
+        security: { mode: "local" },
+        agents: { bot: fakeAgent as any },
+        registry: false,
+      });
 
       const res = makeRes();
       await getCorrectionsHandler(router)({ body: { originalValue: "only-one" }, headers: {} }, res);
@@ -148,7 +165,11 @@ describe("createAgentRouter", () => {
 
   it("creates routes for teams", () => {
     const fakeTeam = { run: vi.fn(), stream: vi.fn() };
-    const router = createAgentRouter({ teams: { myteam: fakeTeam as any }, registry: false });
+    const router = createAgentRouter({
+      security: { mode: "local" },
+      teams: { myteam: fakeTeam as any },
+      registry: false,
+    });
 
     const postPaths = (router.post as any).mock.calls.map(([path]: any) => path);
     expect(postPaths).toContain("/teams/myteam/run");
@@ -157,7 +178,11 @@ describe("createAgentRouter", () => {
 
   it("creates routes for workflows", () => {
     const fakeWorkflow = { run: vi.fn() };
-    const router = createAgentRouter({ workflows: { flow1: fakeWorkflow as any }, registry: false });
+    const router = createAgentRouter({
+      security: { mode: "local" },
+      workflows: { flow1: fakeWorkflow as any },
+      registry: false,
+    });
 
     const postPaths = (router.post as any).mock.calls.map(([path]: any) => path);
     expect(postPaths).toContain("/workflows/flow1/run");
@@ -169,6 +194,7 @@ describe("createAgentRouter", () => {
     const fakeWorkflow = { kind: "workflow", name: "pipeline", run: vi.fn() };
 
     const router = createAgentRouter({
+      security: { mode: "local" },
       serve: [fakeAgent as any, fakeTeam as any, fakeWorkflow as any],
       registry: false,
     });
@@ -186,6 +212,7 @@ describe("createAgentRouter", () => {
     const explicitAgent = { providerId: "test", run: vi.fn(), stream: vi.fn() };
 
     const router = createAgentRouter({
+      security: { mode: "local" },
       serve: [servedAgent as any],
       agents: { manual: explicitAgent as any },
       registry: false,
@@ -200,7 +227,7 @@ describe("createAgentRouter", () => {
 describe("createAgentRouter — registry", () => {
   it("creates dynamic routes for registry-based lookup", () => {
     const reg = new Registry();
-    const router = createAgentRouter({ registry: reg });
+    const router = createAgentRouter({ security: { mode: "local" }, registry: reg });
 
     const postPaths = (router.post as any).mock.calls.map(([path]: any) => path);
     expect(postPaths).toContain("/agents/:name/run");
@@ -212,7 +239,7 @@ describe("createAgentRouter — registry", () => {
 
   it("creates GET /agents, /teams, /workflows, /registry endpoints", () => {
     const reg = new Registry();
-    const router = createAgentRouter({ registry: reg });
+    const router = createAgentRouter({ security: { mode: "local" }, registry: reg });
 
     const getPaths = (router.get as any).mock.calls.map(([path]: any) => path);
     expect(getPaths).toContain("/agents");
@@ -222,14 +249,14 @@ describe("createAgentRouter — registry", () => {
   });
 
   it("uses global registry by default", () => {
-    const router = createAgentRouter({});
+    const router = createAgentRouter({ security: { mode: "local" } });
 
     const postPaths = (router.post as any).mock.calls.map(([path]: any) => path);
     expect(postPaths).toContain("/agents/:name/run");
   });
 
   it("does not create dynamic routes when registry is false", () => {
-    const router = createAgentRouter({ registry: false });
+    const router = createAgentRouter({ security: { mode: "local" }, registry: false });
 
     const postPaths = (router.post as any).mock.calls.map(([path]: any) => path);
     expect(postPaths).not.toContain("/agents/:name/run");

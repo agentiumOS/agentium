@@ -15,6 +15,8 @@ export interface SandboxRunOptions {
   language?: "python" | "node" | "shell";
   /** Maximum wall-clock seconds. Default: 30. */
   timeoutSeconds?: number;
+  /** Abort local execution. Remote adapters check before/after calls; see their documented cancellation limits. */
+  signal?: AbortSignal;
   /** Optional environment variables. */
   env?: Record<string, string>;
 }
@@ -26,6 +28,10 @@ export interface SandboxRunResult {
   exitCode?: number;
   /** True when the run was terminated due to timeout. */
   timedOut?: boolean;
+  /** Local process group was canceled and its output pipes settled. */
+  cancelled?: boolean;
+  /** Captured output exceeded its configured limit. */
+  outputTruncated?: boolean;
 }
 
 export interface CloudSandbox {
@@ -36,7 +42,7 @@ export interface CloudSandbox {
   /** Run code inside the sandbox and capture stdout/stderr. */
   run(code: string, options?: SandboxRunOptions): Promise<SandboxRunResult>;
   /** Run a shell command inside the sandbox. */
-  shell(command: string, options?: { timeoutSeconds?: number }): Promise<SandboxRunResult>;
+  shell(command: string, options?: SandboxRunOptions): Promise<SandboxRunResult>;
   /** Write a file at `path` (UTF-8 or base64 if `encoding` set). */
   writeFile(path: string, contents: string, encoding?: "utf8" | "base64"): Promise<void>;
   /** Read a file at `path`. Returns the body or null if missing. */

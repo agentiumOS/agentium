@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { GoogleCalendarToolkit } from "../../toolkits/calendar.js";
+import { schemaShape } from "../../tools/schema.js";
 
 describe("GoogleCalendarToolkit", () => {
   it("returns four tools", () => {
@@ -20,7 +21,7 @@ describe("GoogleCalendarToolkit", () => {
     const tools = tk.getTools();
 
     const createTool = tools.find((t) => t.name === "calendar_create_event")!;
-    const shape = createTool.parameters.shape;
+    const shape = schemaShape(createTool.parameters);
     expect(shape).toHaveProperty("summary");
     expect(shape).toHaveProperty("startTime");
     expect(shape).toHaveProperty("endTime");

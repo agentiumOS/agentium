@@ -5,7 +5,11 @@ import { JevToolkit } from "../../toolkits/jev.js";
 const ctx = {} as any;
 
 function mockSystemOne(answers: Record<string, unknown>) {
-  return vi.fn(async () => ({ answers, model: "jev-1.13.0", usage: { input_tokens: 8, output_tokens: 0 } }));
+  return vi.fn(async (_request: { model: string; state: unknown; questions: Record<string, unknown> }) => ({
+    answers,
+    model: "jev-1.13.0",
+    usage: { input_tokens: 8, output_tokens: 0 },
+  }));
 }
 
 describe("JevToolkit", () => {

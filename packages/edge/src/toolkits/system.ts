@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import type { ToolDef } from "@agentium/core";
 import { Toolkit } from "@agentium/core";
-import { z } from "zod";
+import { z } from "zod/v3";
 
 export interface SystemConfig {
   /** Include per-process info in process list (default false — can be slow). */

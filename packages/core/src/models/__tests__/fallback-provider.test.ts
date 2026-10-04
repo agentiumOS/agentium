@@ -37,6 +37,34 @@ function mockProvider(
 }
 
 describe("FallbackProvider", () => {
+  it.each(["generate", "stream"] as const)("does not start a fallback after %s cancellation", async (mode) => {
+    const controller = new AbortController();
+    const primary = mockProvider("primary");
+    const backup = mockProvider("backup");
+    const stopped = new Error("caller stopped");
+    primary.generate = async () => {
+      controller.abort(stopped);
+      throw new Error("request interrupted");
+    };
+    // biome-ignore lint/correctness/useYield: exercises cancellation before the first stream chunk.
+    primary.stream = async function* () {
+      controller.abort(stopped);
+      throw new Error("request interrupted");
+    };
+    const spy = vi.spyOn(backup, mode);
+    const provider = new FallbackProvider({ providers: [primary, backup] });
+    const call =
+      mode === "generate"
+        ? provider.generate([], { signal: controller.signal })
+        : provider.stream([], { signal: controller.signal }).next();
+    await expect(call).rejects.toBe(stopped);
+    expect(spy).not.toHaveBeenCalled();
+    await expect(
+      mode === "generate"
+        ? provider.generate([], { signal: controller.signal })
+        : provider.stream([], { signal: controller.signal }).next(),
+    ).rejects.toBe(stopped);
+  });
   describe("generate()", () => {
     it("uses the primary provider when healthy", async () => {
       const provider = new FallbackProvider({
@@ -186,5 +214,31 @@ describe("withFallback()", () => {
     const result = withFallback([mockProvider("p1"), mockProvider("p2")]);
     expect(result).toBeInstanceOf(FallbackProvider);
     expect(result.providerId).toBe("fallback");
+  });
+});
+
+describe("committed streams", () => {
+  it.each<StreamChunk>([
+    { type: "text", text: "partial" },
+    { type: "tool_call_start", toolCall: { id: "call", name: "write" } },
+    { type: "thinking", text: "summary" },
+    { type: "finish", finishReason: "stop" },
+  ])("does not retry after a public $type chunk", async (first) => {
+    const primary = mockProvider("primary");
+    primary.stream = async function* () {
+      yield first;
+      throw Object.assign(new Error("interrupted"), { status: 503 });
+    };
+    const backup = mockProvider("backup");
+    const spy = vi.spyOn(backup, "stream");
+    const fallback = vi.fn();
+    const provider = new FallbackProvider({ providers: [primary, backup], onFallback: fallback });
+    const chunks: StreamChunk[] = [];
+    await expect(async () => {
+      for await (const chunk of provider.stream([])) chunks.push(chunk);
+    }).rejects.toThrow("interrupted");
+    expect(chunks).toEqual([first]);
+    expect(spy).not.toHaveBeenCalled();
+    expect(fallback).not.toHaveBeenCalled();
   });
 });

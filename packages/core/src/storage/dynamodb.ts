@@ -14,7 +14,7 @@ export class DynamoDBStorage implements StorageDriver {
   private client: any;
   private tableName: string;
 
-  constructor(private config: DynamoDBStorageConfig = {}) {
+  constructor(config: DynamoDBStorageConfig = {}) {
     this.tableName = config.tableName ?? "agentium_kv";
 
     let DynamoDBClient: any;

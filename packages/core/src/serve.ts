@@ -61,7 +61,7 @@ export interface ClassifiedServables {
  *
  * @example
  * ```ts
- * createAgentGateway({ io });
+ * createAgentGateway({ io, security: { mode: "local" } });
  *
  * new Agent({ name: "bot", model: openai("gpt-4o") });
  * // "bot" is immediately reachable via the gateway

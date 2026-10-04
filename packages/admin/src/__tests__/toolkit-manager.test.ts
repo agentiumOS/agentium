@@ -6,9 +6,8 @@ describe("ToolkitManager", () => {
   let storage: InMemoryStorage;
   let manager: ToolkitManager;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     storage = new InMemoryStorage();
-    await storage.initialize?.();
     manager = new ToolkitManager(storage);
   });
 

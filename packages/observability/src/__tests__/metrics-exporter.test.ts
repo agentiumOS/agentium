@@ -37,9 +37,9 @@ describe("MetricsExporter", () => {
 
   it("tracks tool usage frequency", () => {
     bus.emit("run.start", { runId: "r3", agentName: "bot", input: "hi" });
-    bus.emit("tool.call", { runId: "r3", toolName: "search" });
-    bus.emit("tool.call", { runId: "r3", toolName: "search" });
-    bus.emit("tool.call", { runId: "r3", toolName: "calculate" });
+    bus.emit("tool.call", { runId: "r3", toolName: "search", args: {} });
+    bus.emit("tool.call", { runId: "r3", toolName: "search", args: {} });
+    bus.emit("tool.call", { runId: "r3", toolName: "calculate", args: {} });
     bus.emit("run.complete", {
       runId: "r3",
       output: { text: "done", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } },
@@ -145,4 +145,33 @@ describe("MetricsExporter", () => {
     expect(global.runs).toBe(2);
     expect(global.totalTokens).toBe(45);
   });
+});
+
+it("attributes costs by run identity before and after completion", () => {
+  const bus = new EventBus();
+  const metrics = new MetricsExporter();
+  metrics.attach(bus);
+  const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
+  const output = { text: "done", toolCalls: [], usage };
+  bus.emit("run.start", { runId: "one", agentName: "same", input: "one" });
+  bus.emit("run.start", { runId: "two", agentName: "same", input: "two" });
+  bus.emit("cost.tracked", { runId: "one", agentName: "same", modelId: "fixture", usage, cost: 3 });
+  bus.emit("run.complete", { runId: "one", output });
+  bus.emit("run.complete", { runId: "two", output });
+  bus.emit("cost.tracked", { runId: "two", agentName: "same", modelId: "fixture", usage, cost: 7 });
+  bus.emit("cost.tracked", { runId: "one", agentName: "same", modelId: "fixture", usage, cost: 4 });
+  expect(metrics.getMetrics("same").totalCost).toBe(11);
+});
+
+it.each(["cancelled", "stopped"] as const)("does not report a %s run as successful", (status) => {
+  const bus = new EventBus();
+  const exporter = new MetricsExporter();
+  exporter.attach(bus);
+  bus.emit("run.start", { runId: "partial", agentName: "worker", input: "work" });
+  bus.emit("run.complete", {
+    runId: "partial",
+    output: { text: "partial", toolCalls: [], status, usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } },
+  });
+  expect(exporter.getMetrics("worker")).toMatchObject({ runs: 1, errors: 1, totalTokens: 3 });
+  exporter.detach(bus);
 });

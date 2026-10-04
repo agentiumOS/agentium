@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { ToolDef } from "../tools/types.js";
 import { BM25Index } from "../vector/bm25.js";
 import { type RankedItem, reciprocalRankFusion } from "../vector/rrf.js";

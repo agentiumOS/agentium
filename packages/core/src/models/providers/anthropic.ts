@@ -142,7 +142,12 @@ export class AnthropicProvider implements ModelProvider {
 
     const client = this.getClient(options?.apiKey);
     const response = await this.withRetry(() =>
-      client.messages.create(params, betaHeaders ? { headers: betaHeaders } : undefined),
+      client.messages.create(
+        params,
+        betaHeaders || options?.signal
+          ? { ...(betaHeaders ? { headers: betaHeaders } : {}), ...(options?.signal ? { signal: options.signal } : {}) }
+          : undefined,
+      ),
     );
     return this.normalizeResponse(response);
   }
@@ -175,7 +180,12 @@ export class AnthropicProvider implements ModelProvider {
 
     const client = this.getClient(options?.apiKey);
     const stream = await this.withRetry<any>(() =>
-      client.messages.create(params, betaHeaders ? { headers: betaHeaders } : undefined),
+      client.messages.create(
+        params,
+        betaHeaders || options?.signal
+          ? { ...(betaHeaders ? { headers: betaHeaders } : {}), ...(options?.signal ? { signal: options.signal } : {}) }
+          : undefined,
+      ),
     );
 
     let currentToolId = "";

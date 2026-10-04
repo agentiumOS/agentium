@@ -1,7 +1,8 @@
 import type { ToolDef } from "@agentium/core";
-import { collectToolkitTools, describeToolLibrary, registry } from "@agentium/core";
+import { collectToolkitTools, describeToolLibrary, registry, schemaShape } from "@agentium/core";
 import { ConfigStore } from "./config-store.js";
 import { EntityFactory } from "./entity-factory.js";
+import { publicBlueprint } from "./public-blueprint.js";
 import type { ToolkitConfig } from "./toolkit-manager.js";
 import { ToolkitManager } from "./toolkit-manager.js";
 import type { AdminOptions, AgentBlueprint, TeamBlueprint, WorkflowBlueprint } from "./types.js";
@@ -73,11 +74,12 @@ export function createAdminGateway(opts: AdminGatewayOptions): {
           updatedAt: new Date().toISOString(),
         };
 
-        factory.createAgent(blueprint);
+        const created = factory.createAgent(blueprint, { register: false });
         await store.saveAgent(blueprint);
+        registry.add(created);
 
-        ns.emit("admin.agent.created", blueprint);
-        ack?.({ ok: true, data: blueprint });
+        ns.emit("admin.agent.created", publicBlueprint(blueprint));
+        ack?.({ ok: true, data: publicBlueprint(blueprint) });
       } catch (error: any) {
         ack?.({ ok: false, error: error.message });
       }
@@ -86,7 +88,7 @@ export function createAdminGateway(opts: AdminGatewayOptions): {
     socket.on("admin.agent.list", async (_data: unknown, ack?: Function) => {
       try {
         const agents = await store.listAgents();
-        ack?.({ ok: true, data: agents });
+        ack?.({ ok: true, data: agents.map(publicBlueprint) });
       } catch (error: any) {
         ack?.({ ok: false, error: error.message });
       }
@@ -96,7 +98,7 @@ export function createAdminGateway(opts: AdminGatewayOptions): {
       try {
         const blueprint = await store.loadAgent(data.name);
         if (!blueprint) return ack?.({ ok: false, error: `Agent "${data.name}" not found` });
-        ack?.({ ok: true, data: blueprint });
+        ack?.({ ok: true, data: publicBlueprint(blueprint) });
       } catch (error: any) {
         ack?.({ ok: false, error: error.message });
       }
@@ -113,12 +115,12 @@ export function createAdminGateway(opts: AdminGatewayOptions): {
           updatedAt: new Date().toISOString(),
         };
 
-        factory.destroyAgent(data.name);
-        factory.createAgent(updated);
+        const replacement = factory.createAgent(updated, { register: false });
         await store.saveAgent(updated);
+        registry.add(replacement);
 
-        ns.emit("admin.agent.updated", updated);
-        ack?.({ ok: true, data: updated });
+        ns.emit("admin.agent.updated", publicBlueprint(updated));
+        ack?.({ ok: true, data: publicBlueprint(updated) });
       } catch (error: any) {
         ack?.({ ok: false, error: error.message });
       }
@@ -164,11 +166,12 @@ export function createAdminGateway(opts: AdminGatewayOptions): {
           updatedAt: new Date().toISOString(),
         };
 
-        factory.createTeam(blueprint);
+        const created = factory.createTeam(blueprint, { register: false });
         await store.saveTeam(blueprint);
+        registry.add(created);
 
-        ns.emit("admin.team.created", blueprint);
-        ack?.({ ok: true, data: blueprint });
+        ns.emit("admin.team.created", publicBlueprint(blueprint));
+        ack?.({ ok: true, data: publicBlueprint(blueprint) });
       } catch (error: any) {
         ack?.({ ok: false, error: error.message });
       }
@@ -177,7 +180,7 @@ export function createAdminGateway(opts: AdminGatewayOptions): {
     socket.on("admin.team.list", async (_data: unknown, ack?: Function) => {
       try {
         const teams = await store.listTeams();
-        ack?.({ ok: true, data: teams });
+        ack?.({ ok: true, data: teams.map(publicBlueprint) });
       } catch (error: any) {
         ack?.({ ok: false, error: error.message });
       }
@@ -187,7 +190,7 @@ export function createAdminGateway(opts: AdminGatewayOptions): {
       try {
         const blueprint = await store.loadTeam(data.name);
         if (!blueprint) return ack?.({ ok: false, error: `Team "${data.name}" not found` });
-        ack?.({ ok: true, data: blueprint });
+        ack?.({ ok: true, data: publicBlueprint(blueprint) });
       } catch (error: any) {
         ack?.({ ok: false, error: error.message });
       }
@@ -204,12 +207,12 @@ export function createAdminGateway(opts: AdminGatewayOptions): {
           updatedAt: new Date().toISOString(),
         };
 
-        factory.destroyTeam(data.name);
-        factory.createTeam(updated);
+        const replacement = factory.createTeam(updated, { register: false });
         await store.saveTeam(updated);
+        registry.add(replacement);
 
-        ns.emit("admin.team.updated", updated);
-        ack?.({ ok: true, data: updated });
+        ns.emit("admin.team.updated", publicBlueprint(updated));
+        ack?.({ ok: true, data: publicBlueprint(updated) });
       } catch (error: any) {
         ack?.({ ok: false, error: error.message });
       }
@@ -248,8 +251,8 @@ export function createAdminGateway(opts: AdminGatewayOptions): {
 
         await store.saveWorkflow(blueprint);
 
-        ns.emit("admin.workflow.created", blueprint);
-        ack?.({ ok: true, data: blueprint });
+        ns.emit("admin.workflow.created", publicBlueprint(blueprint));
+        ack?.({ ok: true, data: publicBlueprint(blueprint) });
       } catch (error: any) {
         ack?.({ ok: false, error: error.message });
       }
@@ -300,7 +303,7 @@ export function createAdminGateway(opts: AdminGatewayOptions): {
         data: {
           name: tool.name,
           description: tool.description,
-          parameters: Object.keys(tool.parameters.shape ?? {}),
+          parameters: Object.keys(schemaShape(tool.parameters)),
         },
       });
     });

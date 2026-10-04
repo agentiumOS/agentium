@@ -18,7 +18,7 @@ export class MySQLStorage implements StorageDriver {
   private tableName: string;
   private initialized = false;
 
-  constructor(private config: MySQLStorageConfig = {}) {
+  constructor(config: MySQLStorageConfig = {}) {
     this.tableName = config.tableName ?? "kv_store";
 
     let mysql2: any;

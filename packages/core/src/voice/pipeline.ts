@@ -1,4 +1,10 @@
 import type { ModelProvider } from "../models/provider.js";
+import { voiceMigrationDiagnostics } from "./migrations.js";
+import {
+  DEFAULT_FILE_TRANSCRIPTION_MODEL,
+  OpenAIFileTranscriber,
+  type OpenAITranscriptionContext,
+} from "./providers/openai-transcription.js";
 
 /**
  * Chained STT → LLM → TTS turn. Use when you do not want a single
@@ -10,6 +16,8 @@ export interface VoicePipelineConfig {
   apiKey?: string;
   baseURL?: string;
   sttModel?: string;
+  transcriptionContext?: OpenAITranscriptionContext;
+  fetch?: typeof fetch;
   ttsModel?: string;
   voice?: string;
   instructions?: string;
@@ -23,6 +31,12 @@ export interface VoicePipelineTurn {
 
 export class VoicePipeline {
   private config: VoicePipelineConfig;
+  get migrationDiagnostics() {
+    return voiceMigrationDiagnostics({
+      transcriptionModel: this.config.sttModel ?? DEFAULT_FILE_TRANSCRIPTION_MODEL,
+      ttsModel: this.config.ttsModel ?? "gpt-4o-mini-tts",
+    });
+  }
 
   constructor(config: VoicePipelineConfig) {
     this.config = config;
@@ -38,22 +52,22 @@ export class VoicePipeline {
     return (this.config.baseURL ?? "https://api.openai.com").replace(/\/$/, "");
   }
 
-  async transcribe(audio: Buffer, mimeType = "audio/wav"): Promise<string> {
-    const form = new FormData();
-    form.append("model", this.config.sttModel ?? "whisper-1");
-    form.append("file", new Blob([new Uint8Array(audio)], { type: mimeType }), "audio.wav");
-    const res = await fetch(`${this.root()}/v1/audio/transcriptions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${this.key()}` },
-      body: form,
-    });
-    const json = (await res.json()) as { text?: string; error?: { message?: string } };
-    if (!res.ok) throw new Error(json.error?.message ?? `transcription failed (${res.status})`);
-    return json.text ?? "";
+  async transcribe(audio: Buffer, mimeType = "audio/wav", signal?: AbortSignal): Promise<string> {
+    const result = await new OpenAIFileTranscriber({
+      apiKey: this.config.apiKey,
+      baseURL: this.config.baseURL,
+      model: this.config.sttModel,
+      fetch: this.config.fetch,
+      ...this.config.transcriptionContext,
+    }).transcribe(audio, mimeType, signal);
+    return result.text;
   }
 
-  async speak(text: string): Promise<Buffer> {
-    const res = await fetch(`${this.root()}/v1/audio/speech`, {
+  async speak(text: string, signal?: AbortSignal): Promise<Buffer> {
+    signal?.throwIfAborted();
+    const res = await (this.config.fetch ?? fetch)(`${this.root()}/v1/audio/speech`, {
+      signal,
+      redirect: "error",
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.key()}`,
@@ -72,14 +86,18 @@ export class VoicePipeline {
     return Buffer.from(await res.arrayBuffer());
   }
 
-  async turn(audio: Buffer, mimeType?: string): Promise<VoicePipelineTurn> {
-    const transcript = await this.transcribe(audio, mimeType);
-    const response = await this.config.llm.generate([
-      ...(this.config.instructions ? [{ role: "system" as const, content: this.config.instructions }] : []),
-      { role: "user", content: transcript },
-    ]);
+  async turn(audio: Buffer, mimeType?: string, signal?: AbortSignal): Promise<VoicePipelineTurn> {
+    const transcript = await this.transcribe(audio, mimeType, signal);
+    signal?.throwIfAborted();
+    const response = await this.config.llm.generate(
+      [
+        ...(this.config.instructions ? [{ role: "system" as const, content: this.config.instructions }] : []),
+        { role: "user", content: transcript },
+      ],
+      { signal },
+    );
     const reply = typeof response.message.content === "string" ? response.message.content : "";
-    const spoken = await this.speak(reply);
+    const spoken = await this.speak(reply, signal);
     return { transcript, reply, audio: spoken };
   }
 }

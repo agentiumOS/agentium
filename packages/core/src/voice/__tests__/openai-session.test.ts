@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildOpenAIRealtimeSession, turnDetectionToGa } from "../openai-session.js";
+import type { RealtimeSessionConfig } from "../types.js";
 
 describe("turnDetectionToGa", () => {
   it("defaults to semantic_vad", () => {
@@ -26,7 +27,6 @@ describe("buildOpenAIRealtimeSession", () => {
       reasoningEffort: "low",
       tools: [{ name: "lookup", description: "Look up", parameters: { type: "object" } }],
       mcpServers: [{ serverLabel: "crm", serverUrl: "https://mcp.example.com" }],
-      prompt: { id: "pmpt_1", version: "2" },
       noiseReduction: { type: "near_field" },
     });
     expect(session.type).toBe("realtime");
@@ -35,10 +35,17 @@ describe("buildOpenAIRealtimeSession", () => {
     expect((session.audio as any).output.voice).toBe("marin");
     expect((session.audio as any).input.noise_reduction).toEqual({ type: "near_field" });
     expect(session.reasoning).toEqual({ effort: "low" });
-    expect(session.prompt).toMatchObject({ id: "pmpt_1", version: "2" });
+    expect(session.prompt).toBeUndefined();
     const tools = session.tools as any[];
     expect(tools.some((t) => t.type === "function" && t.name === "lookup")).toBe(true);
     expect(tools.some((t) => t.type === "mcp" && t.server_label === "crm")).toBe(true);
+  });
+
+  it("rejects unsupported GA temperature and remote prompt configuration", () => {
+    expect(() => buildOpenAIRealtimeSession("gpt-realtime-2.1", { temperature: 0.5 })).toThrow(/temperature/i);
+    expect(() =>
+      buildOpenAIRealtimeSession("gpt-realtime-2.1", { prompt: { id: "pmpt_1" } } as unknown as RealtimeSessionConfig),
+    ).toThrow(/prompt/i);
   });
 
   it("appends translation instructions", () => {

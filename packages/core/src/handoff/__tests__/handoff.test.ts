@@ -72,6 +72,47 @@ describe("createCompleteTool", () => {
 });
 
 describe("HandoffManager", () => {
+  it("forwards scoped cancellation, policy and identity with a fresh delegated run", async () => {
+    const target = mockAgent("target", "done");
+    const abort = new AbortController();
+    const executionPolicy = { decide: () => ({ action: "deny" as const }) };
+    const ctx = new RunContext({
+      runId: "parent",
+      sessionId: "session",
+      userId: "actor",
+      tenantId: "tenant",
+      signal: abort.signal,
+      runMode: "plan",
+      executionPolicy,
+      metadata: { rootRunId: "root" },
+      eventBus: new EventBus(),
+    });
+    const manager = new HandoffManager({ targets: [{ agent: target, description: "target" }] });
+    await manager.execute(new HandoffSignal("target", "delegate"), "source", "hello", [], ctx, ctx.eventBus, {
+      runId: "stale",
+      history: [{ role: "user", content: "stale history" }],
+    });
+    expect(target.run).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        sessionId: "session:handoff:target",
+        runId: undefined,
+        history: undefined,
+        userId: "actor",
+        tenantId: "tenant",
+        signal: abort.signal,
+        runMode: "plan",
+        executionPolicy,
+        metadata: expect.objectContaining({ parentRunId: "parent", rootRunId: "root" }),
+      }),
+    );
+    abort.abort();
+    await expect(
+      manager.execute(new HandoffSignal("target", "delegate"), "source", "hello", [], ctx, ctx.eventBus),
+    ).rejects.toThrow();
+    expect(target.run).toHaveBeenCalledOnce();
+  });
+
   it("executes handoff to target agent", async () => {
     const billing = mockAgent("billing", "Here is your invoice");
     const manager = new HandoffManager({

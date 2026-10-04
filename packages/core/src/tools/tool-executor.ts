@@ -1,13 +1,17 @@
-import { createRequire } from "node:module";
+import { serialize } from "node:v8";
 import type { RunContext } from "../agent/run-context.js";
+import { clearHandoffControl, getHandoffControl, setHandoffControl } from "../handoff/control.js";
+import { HandoffSignal } from "../handoff/types.js";
 import type { ToolCall } from "../models/types.js";
 import { approxByteSize, storeArtifact } from "../state/artifact-store.js";
 import type { ApprovalConfig } from "./approval.js";
 import { ApprovalManager } from "./approval.js";
+import type { ExecutionPolicy } from "./execution-policy.js";
+import { evaluateExecutionPolicy } from "./execution-policy.js";
+import { convertJsonSchema } from "./json-schema.js";
 import { resolveSandboxConfig, Sandbox } from "./sandbox.js";
+import { safeParseSchema } from "./schema.js";
 import type { SandboxConfig, ToolCallResult, ToolDef, ToolResult } from "./types.js";
-
-const _require = createRequire(import.meta.url);
 
 const STRIP_KEYS = new Set(["$schema", "title", "default", "examples", "$id", "$comment"]);
 
@@ -40,7 +44,13 @@ export interface ToolExecutorConfig {
   concurrency?: number;
   sandbox?: boolean | SandboxConfig;
   approval?: ApprovalConfig & { eventBus?: import("../events/event-bus.js").EventBus };
+  /** Share a host-owned dispatcher across run-local executors. */
+  approvalManager?: ApprovalManager;
+  /** Additional borrowed dispatchers whose approval requirements must also pass. */
+  additionalApprovalManagers?: readonly ApprovalManager[];
+  executionPolicy?: ExecutionPolicy;
   agentName?: string;
+  /** Observe authorized calls. Mutating arguments of a protected call denies execution. */
   onToolCall?: (ctx: RunContext, toolName: string, args: unknown) => Promise<void>;
   /**
    * Memory Pointer Pattern: tool outputs over `maxToolOutputBytes` are auto-stored
@@ -86,6 +96,8 @@ export class ToolExecutor {
   }> | null = null;
   private agentSandbox?: boolean | SandboxConfig;
   private approvalManager?: ApprovalManager;
+  private additionalApprovalManagers: readonly ApprovalManager[] = [];
+  private executionPolicy?: ExecutionPolicy;
   private agentName: string;
   private onToolCall?: (ctx: RunContext, toolName: string, args: unknown) => Promise<void>;
   private artifactsConfig?: { maxToolOutputBytes: number; previewChars: number };
@@ -93,7 +105,11 @@ export class ToolExecutor {
   private callCounts = new Map<string, number>();
 
   constructor(tools: ToolDef[], configOrConcurrency?: number | ToolExecutorConfig) {
-    this.tools = new Map(tools.map((t) => [t.name, t]));
+    this.tools = new Map();
+    for (const tool of tools) {
+      if (this.tools.has(tool.name)) throw new Error(`Duplicate tool name: ${tool.name}`);
+      this.tools.set(tool.name, tool);
+    }
 
     if (typeof configOrConcurrency === "number" || configOrConcurrency === undefined) {
       this.concurrency = configOrConcurrency ?? 5;
@@ -106,11 +122,17 @@ export class ToolExecutor {
       this.artifactsConfig = configOrConcurrency.artifacts;
       this.loopDetection = configOrConcurrency.loopDetection;
 
-      if (configOrConcurrency.approval && configOrConcurrency.approval.policy !== "none") {
+      this.executionPolicy = configOrConcurrency.executionPolicy;
+      this.approvalManager = configOrConcurrency.approvalManager;
+      this.additionalApprovalManagers = [...(configOrConcurrency.additionalApprovalManagers ?? [])];
+      if (!this.approvalManager && configOrConcurrency.approval) {
         this.approvalManager = new ApprovalManager(configOrConcurrency.approval);
       }
     }
 
+    if (!Number.isSafeInteger(this.concurrency) || this.concurrency < 1) {
+      throw new RangeError("Tool concurrency must be a positive safe integer");
+    }
     this.cachedDefs = this.buildToolDefinitions();
   }
 
@@ -122,39 +144,36 @@ export class ToolExecutor {
     this.cache.clear();
   }
 
-  private getCacheKey(toolName: string, args: Record<string, unknown>): string {
-    const sortedArgs = JSON.stringify(args, Object.keys(args).sort());
-    return `${toolName}:${sortedArgs}`;
+  private getCacheKey(toolName: string, args: Record<string, unknown>, ctx: RunContext): string | undefined {
+    try {
+      // Lossless nested values and run identity: a reused executor must not return
+      // another user's result, or collapse nested arguments to the same key.
+      return serialize([ctx.runId, ctx.sessionId, ctx.userId, ctx.tenantId, toolName, args]).toString("base64");
+    } catch {
+      // Host-local arguments can contain functions or other nonserializable values.
+      return undefined;
+    }
   }
 
-  private getCached(toolName: string, args: Record<string, unknown>): (string | ToolResult) | undefined {
-    const tool = this.tools.get(toolName);
-    if (!tool?.cache) return undefined;
-
-    const key = this.getCacheKey(toolName, args);
+  private getCached(key: string | undefined): (string | ToolResult) | undefined {
+    if (!key) return undefined;
     const entry = this.cache.get(key);
     if (!entry) return undefined;
-
-    if (Date.now() > entry.expiresAt) {
+    if (Date.now() >= entry.expiresAt) {
       this.cache.delete(key);
       return undefined;
     }
-
     return entry.result;
   }
 
-  private setCache(toolName: string, args: Record<string, unknown>, result: string | ToolResult): void {
-    const tool = this.tools.get(toolName);
-    if (!tool?.cache) return;
-
-    const key = this.getCacheKey(toolName, args);
-    this.cache.set(key, {
-      result,
-      expiresAt: Date.now() + tool.cache.ttl,
-    });
+  private setCache(key: string | undefined, ttl: number | undefined, result: string | ToolResult): void {
+    if (!key || ttl === undefined) return;
+    this.cache.set(key, { result, expiresAt: Date.now() + ttl });
   }
 
   async executeAll(toolCalls: ToolCall[], ctx: RunContext): Promise<ToolCallResult[]> {
+    if (toolCalls.some((call) => !call.id) || new Set(toolCalls.map((call) => call.id)).size !== toolCalls.length)
+      throw new Error("Tool batch requires nonempty unique call IDs");
     const results: ToolCallResult[] = [];
 
     for (let i = 0; i < toolCalls.length; i += this.concurrency) {
@@ -182,6 +201,26 @@ export class ToolExecutor {
       }
     }
 
+    const transfers = results.filter((result) => getHandoffControl(result));
+    const blocked = transfers.length > 1 || results.some((result) => result.error) || ctx.signal?.aborted;
+    for (const result of transfers) {
+      if (blocked) {
+        clearHandoffControl(result);
+        result.error = ctx.signal?.aborted
+          ? "Run cancelled"
+          : transfers.length > 1
+            ? "Multiple handoffs in one tool batch are ambiguous; no transfer performed"
+            : "Handoff cancelled because another tool in the batch failed or was denied";
+        result.result = result.error;
+      }
+      ctx.eventBus.emit("tool.result", {
+        runId: ctx.runId,
+        toolCallId: result.toolCallId,
+        toolName: result.toolName,
+        result: result.result,
+        status: ctx.signal?.aborted ? "cancelled" : result.error ? "error" : "success",
+      });
+    }
     return results;
   }
 
@@ -196,8 +235,81 @@ export class ToolExecutor {
       };
     }
 
+    const reject = (reason: string, denial?: ToolCallResult["denial"]): ToolCallResult => {
+      const result = denial ? `[DENIED] ${reason}` : reason;
+      ctx.eventBus.emit("tool.result", {
+        runId: ctx.runId,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        result,
+        status: denial === "cancelled" ? "cancelled" : denial ? "denied" : "error",
+      });
+      return { toolCallId: toolCall.id, toolName: toolCall.name, result, error: reason, ...(denial ? { denial } : {}) };
+    };
+    const parsed = safeParseSchema(tool.parameters, toolCall.arguments);
+    if (!parsed.success) return reject(`Invalid arguments: ${parsed.error.message}`);
+    if (ctx.signal?.aborted) return reject("Run cancelled", "cancelled");
+
+    const args = parsed.data;
+    // Keep the parsed values (including Zod transforms) intact, while binding
+    // authorization to their contents. Observers cannot substitute arguments
+    // after policy or approval has reviewed a different call.
+    const protectedCall = !!(
+      ctx.executionPolicy ||
+      this.executionPolicy ||
+      this.approvalManager ||
+      this.additionalApprovalManagers.length ||
+      tool.requiresApproval ||
+      ctx.runMode === "plan"
+    );
+    let authorizedArgs: Buffer | undefined;
+    try {
+      if (protectedCall) authorizedArgs = serialize(args);
+    } catch {
+      return reject("Tool arguments cannot be safely snapshotted for authorization", "policy");
+    }
+    const argumentsUnchanged = () => {
+      try {
+        return !authorizedArgs || authorizedArgs.equals(serialize(args));
+      } catch {
+        return false;
+      }
+    };
+    const validatedCall = { toolCallId: toolCall.id, toolName: toolCall.name, args };
+    let policy = await evaluateExecutionPolicy(ctx.executionPolicy ?? this.executionPolicy, validatedCall, ctx);
+    if (ctx.executionPolicy && this.executionPolicy && ctx.executionPolicy !== this.executionPolicy) {
+      const localPolicy = await evaluateExecutionPolicy(this.executionPolicy, validatedCall, ctx);
+      if (localPolicy.action === "deny" || (policy.action === "allow" && localPolicy.action === "ask")) {
+        policy = localPolicy;
+      }
+    }
+    if (policy.action === "deny") return reject(policy.reason ?? "Execution policy denied tool call", "policy");
+    if (!argumentsUnchanged()) return reject("Tool arguments changed during authorization", "policy");
+
+    const managers = [
+      ...new Set(
+        [this.approvalManager, ...this.additionalApprovalManagers].filter(
+          (manager): manager is ApprovalManager => !!manager,
+        ),
+      ),
+    ];
+    const needsApproval =
+      managers.length === 0 &&
+      (typeof tool.requiresApproval === "function" ? tool.requiresApproval(args) : tool.requiresApproval === true);
+    if ((policy.action === "ask" || needsApproval) && managers.length === 0)
+      return reject("Tool approval required but no approval service is configured", "approval_required");
+    for (const manager of managers) {
+      if (policy.action !== "ask" && !manager.needsApproval(toolCall.name, args, tool.requiresApproval)) continue;
+      const decision = await manager.check(toolCall.name, args, ctx, this.agentName);
+      if (decision.approved !== true)
+        return reject(decision.reason ?? "Tool call denied by human reviewer", "approval_denied");
+      if (!argumentsUnchanged()) return reject("Tool arguments changed during authorization", "policy");
+    }
+    if (ctx.signal?.aborted) return reject("Run cancelled", "cancelled");
+    if (!argumentsUnchanged()) return reject("Tool arguments changed during authorization", "policy");
+
     if (this.loopDetection) {
-      const sig = `${toolCall.name}::${JSON.stringify(toolCall.arguments)}`;
+      const sig = this.getCacheKey(toolCall.name, args, ctx) ?? `${ctx.runId}:${toolCall.name}:${JSON.stringify(args)}`;
       const count = (this.callCounts.get(sig) ?? 0) + 1;
       this.callCounts.set(sig, count);
       if (count > this.loopDetection.maxRepeats) {
@@ -207,94 +319,66 @@ export class ToolExecutor {
         const hint =
           `[loop-detected] Tool "${toolCall.name}" has now been called ${count} times with identical arguments. ` +
           "Consider trying a different approach, changing the arguments, or finishing the response.";
-        ctx.eventBus.emit("tool.result", { runId: ctx.runId, toolName: toolCall.name, result: hint });
+        ctx.eventBus.emit("tool.result", {
+          runId: ctx.runId,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          result: hint,
+          status: "error",
+        });
         return { toolCallId: toolCall.id, toolName: toolCall.name, result: hint, error: "loop-detected" };
       }
     }
 
-    ctx.eventBus.emit("tool.call", {
-      runId: ctx.runId,
-      toolName: toolCall.name,
-      args: toolCall.arguments,
-    });
+    ctx.eventBus.emit("tool.call", { runId: ctx.runId, toolCallId: toolCall.id, toolName: toolCall.name, args });
+    if (this.onToolCall) await this.onToolCall(ctx, toolCall.name, args);
+    if (ctx.signal?.aborted) return reject("Run cancelled", "cancelled");
+    if (!argumentsUnchanged()) return reject("Tool arguments changed after authorization", "policy");
 
-    if (this.onToolCall) {
-      await this.onToolCall(ctx, toolCall.name, toolCall.arguments);
-    }
-
-    if (this.approvalManager) {
-      const needs = this.approvalManager.needsApproval(toolCall.name, toolCall.arguments, tool.requiresApproval);
-
-      if (needs) {
-        const decision = await this.approvalManager.check(toolCall.name, toolCall.arguments, ctx, this.agentName);
-
-        if (!decision.approved) {
-          const reason = decision.reason ?? "Tool call denied by human reviewer";
-          ctx.eventBus.emit("tool.result", {
-            runId: ctx.runId,
-            toolName: toolCall.name,
-            result: reason,
-          });
-          return {
-            toolCallId: toolCall.id,
-            toolName: toolCall.name,
-            result: `[DENIED] ${reason}`,
-            error: reason,
-          };
-        }
-      }
-    }
-
-    const cachedResult = this.getCached(toolCall.name, toolCall.arguments);
+    // Authorization is checked for every invocation, including cache hits.
+    const cacheKey = tool.cache ? this.getCacheKey(toolCall.name, args, ctx) : undefined;
+    const cachedResult = this.getCached(cacheKey);
     if (cachedResult !== undefined) {
       const resultContent = typeof cachedResult === "string" ? cachedResult : cachedResult.content;
-
       ctx.eventBus.emit("tool.result", {
         runId: ctx.runId,
+        toolCallId: toolCall.id,
         toolName: toolCall.name,
         result: `[cached] ${resultContent}`,
+        status: "success",
+        cached: true,
       });
-
-      return {
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-        result: cachedResult,
-      };
-    }
-
-    const parsed = tool.parameters.safeParse(toolCall.arguments);
-    if (!parsed.success) {
-      const errMsg = `Invalid arguments: ${parsed.error.message}`;
-      const result: ToolCallResult = {
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-        result: errMsg,
-        error: errMsg,
-      };
-
-      ctx.eventBus.emit("tool.result", {
-        runId: ctx.runId,
-        toolName: toolCall.name,
-        result: errMsg,
-      });
-
-      return result;
+      return { toolCallId: toolCall.id, toolName: toolCall.name, result: cachedResult };
     }
 
     const sandboxConfig = resolveSandboxConfig(tool.sandbox, this.agentSandbox);
     let rawResult: string | ToolResult;
 
-    if (sandboxConfig) {
-      const sandbox = new Sandbox(sandboxConfig);
-      rawResult = await sandbox.execute(tool.execute, parsed.data, ctx);
-    } else {
-      rawResult = await tool.execute(parsed.data, ctx);
+    try {
+      if (sandboxConfig) {
+        const sandbox = new Sandbox(sandboxConfig);
+        rawResult = await sandbox.execute(tool.execute, parsed.data, ctx);
+      } else {
+        rawResult = await tool.execute(parsed.data, ctx);
+      }
+    } catch (error) {
+      if (!(error instanceof HandoffSignal)) throw error;
+      if (ctx.signal?.aborted) return reject("Run cancelled", "cancelled");
+      const result: ToolCallResult = {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        result: `Transfer requested to "${error.targetAgent}"; the current tool batch must settle before delegation.`,
+      };
+      setHandoffControl(result, error);
+      return result;
     }
 
+    if (ctx.signal?.aborted) return reject("Run cancelled", "cancelled");
     // Per-tool result transform applied before any framework-level wrapping.
     if (tool.toModelOutput) {
       rawResult = await tool.toModelOutput(rawResult, ctx);
     }
+    if (ctx.signal?.aborted) return reject("Run cancelled", "cancelled");
 
     // Memory Pointer Pattern: auto-convert oversized outputs to artifact pointers.
     // Skip artifact tools themselves so we don't recursively wrap their output.
@@ -327,12 +411,15 @@ export class ToolExecutor {
 
     const resultContent = typeof rawResult === "string" ? rawResult : rawResult.content;
 
-    this.setCache(toolCall.name, toolCall.arguments, rawResult);
+    this.setCache(cacheKey, tool.cache?.ttl, rawResult);
 
     ctx.eventBus.emit("tool.result", {
       runId: ctx.runId,
+      toolCallId: toolCall.id,
       toolName: toolCall.name,
       result: resultContent,
+      status: "success",
+      cached: false,
     });
 
     return {
@@ -359,7 +446,6 @@ export class ToolExecutor {
     parameters: Record<string, unknown>;
     strict?: boolean;
   }> {
-    const { zodToJsonSchema } = _require("zod-to-json-schema");
     const defs: Array<{
       name: string;
       description: string;
@@ -382,10 +468,7 @@ export class ToolExecutor {
           ...(tool.strict ? { strict: true } : {}),
         });
       } else {
-        const jsonSchema = zodToJsonSchema(tool.parameters, {
-          target: "jsonSchema7",
-          $refStrategy: "none",
-        }) as Record<string, unknown>;
+        const jsonSchema = convertJsonSchema(tool.parameters).schema;
 
         const stripped = stripJsonSchema(jsonSchema);
 

@@ -1,6 +1,15 @@
 import type { ChatMessage, CostTracker, ModelProvider, TokenUsage, ToolDef } from "@agentium/core";
-import { choice, EventBus, jev, Logger, MemoryManager, RunContext } from "@agentium/core";
-import { z } from "zod";
+import {
+  ApprovalManager,
+  choice,
+  EventBus,
+  jev,
+  Logger,
+  MemoryManager,
+  RunContext,
+  ToolExecutor,
+} from "@agentium/core";
+import { z } from "zod/v3";
 import {
   buildActionSpace,
   DEFAULT_MAX_ACTION_CHOICES,
@@ -66,6 +75,8 @@ export class BrowserAgent {
   private stealth?: import("./types.js").StealthConfig | boolean;
   private humanize?: import("./types.js").HumanizeConfig | boolean;
   private tools: ToolDef[];
+  readonly approvalManager: ApprovalManager | null;
+  private executionPolicy?: BrowserAgentConfig["executionPolicy"];
   private planner: BrowserPlanner;
   private jevModel: string;
   private maxActionChoices: number;
@@ -111,13 +122,17 @@ export class BrowserAgent {
     this.credentials = config.credentials;
     this.stealth = config.stealth;
     this.humanize = config.humanize;
+    this.eventBus = config.eventBus ?? new EventBus();
     this.tools = config.tools ?? [];
+    this.executionPolicy = config.executionPolicy;
+    this.approvalManager =
+      config.approvalManager ??
+      (config.approval ? new ApprovalManager({ ...config.approval, eventBus: this.eventBus }) : null);
     this.planner = config.planner ?? "vision";
     this.jevModel = config.jevModel ?? "jev-latest";
     this.maxActionChoices = config.maxActionChoices ?? DEFAULT_MAX_ACTION_CHOICES;
     this.searchEngine = config.searchEngine ?? "duckduckgo";
     this.costTracker = config.costTracker ?? null;
-    this.eventBus = config.eventBus ?? new EventBus();
     this.logger = new Logger({
       prefix: `BrowserAgent:${config.name}`,
       level: config.logLevel ?? "silent",
@@ -131,8 +146,24 @@ export class BrowserAgent {
   async run(task: string, opts?: BrowserRunOpts): Promise<BrowserRunOutput> {
     const startTime = Date.now();
     const maxSteps = opts?.maxSteps ?? this.maxSteps;
-    const sessionId = opts?.sessionId ?? `browser_${Date.now()}`;
-    const userId = opts?.userId;
+    const sessionId = opts?.context?.sessionId ?? opts?.sessionId ?? `browser_${startTime}`;
+    const userId = opts?.context?.userId ?? opts?.userId;
+    const ctx =
+      opts?.context ??
+      new RunContext({
+        sessionId,
+        userId,
+        tenantId: opts?.tenantId,
+        signal: opts?.signal,
+        runMode: opts?.runMode,
+        executionPolicy: this.executionPolicy,
+        eventBus: this.eventBus,
+      });
+    const executor = new ToolExecutor(this.tools, {
+      approvalManager: this.approvalManager ?? undefined,
+      executionPolicy: this.executionPolicy,
+      agentName: this.name,
+    });
     const browser = new BrowserProvider();
     const steps: BrowserStep[] = [];
     const actionHistory: string[] = [];
@@ -176,6 +207,8 @@ export class BrowserAgent {
     });
 
     try {
+      if (ctx.signal?.aborted) throw new Error("Browser run cancelled");
+      if (ctx.runMode === "plan") throw new Error("Native browser operations are not supported in plan mode");
       this.logger.info("Launching browser", {
         headless: this.headless,
         viewport: this.viewport,
@@ -210,7 +243,7 @@ export class BrowserAgent {
       // ── Run initialActions (no LLM cost) ───────────────────────
       for (const ia of this.initialActions) {
         try {
-          await this.executeAction(browser, ia, actionHistory, extractedContent);
+          await this.executeAction(browser, ia, actionHistory, extractedContent, ctx, executor);
         } catch (e: any) {
           this.logger.warn("initialAction failed", { action: ia, error: e?.message });
         }
@@ -219,6 +252,7 @@ export class BrowserAgent {
 
       // ── Main loop ──────────────────────────────────────────────
       for (let step = 0; step < maxSteps; step++) {
+        if (ctx.signal?.aborted) throw new Error("Browser run cancelled");
         const pageInfo = await browser.getPageInfo();
 
         // ── Build DOM snapshot + scroll context ────────────────
@@ -291,6 +325,7 @@ export class BrowserAgent {
             pagesBelow: scrollCtx?.pagesBelow,
             pagesAbove: scrollCtx?.pagesAbove,
             apiKey: opts?.apiKey,
+            signal: ctx.signal,
           });
           envelope = planned.envelope;
           modelUsed = planned.modelUsed;
@@ -306,7 +341,7 @@ export class BrowserAgent {
           }
         } else {
           const messages = this.buildMessages(systemPrompt, historyTurns, userText, wantVision ? screenshot : null);
-          const { response, modelUsed: used } = await this.callModelWithFallback(messages, opts?.apiKey);
+          const { response, modelUsed: used } = await this.callModelWithFallback(messages, opts?.apiKey, ctx.signal);
           modelUsed = used;
           if (!response) {
             consecutiveFailures++;
@@ -330,6 +365,7 @@ export class BrowserAgent {
           envelope = this.parseEnvelope(raw);
         }
 
+        if (ctx.signal?.aborted) throw new Error("Browser run cancelled");
         if (!envelope) {
           consecutiveFailures++;
           this.logger.warn("Failed to parse planner response", { planner: this.planner, consecutiveFailures });
@@ -362,6 +398,7 @@ export class BrowserAgent {
         lastActionWasScreenshot = false;
 
         for (let ai = 0; ai < actions.length; ai++) {
+          if (ctx.signal?.aborted) throw new Error("Browser run cancelled");
           const action = actions[ai];
 
           let summary = summarizeAction(action as unknown as Record<string, unknown>);
@@ -400,7 +437,7 @@ export class BrowserAgent {
           let stepOk = true;
           let stepOutput: string | undefined;
           try {
-            const exec = await this.executeAction(browser, action, actionHistory, extractedContent);
+            const exec = await this.executeAction(browser, action, actionHistory, extractedContent, ctx, executor);
             stepOutput = exec?.output;
             if (exec?.didNavigate) {
               didNavigate = true;
@@ -479,6 +516,9 @@ export class BrowserAgent {
         durationMs: Date.now() - startTime,
         extractedContent,
       };
+    } finally {
+      // An inherited run may still have parallel approvals owned by its caller.
+      if (!opts?.context) this.approvalManager?.cancelRun(ctx.runId);
     }
   }
 
@@ -496,8 +536,11 @@ export class BrowserAgent {
         task: z.string().describe("What to do in the browser (e.g., 'Search for X and return the top 3 results')"),
         startUrl: z.string().optional().describe("URL to start at (e.g., 'https://www.google.com')"),
       }),
-      execute: async (args: Record<string, unknown>) => {
-        const result = await this.run(args.task as string, { startUrl: args.startUrl as string | undefined });
+      execute: async (args: Record<string, unknown>, ctx) => {
+        const result = await this.run(args.task as string, {
+          startUrl: args.startUrl as string | undefined,
+          context: ctx,
+        });
         return result.result;
       },
     };
@@ -600,12 +643,16 @@ export class BrowserAgent {
   private async callModelWithFallback(
     messages: ChatMessage[],
     apiKey?: string,
+    signal?: AbortSignal,
   ): Promise<{ response: any | null; modelUsed: ModelProvider }> {
-    const reqOpts = { temperature: 0.1, maxTokens: 1024, apiKey, responseFormat: "json" as const };
+    const reqOpts = { temperature: 0.1, maxTokens: 1024, apiKey, signal, responseFormat: "json" as const };
     try {
+      signal?.throwIfAborted();
       const r = await this.model.generate(messages, reqOpts);
+      signal?.throwIfAborted();
       return { response: r, modelUsed: this.model };
     } catch (e: any) {
+      signal?.throwIfAborted();
       if (this.fallbackModel && this.isTransientError(e)) {
         this.logger.warn("Primary model failed; trying fallbackModel", {
           error: e?.message,
@@ -614,8 +661,10 @@ export class BrowserAgent {
         });
         try {
           const r = await this.fallbackModel.generate(messages, reqOpts);
+          signal?.throwIfAborted();
           return { response: r, modelUsed: this.fallbackModel };
         } catch (e2: any) {
+          signal?.throwIfAborted();
           this.logger.warn("Fallback model also failed", { error: e2?.message });
           return { response: null, modelUsed: this.model };
         }
@@ -655,6 +704,7 @@ export class BrowserAgent {
     pagesBelow?: number;
     pagesAbove?: number;
     apiKey?: string;
+    signal?: AbortSignal;
   }): Promise<{ envelope: AgentOutput | null; modelUsed: ModelProvider; usage?: TokenUsage }> {
     const alreadySearched = args.actionHistory.some((h) => /^Searched /.test(h));
     const alreadyWaited = args.actionHistory.some((h) => /^Waited /.test(h));
@@ -668,6 +718,7 @@ export class BrowserAgent {
       allowWait: !alreadyWaited,
     });
     const provider = this.getJev();
+    args.signal?.throwIfAborted();
     try {
       const response = await provider.generate(
         [
@@ -697,8 +748,10 @@ export class BrowserAgent {
             ),
           },
           apiKey: args.apiKey,
+          signal: args.signal,
         },
       );
+      args.signal?.throwIfAborted();
       const raw = typeof response.message.content === "string" ? response.message.content : "";
       let pick: string | undefined;
       try {
@@ -711,7 +764,7 @@ export class BrowserAgent {
 
       const extras = {
         searchQuery: pick === "search" ? guessSearchQuery(args.task) : undefined,
-        typeText: pick.startsWith("type_") ? await this.inferTypeText(args.task, pick) : undefined,
+        typeText: pick.startsWith("type_") ? await this.inferTypeText(args.task, pick, args.signal) : undefined,
         doneResult:
           pick === "done"
             ? looksLikeResultList(args.lastExtract ?? "")
@@ -723,6 +776,7 @@ export class BrowserAgent {
       if (!action) return { envelope: null, modelUsed: provider, usage: response.usage };
       return { envelope: { action, nextGoal: pick }, modelUsed: provider, usage: response.usage };
     } catch (e: any) {
+      args.signal?.throwIfAborted();
       this.logger.warn("Jev planner failed", { error: e?.message });
       return { envelope: null, modelUsed: provider };
     }
@@ -759,19 +813,25 @@ export class BrowserAgent {
     return "";
   }
 
-  private async inferTypeText(task: string, pick: string): Promise<string> {
+  private async inferTypeText(task: string, pick: string, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     const model = this.pageExtractionLLM ?? (this.model.providerId === "jev" ? null : this.model);
     if (!model) return guessSearchQuery(task);
     try {
-      const response = await model.generate([
-        {
-          role: "user",
-          content: `Task: ${task}\nThe next browser action is ${pick}. Reply with ONLY the text to type into that field. No quotes.`,
-        },
-      ]);
+      const response = await model.generate(
+        [
+          {
+            role: "user",
+            content: `Task: ${task}\nThe next browser action is ${pick}. Reply with ONLY the text to type into that field. No quotes.`,
+          },
+        ],
+        { signal },
+      );
+      signal?.throwIfAborted();
       const text = typeof response.message.content === "string" ? response.message.content.trim() : "";
       return text.replace(/^["']|["']$/g, "").slice(0, 500);
     } catch {
+      signal?.throwIfAborted();
       return guessSearchQuery(task);
     }
   }
@@ -925,8 +985,8 @@ export class BrowserAgent {
     };
 
     if (this.memoryManager) {
-      const sessionId = opts?.sessionId ?? `browser_${startTime}`;
-      const userId = opts?.userId;
+      const sessionId = opts?.context?.sessionId ?? opts?.sessionId ?? `browser_${startTime}`;
+      const userId = opts?.context?.userId ?? opts?.userId;
       const actionSummary = steps
         .map((s) => summarizeAction(s.action as unknown as Record<string, unknown>))
         .join("; ");
@@ -966,7 +1026,10 @@ export class BrowserAgent {
     action: BrowserAction,
     _actionHistory: string[],
     extractedContent: string[],
+    ctx: RunContext,
+    executor: ToolExecutor,
   ): Promise<{ output?: string; didNavigate?: boolean }> {
+    if (ctx.signal?.aborted) throw new Error("Browser run cancelled");
     switch (action.action) {
       case "click": {
         // Indexed click is the most reliable path.
@@ -1152,7 +1215,8 @@ export class BrowserAgent {
             content: `Query: ${action.query}\n\nPage content:\n${pageText}`,
           },
         ];
-        const response = await model.generate(messages, { temperature: 0.0, maxTokens: 2048 });
+        const response = await model.generate(messages, { temperature: 0.0, maxTokens: 2048, signal: ctx.signal });
+        ctx.signal?.throwIfAborted();
         const out = typeof response.message.content === "string" ? response.message.content : "";
         const masked = this.credentials ? this.credentials.mask(out) : out;
         extractedContent.push(masked);
@@ -1162,12 +1226,18 @@ export class BrowserAgent {
       case "tool": {
         const tool = this.tools.find((t) => t.name === action.name);
         if (!tool) throw new Error(`Tool "${action.name}" is not registered on this BrowserAgent`);
-        const ctx = new RunContext({
-          sessionId: `browser_${this.name}_${Date.now()}`,
-          eventBus: this.eventBus,
-        });
-        const result = await tool.execute((action.args ?? {}) as Record<string, unknown>, ctx);
-        const out = typeof result === "string" ? result : JSON.stringify(result);
+        const [result] = await executor.executeAll(
+          [
+            {
+              id: `browser-tool-${ctx.runId}-${Date.now()}`,
+              name: tool.name,
+              arguments: (action.args ?? {}) as Record<string, unknown>,
+            },
+          ],
+          ctx,
+        );
+        if (result.error) throw new Error(result.error);
+        const out = typeof result.result === "string" ? result.result : result.result.content;
         return { output: `${action.name} → ${out}` };
       }
 

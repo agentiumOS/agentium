@@ -73,3 +73,9 @@ Join the conversation on [Discord](https://discord.gg/T86SJshP).
 ## License
 
 MIT
+
+## Provider configuration privacy
+
+Agent and Team `providerConfig` is write-only through public CRUD responses and Socket.IO acknowledgements/broadcasts. The entire object is omitted, including custom provider fields. Updates may supply new configuration; omitting it preserves the private stored configuration for hydration. The host must protect the backing ConfigStore and its backups; this change does not encrypt them or authorize standalone admin routes.
+
+Agent and Team creation/update prepare the replacement without registering it, persist its blueprint, then register it. Invalid configuration or a failed storage write leaves the previous live entity available. Concurrent admin writers still require host-level serialization when backed by shared storage.

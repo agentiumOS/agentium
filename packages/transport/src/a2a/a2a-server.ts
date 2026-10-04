@@ -19,27 +19,56 @@ const _require = createRequire(import.meta.url);
  */
 class TaskStore {
   private tasks = new Map<string, A2ATask>();
-  private maxTasks = 10000;
+  constructor(private maxTasks = 10000) {}
+  private active = new Map<string, { controller: AbortController; done: Promise<void> }>();
+
+  start(id: string): { signal: AbortSignal; abort: () => void; finish: () => void } {
+    const controller = new AbortController();
+    let settle!: () => void;
+    const done = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    this.active.set(id, { controller, done });
+    return {
+      signal: controller.signal,
+      abort: () => controller.abort(new Error("A2A transport disconnected")),
+      finish: () => {
+        this.active.delete(id);
+        settle();
+      },
+    };
+  }
+
+  async cancel(id: string): Promise<boolean> {
+    const execution = this.active.get(id);
+    if (!execution) return false;
+    execution.controller.abort(new Error("A2A task cancellation requested"));
+    await execution.done;
+    this.updateState(id, "canceled");
+    return true;
+  }
 
   get(id: string): A2ATask | undefined {
     return this.tasks.get(id);
   }
 
   set(task: A2ATask): void {
-    if (this.tasks.size >= this.maxTasks) {
+    if (!this.tasks.has(task.id) && this.tasks.size >= this.maxTasks) {
       for (const [id, t] of this.tasks) {
-        if (t.status?.state === "completed" || t.status?.state === "canceled") {
+        if (["completed", "canceled", "failed", "rejected"].includes(t.status.state)) {
           this.tasks.delete(id);
           break;
         }
       }
     }
+    if (!this.tasks.has(task.id) && this.tasks.size >= this.maxTasks) throw new Error("A2A task capacity reached");
     this.tasks.set(task.id, task);
   }
 
   updateState(id: string, state: A2ATaskState, message?: A2AMessage): void {
     const task = this.tasks.get(id);
     if (!task) return;
+    if (["completed", "failed", "canceled", "rejected"].includes(task.status.state)) return;
     task.status = {
       state,
       message,
@@ -95,7 +124,9 @@ function resolveAgent(agents: Record<string, Agent>, message: A2AMessage): Agent
 export function createA2AServer(app: any, opts: A2AServerOptions): void {
   const express = _require("express");
   const basePath = opts.basePath ?? "/";
-  const taskStore = new TaskStore();
+  const maxTasks = opts.maxTasks ?? 10000;
+  if (!Number.isSafeInteger(maxTasks) || maxTasks < 1) throw new Error("maxTasks must be a positive integer");
+  const taskStore = new TaskStore(maxTasks);
 
   const serverUrl = basePath === "/" ? "" : basePath;
 
@@ -110,7 +141,7 @@ export function createA2AServer(app: any, opts: A2AServerOptions): void {
   app.post(basePath, async (req: any, res: any) => {
     const body: A2AJsonRpcRequest = req.body;
 
-    if (!body || body.jsonrpc !== "2.0" || !body.method) {
+    if (body?.jsonrpc !== "2.0" || !body.method) {
       return res.status(400).json(jsonRpcError(body?.id ?? 0, -32600, "Invalid JSON-RPC request"));
     }
 
@@ -123,7 +154,7 @@ export function createA2AServer(app: any, opts: A2AServerOptions): void {
         case "tasks/get":
           return handleTasksGet(res, body, taskStore);
         case "tasks/cancel":
-          return handleTasksCancel(res, body, taskStore);
+          return await handleTasksCancel(res, body, taskStore);
         default:
           return res.json(jsonRpcError(body.id, -32601, `Method '${body.method}' not found`));
       }
@@ -164,10 +195,12 @@ async function handleMessageSend(
   };
   store.set(task);
   store.updateState(taskId, "working");
+  const execution = store.start(taskId);
 
   try {
     const result = await agent.run(input, {
       sessionId: task.sessionId,
+      signal: execution.signal,
     });
 
     const responseParts: A2APart[] = textToA2AParts(result.text);
@@ -201,7 +234,15 @@ async function handleMessageSend(
       }));
     }
 
-    store.updateState(taskId, "completed", agentMessage);
+    store.updateState(
+      taskId,
+      execution.signal.aborted || result.status === "cancelled"
+        ? "canceled"
+        : result.status && result.status !== "completed"
+          ? "failed"
+          : "completed",
+      agentMessage,
+    );
 
     const response: A2AJsonRpcResponse = {
       jsonrpc: "2.0",
@@ -216,9 +257,11 @@ async function handleMessageSend(
       parts: [{ kind: "text", text: `Error: ${err.message}` }],
       taskId,
     };
-    store.updateState(taskId, "failed", errorMessage);
+    store.updateState(taskId, execution.signal.aborted ? "canceled" : "failed", errorMessage);
 
     res.json(jsonRpcError(body.id, -32000, err.message));
+  } finally {
+    execution.finish();
   }
 }
 
@@ -260,6 +303,8 @@ async function handleMessageStream(
   });
 
   const sendEvent = (data: any) => {
+    if (res.destroyed || res.writableEnded) return;
+    if (res.writableLength > 1024 * 1024) throw new Error("A2A stream output backpressure limit exceeded");
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
@@ -270,13 +315,19 @@ async function handleMessageStream(
     result: store.get(taskId),
   });
 
+  const execution = store.start(taskId);
+  const disconnected = () => execution.abort();
+  res.on("close", disconnected);
   try {
     let fullText = "";
     for await (const chunk of agent.stream(input, {
       sessionId: task.sessionId,
+      signal: execution.signal,
     })) {
+      if (execution.signal.aborted) break;
       if (chunk.type === "text") {
         fullText += chunk.text;
+        if (Buffer.byteLength(fullText) > 1024 * 1024) throw new Error("A2A stream transcript exceeds 1 MiB");
         sendEvent({
           jsonrpc: "2.0",
           id: body.id,
@@ -302,7 +353,7 @@ async function handleMessageStream(
       taskId,
     };
     task.history!.push(agentMessage);
-    store.updateState(taskId, "completed", agentMessage);
+    store.updateState(taskId, execution.signal.aborted ? "canceled" : "completed", agentMessage);
 
     sendEvent({
       jsonrpc: "2.0",
@@ -312,19 +363,22 @@ async function handleMessageStream(
 
     res.end();
   } catch (err: any) {
+    const canceled = execution.signal.aborted;
+    execution.abort();
     const errorMessage: A2AMessage = {
       role: "agent",
       parts: [{ kind: "text", text: `Error: ${err.message}` }],
       taskId,
     };
-    store.updateState(taskId, "failed", errorMessage);
+    store.updateState(taskId, canceled ? "canceled" : "failed", errorMessage);
 
-    sendEvent({
-      jsonrpc: "2.0",
-      id: body.id,
-      result: store.get(taskId),
-    });
-    res.end();
+    if (!res.destroyed && !res.writableEnded && res.writableLength <= 1024 * 1024) {
+      sendEvent({ jsonrpc: "2.0", id: body.id, result: store.get(taskId) });
+      res.end();
+    } else res.destroy();
+  } finally {
+    res.off("close", disconnected);
+    execution.finish();
   }
 }
 
@@ -350,7 +404,7 @@ function handleTasksGet(res: any, body: A2AJsonRpcRequest, store: TaskStore): vo
   res.json({ jsonrpc: "2.0", id: body.id, result } as A2AJsonRpcResponse);
 }
 
-function handleTasksCancel(res: any, body: A2AJsonRpcRequest, store: TaskStore): void {
+async function handleTasksCancel(res: any, body: A2AJsonRpcRequest, store: TaskStore): Promise<void> {
   const params = body.params as any;
   const taskId = params?.id;
 
@@ -363,7 +417,7 @@ function handleTasksCancel(res: any, body: A2AJsonRpcRequest, store: TaskStore):
     return res.json(jsonRpcError(body.id, -32602, `Task '${taskId}' not found`));
   }
 
-  store.updateState(taskId, "canceled");
+  if (!(await store.cancel(taskId))) return res.json(jsonRpcError(body.id, -32002, "Task is not cancelable"));
 
   res.json({
     jsonrpc: "2.0",

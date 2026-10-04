@@ -1,3 +1,4 @@
+import { schemaShape } from "../tools/schema.js";
 import type { ToolDef } from "../tools/types.js";
 
 /**
@@ -83,6 +84,6 @@ export function describeToolLibrary(
   return Object.values(library).map((tool) => ({
     name: tool.name,
     description: tool.description,
-    parameters: Object.keys(tool.parameters.shape ?? {}),
+    parameters: Object.keys(schemaShape(tool.parameters)),
   }));
 }

@@ -21,6 +21,7 @@ export type {
   A2ATaskState,
   A2ATextPart,
 } from "./a2a/types.js";
+export * from "./a2a/v1-client.js";
 // Agent
 export { Agent } from "./agent/agent.js";
 export {
@@ -32,6 +33,7 @@ export {
   type ComputerUseRunOutput,
 } from "./agent/computer-use-agent.js";
 export { DrainController, RunCancelledError, RunDrainedError } from "./agent/errors.js";
+export type { ExecutionServices } from "./agent/execution-services.js";
 export type { ExternalAgentConfig } from "./agent/external-agent.js";
 export { defineExternalAgent } from "./agent/external-agent.js";
 // Utils
@@ -72,7 +74,12 @@ export type { CompressionManagerConfig } from "./compression/compression-manager
 // Compression
 export { CompressionManager } from "./compression/compression-manager.js";
 // Context
-export { ContextCompactor } from "./context/context-compactor.js";
+export {
+  ContextCompactionError,
+  ContextCompactor,
+  countConversationTokens,
+  groupConversationTurns,
+} from "./context/context-compactor.js";
 export type { ContextFile, LoadContextFilesOptions } from "./context/context-files.js";
 export { formatContextFiles, loadContextFiles } from "./context/context-files.js";
 export {
@@ -85,6 +92,7 @@ export {
   type HttpContextProviderConfig,
   resolveContextProviders,
 } from "./context/context-providers.js";
+export { validateConversationTransform } from "./context/conversation-transform.js";
 export { CostTracker } from "./cost/cost-tracker.js";
 export { DEFAULT_PRICING, lookupPricing } from "./cost/pricing.js";
 // Cost Tracking
@@ -101,7 +109,7 @@ export type { DependencyMap, DependencyValue } from "./dependencies/resolver.js"
 export { applyTemplates, resolveDependencies } from "./dependencies/resolver.js";
 export type { AnyEventHandler } from "./events/event-bus.js";
 // Events
-export { EventBus } from "./events/event-bus.js";
+export { EventBus, type EventBusOptions, type ObserverFailure } from "./events/event-bus.js";
 export type { AgentEventMap, LifecycleEvent } from "./events/types.js";
 export { LIFECYCLE_EVENTS } from "./events/types.js";
 export type { AgentFile, AgentFileSystemConfig } from "./fs/agent-fs.js";
@@ -136,6 +144,7 @@ export { createCompleteTool, createHandoffTool } from "./handoff/handoff-tool.js
 // Handoff
 export type { HandoffConfig, HandoffResult, HandoffTarget } from "./handoff/types.js";
 export { HandoffSignal } from "./handoff/types.js";
+
 // Knowledge Base
 export type {
   HybridSearchConfig,
@@ -157,6 +166,8 @@ export {
 // MCP
 export type { MCPToolProviderConfig } from "./mcp/mcp-client.js";
 export { MCPToolProvider } from "./mcp/mcp-client.js";
+export type { MCPPersistedTaskReference, MCPTaskSnapshot, MCPV2ToolProviderConfig } from "./mcp/mcp-v2.js";
+export { MCPToolError, MCPV2ToolProvider } from "./mcp/mcp-v2.js";
 export type { ConsolidateOptions, CuratorStores, PruneOptions } from "./memory/curator.js";
 export { Curator } from "./memory/curator.js";
 export type { FileMemoryConfig, FileMemoryTarget } from "./memory/file-memory.js";
@@ -272,6 +283,7 @@ export type {
   ModelConfig,
   ModelResponse,
   ReasoningConfig,
+  ResponsesReplayEnvelope,
   StreamChunk,
   TextPart,
   TokenUsage,
@@ -281,8 +293,8 @@ export type {
 export { getTextContent, isMultiModal } from "./models/types.js";
 export type { CohereRerankerConfig } from "./rerank/providers/cohere.js";
 export { CohereReranker } from "./rerank/providers/cohere.js";
-export type { ColbertRerankerConfig } from "./rerank/providers/colbert.js";
-export { ColbertReranker } from "./rerank/providers/colbert.js";
+export type { CrossEncoderRerankerConfig } from "./rerank/providers/cross-encoder-reranker.js";
+export { CrossEncoderReranker } from "./rerank/providers/cross-encoder-reranker.js";
 export type { JinaRerankerConfig } from "./rerank/providers/jina.js";
 export { JinaReranker } from "./rerank/providers/jina.js";
 export type { VoyageRerankerConfig } from "./rerank/providers/voyage.js";
@@ -343,12 +355,27 @@ export type { ApprovalConfig, ApprovalDecision, ApprovalRequest } from "./tools/
 export { ApprovalManager } from "./tools/approval.js";
 export { createPollResultTool, type DefineAsyncToolConfig, defineAsyncTool } from "./tools/async-handle.js";
 export { defineTool } from "./tools/define-tool.js";
+export type {
+  ExecutionDecision,
+  ExecutionPolicy,
+  RunMode,
+  ToolEffect,
+  ValidatedToolCall,
+} from "./tools/execution-policy.js";
+export { convertJsonSchema, type SchemaConversionDiagnostic } from "./tools/json-schema.js";
 export { resolveSandboxConfig, Sandbox } from "./tools/sandbox.js";
+export type { ToolExecutorConfig } from "./tools/tool-executor.js";
 export { ToolExecutor, ToolLoopError } from "./tools/tool-executor.js";
 export type { ToolRouterConfig } from "./tools/tool-router.js";
 export { ToolRouter } from "./tools/tool-router.js";
 export type { Artifact, SandboxConfig, ToolCacheConfig, ToolCallResult, ToolDef, ToolResult } from "./tools/types.js";
-export { assertHostAllowed, isHostAllowed, PathSecurityError, safeJoin } from "./utils/path-safety.js";
+export {
+  assertHostAllowed,
+  canonicalSafeJoin,
+  isHostAllowed,
+  PathSecurityError,
+  safeJoin,
+} from "./utils/path-safety.js";
 export type { RetryConfig } from "./utils/retry.js";
 export { withRetry } from "./utils/retry.js";
 export { countMessagesTokens, countMessageTokens, countTokens, hasExactTokenizer } from "./utils/token-counter.js";
@@ -421,7 +448,6 @@ export type {
   RealtimeEvent,
   RealtimeEventMap,
   RealtimeMcpServer,
-  RealtimePrompt,
   RealtimeProvider,
   RealtimeSessionConfig,
   RealtimeToolCall,
@@ -472,6 +498,7 @@ export { estimateProgress, toolResultPreview } from "./agent/progress-protocol.j
 export type { CritiqueResult, LoopEscapeResult, PlanCritiqueResult, ReflectionConfig } from "./agent/reflection.js";
 // Agent Reflection
 export { ReflectionManager } from "./agent/reflection.js";
+export * from "./durable/index.js";
 export type { CircuitBreakerConfig, CircuitState, ErrorClassification } from "./models/circuit-breaker.js";
 // Model Resilience
 export { CircuitBreaker, defaultClassifyError } from "./models/circuit-breaker.js";
@@ -483,7 +510,12 @@ export { ConcurrencyLimiter } from "./rate-limit/concurrency-limiter.js";
 // Rate Limiting
 export { TokenRateLimiter } from "./rate-limit/token-rate-limiter.js";
 export type { QuotaConfig, RateLimitConfig, RateLimitScope, RateLimitStatus } from "./rate-limit/types.js";
+export * from "./telephony/index.js";
 export { extractTenantFromHeaders, extractTenantFromJwt, requireTenant, withTenant } from "./tenant/tenant-context.js";
 // Multi-Tenant Isolation
 export { TenantScopedStorage } from "./tenant/tenant-storage.js";
 export type { TenantConfig, TenantContext } from "./tenant/types.js";
+export { evaluateExecutionPolicy } from "./tools/execution-policy.js";
+export type { AgentiumSchema, SchemaOutput, ToolParameterSchema } from "./tools/schema.js";
+export { parseSchema, safeParseSchema, schemaShape } from "./tools/schema.js";
+export type { RealtimeRecoveryContinuity, RealtimeRecoveryPolicy, RealtimeRecoveryState } from "./voice/types.js";

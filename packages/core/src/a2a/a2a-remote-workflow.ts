@@ -1,4 +1,5 @@
 import type { WorkflowResult } from "../workflow/types.js";
+import { legacyEndpoint, legacySignal } from "./legacy-http.js";
 
 export interface A2ARemoteWorkflowConfig {
   url: string;
@@ -18,18 +19,22 @@ export class A2ARemoteWorkflow {
   private timeoutMs: number;
 
   constructor(config: A2ARemoteWorkflowConfig) {
-    this.url = config.url.replace(/\/$/, "");
+    this.url = legacyEndpoint(config.url, config.timeoutMs ?? 120_000);
     this.name = config.name ?? "remote-workflow";
-    this.headers = config.headers ?? {};
+    this.headers = { ...config.headers };
     this.timeoutMs = config.timeoutMs ?? 120_000;
   }
 
-  async run(initialState?: Record<string, unknown>): Promise<WorkflowResult<Record<string, unknown>>> {
-    const res = await fetch(`${this.url}/workflows/${this.name}/run`, {
+  async run(
+    initialState?: Record<string, unknown>,
+    opts?: { signal?: AbortSignal },
+  ): Promise<WorkflowResult<Record<string, unknown>>> {
+    const res = await fetch(`${this.url}/workflows/${encodeURIComponent(this.name)}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.headers },
       body: JSON.stringify(initialState ?? {}),
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: legacySignal(this.timeoutMs, opts?.signal),
+      redirect: "error",
     });
 
     if (!res.ok) {

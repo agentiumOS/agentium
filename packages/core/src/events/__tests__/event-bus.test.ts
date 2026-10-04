@@ -85,3 +85,66 @@ describe("EventBus", () => {
     expect(EventBus.shared).not.toBe(a);
   });
 });
+
+it("isolates thrown and rejected observers, preserving later observer order", async () => {
+  const diagnostics = vi.fn();
+  const bus = new EventBus({ onObserverError: diagnostics });
+  const order: string[] = [];
+  bus.onAny(() => {
+    order.push("any");
+    throw new Error("observer");
+  });
+  bus.on("run.start", async () => {
+    order.push("async");
+    throw new Error("async observer");
+  });
+  bus.on("run.start", () => {
+    order.push("last");
+  });
+  expect(bus.emit("run.start", { runId: "r", agentName: "a", input: "x" })).toBe(true);
+  await Promise.resolve();
+  expect(order).toEqual(["any", "async", "last"]);
+  expect(diagnostics).toHaveBeenCalledTimes(2);
+  expect(bus.getObserverDiagnostics().failures).toBe(2);
+});
+
+it("preserves duplicate off, once removal, reentrant once, and snapshot semantics", () => {
+  const bus = new EventBus();
+  const seen: string[] = [];
+  const removed = () => {
+    seen.push("removed");
+  };
+  bus.once("run.cancelled", removed);
+  bus.off("run.cancelled", removed);
+  const twice = () => {
+    seen.push("duplicate");
+  };
+  bus.on("run.cancelled", twice).on("run.cancelled", twice).off("run.cancelled", twice);
+  bus.once("run.cancelled", () => {
+    seen.push("once");
+    bus.emit("run.cancelled", { runId: "r", agentName: "a" });
+  });
+  bus.emit("run.cancelled", { runId: "r", agentName: "a" });
+  expect(seen).toEqual(["duplicate", "once", "duplicate"]);
+});
+
+it("caps and isolates diagnostic recursion and rejection without event re-emission", async () => {
+  let reports = 0;
+  const bus = new EventBus({
+    maxObserverDiagnostics: 2,
+    onObserverError: async () => {
+      reports++;
+      bus.emit("run.cancelled", { runId: "nested", agentName: "a" });
+      throw new Error("diagnostic");
+    },
+  });
+  bus.onAny(() => {
+    throw new Error("observer");
+  });
+  for (let i = 0; i < 5; i++) {
+    bus.emit("run.cancelled", { runId: String(i), agentName: "a" });
+    await Promise.resolve();
+  }
+  expect(reports).toBe(2);
+  expect(bus.getObserverDiagnostics()).toEqual({ failures: 7, reported: 2, suppressed: 5 });
+});

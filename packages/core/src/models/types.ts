@@ -34,6 +34,16 @@ export type ContentPart = TextPart | ImagePart | AudioPart | FilePart;
 /** Convenience: plain string, or an array of multi-modal content parts. */
 export type MessageContent = string | ContentPart[];
 
+/** JSON-persistable Responses output; never expose opaque items as display text. */
+export interface ResponsesReplayEnvelope {
+  version: 1;
+  /** Normalized endpoint origin/path; credentials and query strings are excluded. */
+  owner: string;
+  /** Model identity when produced by an adapter. Switching it needs an explicit new continuation. */
+  model?: string;
+  items: unknown[];
+}
+
 // ── Chat message ──────────────────────────────────────────────────────────
 
 export interface ChatMessage {
@@ -140,6 +150,8 @@ export interface ProviderOptions {
 }
 
 export interface ModelConfig {
+  /** Cooperative cancellation, forwarded by compatible providers. */
+  signal?: AbortSignal;
   temperature?: number;
   maxTokens?: number;
   topP?: number;

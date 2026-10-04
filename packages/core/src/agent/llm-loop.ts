@@ -1,5 +1,8 @@
-import { createRequire } from "node:module";
-import type { z } from "zod";
+import { randomUUID } from "node:crypto";
+import type { CheckpointManager } from "../checkpoint/checkpoint-manager.js";
+import { validateConversationTransform } from "../context/conversation-transform.js";
+import { getHandoffControl, setHandoffControl } from "../handoff/control.js";
+import type { HandoffSignal } from "../handoff/types.js";
 import type { Logger } from "../logger/logger.js";
 import type { ModelProvider } from "../models/provider.js";
 import {
@@ -11,14 +14,14 @@ import {
   type StreamChunk,
   type ToolDefinition,
 } from "../models/types.js";
+import { convertJsonSchema } from "../tools/json-schema.js";
+import { type AgentiumSchema, parseSchema } from "../tools/schema.js";
 import type { ToolExecutor } from "../tools/tool-executor.js";
 import type { ToolCallResult } from "../tools/types.js";
 import { type RetryConfig, withRetry } from "../utils/retry.js";
 import { RunCancelledError } from "./errors.js";
 import type { RunContext } from "./run-context.js";
 import type { LoopHooks, RunOutput, ToolResultLimitConfig } from "./types.js";
-
-const _require = createRequire(import.meta.url);
 
 const DEFAULT_MAX_CHARS = 20_000;
 
@@ -110,13 +113,17 @@ export class LLMLoop {
   private maxToolRoundtrips: number;
   private temperature?: number;
   private maxTokens?: number;
-  private structuredOutput?: z.ZodSchema;
+  private structuredOutput?: AgentiumSchema;
   private logger?: Logger;
   private reasoning?: ReasoningConfig;
   private providerOptions?: ProviderOptions;
   private retry?: Partial<RetryConfig>;
   private toolResultLimit?: ToolResultLimitConfig;
   private loopHooks?: LoopHooks;
+  private checkpointManager?: CheckpointManager;
+  private controlledExecution: boolean;
+  // The Agent creates a fresh loop per run; reflection reuses this same run budget.
+  private controlledToolRoundtrips = 0;
 
   constructor(
     provider: ModelProvider,
@@ -125,13 +132,15 @@ export class LLMLoop {
       maxToolRoundtrips: number;
       temperature?: number;
       maxTokens?: number;
-      structuredOutput?: z.ZodSchema;
+      structuredOutput?: AgentiumSchema;
       logger?: Logger;
       reasoning?: ReasoningConfig;
       providerOptions?: ProviderOptions;
       retry?: Partial<RetryConfig>;
       toolResultLimit?: ToolResultLimitConfig;
       loopHooks?: LoopHooks;
+      checkpointManager?: CheckpointManager;
+      controlledExecution?: boolean;
     },
   ) {
     this.provider = provider;
@@ -146,9 +155,69 @@ export class LLMLoop {
     this.retry = options.retry;
     this.toolResultLimit = options.toolResultLimit;
     this.loopHooks = options.loopHooks;
+    this.checkpointManager = options.checkpointManager;
+    this.controlledExecution = options.controlledExecution ?? false;
   }
 
-  private async limitToolResult(content: string, toolName: string): Promise<string> {
+  private modelIdentity(provider: ModelProvider, ctx: RunContext) {
+    return { runId: ctx.runId, modelCallId: randomUUID(), modelId: provider.modelId, providerId: provider.providerId };
+  }
+  private async generateObserved(
+    provider: ModelProvider,
+    messages: ChatMessage[],
+    options: ModelConfig & { tools?: ToolDefinition[] },
+    ctx: RunContext,
+  ) {
+    const identity = this.modelIdentity(provider, ctx);
+    ctx.eventBus.emit("model.start", identity);
+    try {
+      const response = await provider.generate(messages, options);
+      ctx.eventBus.emit("model.result", {
+        ...identity,
+        usage: response.usage,
+        status: ctx.signal?.aborted ? "cancelled" : "success",
+      });
+      return response;
+    } catch (error) {
+      ctx.eventBus.emit("model.error", { ...identity, status: ctx.signal?.aborted ? "cancelled" : "error" });
+      throw error;
+    }
+  }
+  private async *streamObserved(
+    messages: ChatMessage[],
+    options: ModelConfig & { tools?: ToolDefinition[] },
+    ctx: RunContext,
+  ): AsyncGenerator<StreamChunk> {
+    const identity = this.modelIdentity(this.provider, ctx);
+    let ended = false;
+    ctx.eventBus.emit("model.start", identity);
+    try {
+      for await (const chunk of this.provider.stream(messages, options)) {
+        if (chunk.type === "finish" && !ended) {
+          ended = true;
+          ctx.eventBus.emit("model.result", {
+            ...identity,
+            usage: chunk.usage,
+            status: ctx.signal?.aborted ? "cancelled" : "success",
+          });
+        }
+        yield chunk;
+      }
+    } finally {
+      if (!ended)
+        ctx.eventBus.emit("model.error", { ...identity, status: ctx.signal?.aborted ? "cancelled" : "error" });
+    }
+  }
+
+  private claimControlledToolRoundtrip(): void {
+    if (!this.controlledExecution) return;
+    if (this.controlledToolRoundtrips >= this.maxToolRoundtrips) {
+      throw new Error("Controlled tool roundtrip budget exhausted; no further tools executed");
+    }
+    this.controlledToolRoundtrips++;
+  }
+
+  private async limitToolResult(content: string, toolName: string, ctx: RunContext): Promise<string> {
     if (!this.toolResultLimit) return content;
 
     const maxChars = this.toolResultLimit.maxChars ?? DEFAULT_MAX_CHARS;
@@ -161,12 +230,14 @@ export class LLMLoop {
 
     if (strategy === "summarize" && this.toolResultLimit.model) {
       try {
-        const response = await this.toolResultLimit.model.generate(
+        const response = await this.generateObserved(
+          this.toolResultLimit.model,
           [
             { role: "system", content: SUMMARIZE_PROMPT },
             { role: "user", content: content.slice(0, 200_000) },
           ],
-          { maxTokens: 4096, temperature: 0 },
+          { maxTokens: 4096, temperature: 0, signal: ctx.signal },
+          ctx,
         );
         const summary = getTextContent(response.message.content);
         if (summary) {
@@ -181,7 +252,7 @@ export class LLMLoop {
     return smartTruncate(content, maxChars);
   }
 
-  async run(messages: ChatMessage[], ctx: RunContext, apiKey?: string): Promise<RunOutput> {
+  async run(messages: ChatMessage[], ctx: RunContext, apiKey?: string, transcript?: ChatMessage[]): Promise<RunOutput> {
     const allToolCalls: ToolCallResult[] = [];
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
@@ -194,23 +265,33 @@ export class LLMLoop {
     let responseId: string | undefined;
     let lastProviderMetrics: Record<string, unknown> | undefined;
     const loopStartTime = Date.now();
-    const currentMessages = [...messages];
+    const currentMessages = !this.controlledExecution ? [...messages] : structuredClone(messages);
+    // Canonical newly produced exchanges survive request-only compaction/hooks.
+    const append = (message: ChatMessage): void => {
+      currentMessages.push(message);
+      transcript?.push(!this.controlledExecution ? message : structuredClone(message));
+      ctx.executionServices?.recordConversation(ctx.runId, [message]);
+    };
     const toolDefs = this.toolExecutor?.getToolDefinitions() ?? [];
     if (toolDefs.length > 0) {
       this.logger?.debug("llm", { tools: toolDefs.map((t) => t.name) });
     }
 
+    let handoff: HandoffSignal | undefined;
     for (let roundtrip = 0; roundtrip <= this.maxToolRoundtrips; roundtrip++) {
       if (ctx.signal?.aborted) throw new RunCancelledError();
 
+      const mandatoryMessages = !this.controlledExecution ? undefined : structuredClone(currentMessages);
       // Hook: beforeLLMCall — allows message modification (e.g. context compaction, PII scrubbing)
       if (this.loopHooks?.beforeLLMCall) {
         const modified = await this.loopHooks.beforeLLMCall(currentMessages, roundtrip);
-        if (modified) {
+        if (modified && modified !== currentMessages) {
           currentMessages.length = 0;
           currentMessages.push(...modified);
         }
       }
+
+      if (mandatoryMessages) validateConversationTransform(mandatoryMessages, currentMessages);
 
       const modelConfig: ModelConfig & { tools?: ToolDefinition[] } = {};
       if (apiKey) modelConfig.apiKey = apiKey;
@@ -229,7 +310,10 @@ export class LLMLoop {
         };
       }
 
-      const response = await withRetry(() => this.provider.generate(currentMessages, modelConfig), this.retry);
+      const response = await withRetry(
+        () => this.generateObserved(this.provider, currentMessages, { ...modelConfig, signal: ctx.signal }, ctx),
+        this.retry,
+      );
 
       if (roundtrip === 0) {
         timeToFirstTokenMs = Date.now() - loopStartTime;
@@ -261,7 +345,11 @@ export class LLMLoop {
         thinkingContent += (thinkingContent ? "\n" : "") + (response as any).thinking;
       }
 
-      currentMessages.push(response.message);
+      if (response.message.toolCalls?.length && (response.finishReason !== "tool_calls" || !this.toolExecutor)) {
+        throw new Error("Incomplete or unsupported tool turn; no tools executed");
+      }
+      if (response.message.toolCalls?.length) this.claimControlledToolRoundtrip();
+      append(response.message);
 
       if (response.finishReason !== "tool_calls" || !response.message.toolCalls?.length || !this.toolExecutor) {
         const text = getTextContent(response.message.content);
@@ -291,7 +379,7 @@ export class LLMLoop {
           try {
             const jsonStr = this.extractJson(text);
             const parsed = JSON.parse(jsonStr);
-            output.structured = this.structuredOutput.parse(parsed);
+            output.structured = parseSchema(this.structuredOutput, parsed);
           } catch (e) {
             // structured parsing failed, raw text is still available
             this.logger?.warn?.(`Structured output parsing failed, falling back to raw text: ${(e as Error)?.message}`);
@@ -315,7 +403,7 @@ export class LLMLoop {
               toolName: tc.name,
               result: hookResult.result ?? "[skipped by hook]",
             });
-            currentMessages.push({
+            append({
               role: "tool",
               content: hookResult.result ?? "[skipped by hook]",
               toolCallId: tc.id,
@@ -327,39 +415,61 @@ export class LLMLoop {
         filteredToolCalls.push(tc);
       }
 
-      const toolResults = await this.toolExecutor.executeAll(filteredToolCalls, ctx);
+      const execute = () => this.toolExecutor!.executeAll(filteredToolCalls, ctx);
+      const toolResults = await (ctx.executionServices ? ctx.executionServices.runOwned(execute) : execute());
 
       allToolCalls.push(...toolResults);
 
       const argsById = new Map(filteredToolCalls.map((tc) => [tc.id, tc.arguments]));
-      for (const result of toolResults) {
-        let content = typeof result.result === "string" ? result.result : result.result.content;
+      const recordedResults = new Set<string>();
+      try {
+        for (const result of toolResults) {
+          await ctx.executionServices?.observeTool(result, ctx);
+          let content = typeof result.result === "string" ? result.result : result.result.content;
 
-        this.logger?.toolCall(result.toolName, argsById.get(result.toolCallId) ?? {});
-        this.logger?.toolResult(result.toolName, typeof content === "string" ? content : JSON.stringify(content));
+          this.logger?.toolCall(result.toolName, argsById.get(result.toolCallId) ?? {});
+          this.logger?.toolResult(result.toolName, typeof content === "string" ? content : JSON.stringify(content));
 
-        if (typeof content === "string") {
-          content = await this.limitToolResult(content, result.toolName);
-        }
-
-        // Hook: afterToolExec — allows transforming tool results
-        if (this.loopHooks?.afterToolExec && typeof content === "string") {
-          const transformed = await this.loopHooks.afterToolExec(result.toolName, content);
-          if (transformed !== undefined) {
-            content = transformed;
+          if (typeof content === "string") {
+            content = await this.limitToolResult(content, result.toolName, ctx);
           }
-        }
 
-        currentMessages.push({
-          role: "tool",
-          content,
-          toolCallId: result.toolCallId,
-          name: result.toolName,
-        });
+          // Hook: afterToolExec — allows transforming tool results
+          if (this.loopHooks?.afterToolExec && typeof content === "string") {
+            const transformed = await this.loopHooks.afterToolExec(result.toolName, content);
+            if (transformed !== undefined) {
+              content = transformed;
+            }
+          }
+
+          append({
+            role: "tool",
+            content,
+            toolCallId: result.toolCallId,
+            name: result.toolName,
+          });
+          recordedResults.add(result.toolCallId);
+        }
+      } finally {
+        // Observer failure or cancellation cannot orphan an already settled handoff batch.
+        if (toolResults.some((result) => result.toolName === "transfer_to_agent" || getHandoffControl(result))) {
+          for (const result of toolResults)
+            if (!recordedResults.has(result.toolCallId)) {
+              append({
+                role: "tool",
+                content: typeof result.result === "string" ? result.result : result.result.content,
+                toolCallId: result.toolCallId,
+                name: result.toolName,
+              });
+            }
+        }
       }
 
+      // The transcript contains the complete batch before any transfer is acted on.
+      handoff = toolResults.map(getHandoffControl).find(Boolean);
+
       // Hook: onRoundtripComplete — enables cost auto-stop, checkpointing
-      if (this.loopHooks?.onRoundtripComplete) {
+      if (this.loopHooks?.onRoundtripComplete || this.checkpointManager) {
         const tokensSoFar = {
           promptTokens: totalPromptTokens,
           completionTokens: totalCompletionTokens,
@@ -370,7 +480,14 @@ export class LLMLoop {
           ...(totalAudioOutputTokens > 0 ? { audioOutputTokens: totalAudioOutputTokens } : {}),
           ...(lastProviderMetrics ? { providerMetrics: lastProviderMetrics } : {}),
         };
-        const hookResult = await this.loopHooks.onRoundtripComplete(roundtrip, tokensSoFar);
+        await this.checkpointManager?.save({
+          runId: ctx.runId,
+          roundtrip,
+          messages: structuredClone(currentMessages),
+          tokenUsage: tokensSoFar,
+          sessionState: structuredClone(ctx.sessionState),
+        });
+        const hookResult = await this.loopHooks?.onRoundtripComplete?.(roundtrip, tokensSoFar);
         if (hookResult?.stop) {
           const lastAssistant = currentMessages.filter((m) => m.role === "assistant").pop();
           const text = getTextContent(lastAssistant?.content ?? null);
@@ -385,15 +502,17 @@ export class LLMLoop {
           };
         }
       }
+      if (handoff) break;
     }
 
-    const lastAssistantMsg = currentMessages.reverse().find((m) => m.role === "assistant");
+    const lastAssistantMsg = [...currentMessages].reverse().find((m) => m.role === "assistant");
 
     const text = getTextContent(lastAssistantMsg?.content ?? null);
 
-    return {
+    const output: RunOutput = {
       text,
       toolCalls: allToolCalls,
+      status: handoff ? "completed" : "stopped",
       usage: {
         promptTokens: totalPromptTokens,
         completionTokens: totalCompletionTokens,
@@ -408,10 +527,25 @@ export class LLMLoop {
       ...(timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs } : {}),
       ...(responseId ? { responseId } : {}),
     };
+    if (handoff) setHandoffControl(output, handoff);
+    return output;
   }
 
-  async *stream(messages: ChatMessage[], ctx: RunContext, apiKey?: string): AsyncGenerator<StreamChunk> {
-    const currentMessages = [...messages];
+  async *stream(
+    messages: ChatMessage[],
+    ctx: RunContext,
+    apiKey?: string,
+    transcript?: ChatMessage[],
+    collectedTools?: ToolCallResult[],
+    outcome?: { status: "completed" | "stopped" },
+  ): AsyncGenerator<StreamChunk> {
+    const currentMessages = !this.controlledExecution ? [...messages] : structuredClone(messages);
+    // Canonical newly produced exchanges survive request-only compaction/hooks.
+    const append = (message: ChatMessage): void => {
+      currentMessages.push(message);
+      transcript?.push(!this.controlledExecution ? message : structuredClone(message));
+      ctx.executionServices?.recordConversation(ctx.runId, [message]);
+    };
     const toolDefs = this.toolExecutor?.getToolDefinitions() ?? [];
     if (toolDefs.length > 0) {
       this.logger?.debug("llm.stream", { tools: toolDefs.map((t) => t.name) });
@@ -428,14 +562,17 @@ export class LLMLoop {
     for (let roundtrip = 0; roundtrip <= this.maxToolRoundtrips; roundtrip++) {
       if (ctx.signal?.aborted) throw new RunCancelledError();
 
+      const mandatoryMessages = !this.controlledExecution ? undefined : structuredClone(currentMessages);
       // Hook: beforeLLMCall
       if (this.loopHooks?.beforeLLMCall) {
         const modified = await this.loopHooks.beforeLLMCall(currentMessages, roundtrip);
-        if (modified) {
+        if (modified && modified !== currentMessages) {
           currentMessages.length = 0;
           currentMessages.push(...modified);
         }
       }
+
+      if (mandatoryMessages) validateConversationTransform(mandatoryMessages, currentMessages);
 
       const modelConfig: ModelConfig & { tools?: ToolDefinition[] } = {};
       if (apiKey) modelConfig.apiKey = apiKey;
@@ -453,10 +590,11 @@ export class LLMLoop {
         args: string;
       }> = [];
       let finishReason = "stop";
+      let finished = false;
       let chunkUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
       let providerExtras: Record<string, unknown> | undefined;
 
-      const streamGen = this.provider.stream(currentMessages, modelConfig);
+      const streamGen = this.streamObserved(currentMessages, { ...modelConfig, signal: ctx.signal }, ctx);
 
       for await (const chunk of streamGen) {
         yield chunk;
@@ -479,12 +617,15 @@ export class LLMLoop {
             tc.args += chunk.argumentsDelta;
           }
         } else if (chunk.type === "finish") {
+          finished = true;
           finishReason = chunk.finishReason;
           if (chunk.usage) chunkUsage = chunk.usage;
           if (chunk.providerExtras) providerExtras = chunk.providerExtras;
         }
       }
 
+      if (!finished && pendingToolCalls.length)
+        throw new Error("Stream ended before tool calls completed; no tools executed");
       totalPromptTokens += chunkUsage.promptTokens;
       totalCompletionTokens += chunkUsage.completionTokens;
       if ((chunkUsage as any).reasoningTokens) totalReasoningTokens += (chunkUsage as any).reasoningTokens;
@@ -493,15 +634,9 @@ export class LLMLoop {
       if ((chunkUsage as any).audioOutputTokens) totalAudioOutputTokens += (chunkUsage as any).audioOutputTokens;
       if ((chunkUsage as any).providerMetrics) lastProviderMetrics = (chunkUsage as any).providerMetrics;
 
-      // Hook: afterLLMCall
-      if (this.loopHooks?.afterLLMCall) {
-        await this.loopHooks.afterLLMCall({ finishReason, usage: chunkUsage }, roundtrip);
+      if (pendingToolCalls.length && (finishReason !== "tool_calls" || !this.toolExecutor)) {
+        throw new Error("Incomplete or unsupported streamed tool turn; no tools executed");
       }
-
-      if (finishReason !== "tool_calls" || pendingToolCalls.length === 0 || !this.toolExecutor) {
-        return;
-      }
-
       const assistantMsg: ChatMessage = {
         role: "assistant",
         content: fullText || null,
@@ -510,13 +645,24 @@ export class LLMLoop {
           try {
             parsed = JSON.parse(tc.args || "{}");
           } catch {
-            console.warn(`[LLMLoop] Failed to parse tool call args for "${tc.name}", using empty object`);
+            throw new Error(`Invalid streamed tool arguments for "${tc.name}"; no tools executed`);
+          }
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error(`Invalid streamed tool arguments for "${tc.name}"; expected an object`);
           }
           return { id: tc.id, name: tc.name, arguments: parsed };
         }),
         ...(providerExtras ? { providerExtras } : {}),
       };
-      currentMessages.push(assistantMsg);
+      if (pendingToolCalls.length === 0) delete assistantMsg.toolCalls;
+      else this.claimControlledToolRoundtrip();
+      // Hook: afterLLMCall. Runtime-owned model observers run inside execution services.
+      if (this.loopHooks?.afterLLMCall) {
+        await this.loopHooks.afterLLMCall({ finishReason, usage: chunkUsage }, roundtrip);
+      }
+      append(assistantMsg);
+      if (finishReason !== "tool_calls" || pendingToolCalls.length === 0 || !this.toolExecutor) return;
+      if (ctx.signal?.aborted) throw new RunCancelledError();
 
       // Hook: beforeToolExec
       const allCalls = assistantMsg.toolCalls!;
@@ -525,7 +671,7 @@ export class LLMLoop {
         if (this.loopHooks?.beforeToolExec) {
           const hookResult = await this.loopHooks.beforeToolExec(tc.name, tc.arguments);
           if (hookResult?.skip) {
-            currentMessages.push({
+            append({
               role: "tool",
               content: hookResult.result ?? "[skipped by hook]",
               toolCallId: tc.id,
@@ -537,35 +683,55 @@ export class LLMLoop {
         filteredCalls.push(tc);
       }
 
-      const toolResults = await this.toolExecutor.executeAll(filteredCalls, ctx);
+      const execute = () => this.toolExecutor!.executeAll(filteredCalls, ctx);
+      const toolResults = await (ctx.executionServices ? ctx.executionServices.runOwned(execute) : execute());
+      collectedTools?.push(...toolResults);
 
       const argsById = new Map(filteredCalls.map((tc) => [tc.id, tc.arguments]));
-      for (const result of toolResults) {
-        let content = typeof result.result === "string" ? result.result : result.result.content;
+      const recordedResults = new Set<string>();
+      try {
+        for (const result of toolResults) {
+          await ctx.executionServices?.observeTool(result, ctx);
+          let content = typeof result.result === "string" ? result.result : result.result.content;
 
-        this.logger?.toolCall(result.toolName, argsById.get(result.toolCallId) ?? {});
-        this.logger?.toolResult(result.toolName, typeof content === "string" ? content : JSON.stringify(content));
+          this.logger?.toolCall(result.toolName, argsById.get(result.toolCallId) ?? {});
+          this.logger?.toolResult(result.toolName, typeof content === "string" ? content : JSON.stringify(content));
 
-        if (typeof content === "string") {
-          content = await this.limitToolResult(content, result.toolName);
+          if (typeof content === "string") {
+            content = await this.limitToolResult(content, result.toolName, ctx);
+          }
+
+          // Hook: afterToolExec
+          if (this.loopHooks?.afterToolExec && typeof content === "string") {
+            const transformed = await this.loopHooks.afterToolExec(result.toolName, content);
+            if (transformed !== undefined) content = transformed;
+          }
+
+          append({
+            role: "tool",
+            content,
+            toolCallId: result.toolCallId,
+            name: result.toolName,
+          });
+          recordedResults.add(result.toolCallId);
         }
-
-        // Hook: afterToolExec
-        if (this.loopHooks?.afterToolExec && typeof content === "string") {
-          const transformed = await this.loopHooks.afterToolExec(result.toolName, content);
-          if (transformed !== undefined) content = transformed;
+      } finally {
+        // Observer failure or cancellation cannot orphan an already settled handoff batch.
+        if (toolResults.some((result) => result.toolName === "transfer_to_agent" || getHandoffControl(result))) {
+          for (const result of toolResults)
+            if (!recordedResults.has(result.toolCallId)) {
+              append({
+                role: "tool",
+                content: typeof result.result === "string" ? result.result : result.result.content,
+                toolCallId: result.toolCallId,
+                name: result.toolName,
+              });
+            }
         }
-
-        currentMessages.push({
-          role: "tool",
-          content,
-          toolCallId: result.toolCallId,
-          name: result.toolName,
-        });
       }
 
       // Hook: onRoundtripComplete
-      if (this.loopHooks?.onRoundtripComplete) {
+      if (this.loopHooks?.onRoundtripComplete || this.checkpointManager) {
         const tokensSoFar = {
           promptTokens: totalPromptTokens,
           completionTokens: totalCompletionTokens,
@@ -576,10 +742,27 @@ export class LLMLoop {
           ...(totalAudioOutputTokens > 0 ? { audioOutputTokens: totalAudioOutputTokens } : {}),
           ...(lastProviderMetrics ? { providerMetrics: lastProviderMetrics } : {}),
         };
-        const hookResult = await this.loopHooks.onRoundtripComplete(roundtrip, tokensSoFar);
-        if (hookResult?.stop) return;
+        await this.checkpointManager?.save({
+          runId: ctx.runId,
+          roundtrip,
+          messages: structuredClone(currentMessages),
+          tokenUsage: tokensSoFar,
+          sessionState: structuredClone(ctx.sessionState),
+        });
+        const hookResult = await this.loopHooks?.onRoundtripComplete?.(roundtrip, tokensSoFar);
+        if (hookResult?.stop) {
+          if (outcome) outcome.status = "stopped";
+          return;
+        }
+      }
+      const handoff = toolResults.map(getHandoffControl).find(Boolean);
+      if (handoff) {
+        if (!outcome) throw new Error("Streaming handoff requires an Agent-owned outcome");
+        setHandoffControl(outcome, handoff);
+        return;
       }
     }
+    if (outcome) outcome.status = "stopped";
   }
 
   private extractJson(text: string): string {
@@ -595,22 +778,7 @@ export class LLMLoop {
     return text.trim();
   }
 
-  private zodToJsonSchema(schema: z.ZodSchema): Record<string, unknown> {
-    try {
-      const { zodToJsonSchema } = _require("zod-to-json-schema");
-      const result = zodToJsonSchema(schema, {
-        target: "jsonSchema7",
-        $refStrategy: "none",
-      }) as Record<string, unknown>;
-      delete result.$schema;
-      return result;
-    } catch (e: any) {
-      if (e?.code === "MODULE_NOT_FOUND" || e?.code === "ERR_MODULE_NOT_FOUND") {
-        throw new Error(
-          "zod-to-json-schema is required for structured output. Install it: npm install zod-to-json-schema",
-        );
-      }
-      throw e;
-    }
+  private zodToJsonSchema(schema: AgentiumSchema): Record<string, unknown> {
+    return convertJsonSchema(schema).schema;
   }
 }

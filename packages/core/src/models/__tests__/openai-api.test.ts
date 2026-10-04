@@ -17,6 +17,7 @@ import {
   applyGoogleThinkingConfig,
   extrasFromGoogleParts,
 } from "../thinking-replay.js";
+import type { StreamChunk } from "../types.js";
 
 describe("OpenAI model routing", () => {
   it("strips LiteLLM-style provider prefixes", () => {
@@ -206,5 +207,239 @@ describe("Gemini / Vertex thinking", () => {
   it("stores googleParts when a functionCall carries a thought signature", () => {
     const parts = [{ functionCall: { name: "lookup", args: { q: 1 } }, thoughtSignature: "sig_1" }];
     expect(extrasFromGoogleParts(parts)).toEqual({ googleParts: parts });
+  });
+});
+
+describe("Responses ordered continuation and stream commitment", () => {
+  const output = [
+    { type: "reasoning", id: "r1", summary: [], encrypted_content: "opaque" },
+    { type: "message", id: "m1", role: "assistant", content: [{ type: "output_text", text: "looking" }] },
+    { type: "function_call", id: "fc1", call_id: "c1", name: "lookup", arguments: '{"q":"x"}' },
+    { type: "reasoning", id: "r2", summary: [] },
+  ];
+  const events = async function* (items: unknown[]) {
+    yield* items;
+  };
+
+  it("replays exact ordered output after JSON persistence without duplicating calls", async () => {
+    const { normalizeResponsesResponse } = await import("../openai-api.js");
+    const response = normalizeResponsesResponse({ output });
+    const message = JSON.parse(JSON.stringify(response.message));
+    expect(toResponsesInput([message, { role: "tool", toolCallId: "c1", content: "found" }]).input).toEqual([
+      ...output,
+      { type: "function_call_output", call_id: "c1", output: "found" },
+    ]);
+  });
+
+  it("keeps non-tool reasoning and rejects another endpoint before making a request", async () => {
+    const { normalizeResponsesResponse, generateOpenAIStyle } = await import("../openai-api.js");
+    const { vi } = await import("vitest");
+    const message = normalizeResponsesResponse({ output: output.slice(0, 2) }).message;
+    expect(toResponsesInput([message]).input).toEqual(output.slice(0, 2));
+    const create = vi.fn();
+    await expect(
+      generateOpenAIStyle({ baseURL: "https://other.example/v1", responses: { create } }, "gpt-5.6", [message]),
+    ).rejects.toThrow("ownership");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("continues through Responses even after tools are removed and rejects unavailable continuation", async () => {
+    const { normalizeResponsesResponse, generateOpenAIStyle } = await import("../openai-api.js");
+    const { vi } = await import("vitest");
+    const message = normalizeResponsesResponse({ output: output.slice(0, 2) }).message;
+    const create = vi.fn().mockResolvedValue({ output: output.slice(0, 2) });
+    await generateOpenAIStyle({ responses: { create } }, "gpt-5.6", [message]);
+    expect(create.mock.calls[0][0].input).toEqual(output.slice(0, 2));
+    await expect(generateOpenAIStyle({ chat: { completions: { create } } }, "gpt-5.6", [message])).rejects.toThrow(
+      "Responses-capable",
+    );
+  });
+
+  it("retains a custom endpoint identity without credentials or query secrets", async () => {
+    const { generateOpenAIStyle } = await import("../openai-api.js");
+    const response = await generateOpenAIStyle(
+      {
+        baseURL: "https://user:secret@gateway.example/v1/?token=secret",
+        responses: { create: async () => ({ output }) },
+      },
+      "gpt-6",
+      [],
+      { tools: [{ name: "lookup", description: "", parameters: {} }] },
+    );
+    expect(response.message.providerExtras?.responsesReplay).toMatchObject({ owner: "https://gateway.example/v1" });
+    expect(toResponsesInput([response.message], "https://gateway.example/v1").input).toEqual(output);
+    expect(() =>
+      toResponsesInput(
+        [{ role: "assistant", content: null, providerExtras: { responsesReasoning: [output[0]] } }],
+        "https://gateway.example/v1",
+      ),
+    ).toThrow("Unowned");
+  });
+
+  it("emits complete replay on stream finish and errors on incomplete streams", async () => {
+    const { iterResponsesStream } = await import("../openai-api.js");
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of iterResponsesStream(events([{ type: "response.completed", response: { output } }])))
+      chunks.push(chunk);
+    expect(chunks[0]).toMatchObject({
+      type: "finish",
+      providerExtras: { responsesReplay: { version: 1, items: output } },
+    });
+    await expect(async () => {
+      for await (const _chunk of iterResponsesStream(events([]))) {
+        /* consume */
+      }
+    }).rejects.toThrow("before response.completed");
+  });
+
+  it("does not switch APIs when an unavailable-endpoint error follows visible output", async () => {
+    const { streamOpenAIStyle } = await import("../openai-api.js");
+    const { vi } = await import("vitest");
+    const chat = vi.fn();
+    const broken = async function* () {
+      yield { type: "response.output_text.delta", delta: "partial" };
+      throw Object.assign(new Error("not found"), { status: 404 });
+    };
+    const chunks: StreamChunk[] = [];
+    await expect(async () => {
+      for await (const chunk of streamOpenAIStyle(
+        { responses: { create: async () => broken() }, chat: { completions: { create: chat } } },
+        "gpt-6",
+        [],
+        { tools: [{ name: "t", description: "", parameters: {} }] },
+      ))
+        chunks.push(chunk);
+    }).rejects.toThrow("not found");
+    expect(chunks).toEqual([{ type: "text", text: "partial" }]);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it("preserves initial and interleaved argument fragments and terminal usage exactly once", async () => {
+    const { iterChatCompletionStream } = await import("../openai-api.js");
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of iterChatCompletionStream(
+      events([
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { index: 0, id: "a", function: { name: "one", arguments: '{"x":' } },
+                  { index: 1, id: "b", function: { name: "two", arguments: '{"y":2}' } },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          choices: [
+            { delta: { tool_calls: [{ index: 0, function: { arguments: "1}" } }] }, finish_reason: "tool_calls" },
+          ],
+        },
+        { choices: [], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } },
+      ]),
+    ))
+      chunks.push(chunk);
+    expect(chunks.filter((c) => c.type === "tool_call_delta")).toEqual([
+      { type: "tool_call_delta", toolCallId: "a", argumentsDelta: '{"x":' },
+      { type: "tool_call_delta", toolCallId: "b", argumentsDelta: '{"y":2}' },
+      { type: "tool_call_delta", toolCallId: "a", argumentsDelta: "1}" },
+    ]);
+    expect(chunks.filter((c) => c.type === "finish")).toHaveLength(1);
+    expect(chunks.at(-1)).toMatchObject({ usage: { totalTokens: 3 } });
+  });
+});
+
+it("rejects foreign Responses continuation before changing models or replay families", async () => {
+  const { normalizeResponsesResponse, generateOpenAIStyle } = await import("../openai-api.js");
+  const { anthropicReplayContent, googleReplayParts } = await import("../thinking-replay.js");
+  const { vi } = await import("vitest");
+  const message = normalizeResponsesResponse(
+    { output: [{ type: "reasoning", id: "r", summary: [], encrypted_content: "secret" }] },
+    "https://api.openai.com/v1",
+    "original-model",
+  ).message;
+  const create = vi.fn();
+  await expect(generateOpenAIStyle({ responses: { create } }, "different-model", [message])).rejects.toThrow(
+    "ownership",
+  );
+  expect(create).not.toHaveBeenCalled();
+  expect(() => anthropicReplayContent(message)).toThrow("Foreign provider");
+  expect(() => googleReplayParts(message)).toThrow("Foreign provider");
+  expect(() => toChatCompletionsMessages([message])).toThrow("cannot be converted");
+});
+
+describe("provider tool argument integrity", () => {
+  it.each(["{", "", "null", "[]", '"text"'])("rejects malformed or non-object tool arguments %s", async (args) => {
+    const { normalizeChatCompletionsResponse, normalizeResponsesResponse } = await import("../openai-api.js");
+    expect(() =>
+      normalizeChatCompletionsResponse({
+        choices: [
+          {
+            message: {
+              tool_calls: [{ id: "call", function: { name: "effect", arguments: args } }],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+    ).toThrow(/Invalid provider tool arguments/);
+    expect(() =>
+      normalizeResponsesResponse({
+        status: "completed",
+        output: [{ type: "function_call", call_id: "call", name: "effect", arguments: args }],
+      }),
+    ).toThrow(/Invalid provider tool arguments/);
+  });
+
+  it.each(["anthropicContent", "googleParts"])("rejects foreign continuation %s on Chat Completions", (field) => {
+    expect(() =>
+      toChatCompletionsMessages([{ role: "assistant", content: "thinking", providerExtras: { [field]: [] } }]),
+    ).toThrow(/Foreign provider continuation/);
+  });
+
+  it.each(["length", undefined])("rejects unfinished streaming tool calls (%s)", async (finish_reason) => {
+    const { iterChatCompletionStream } = await import("../openai-api.js");
+    const observed: StreamChunk[] = [];
+    async function consume() {
+      for await (const chunk of iterChatCompletionStream(
+        (async function* () {
+          yield {
+            choices: [
+              {
+                delta: { tool_calls: [{ id: "call", index: 0, function: { name: "effect", arguments: "{}" } }] },
+                finish_reason,
+              },
+            ],
+          };
+        })(),
+      ))
+        observed.push(chunk);
+    }
+    await expect(consume()).rejects.toThrow(/Incomplete|completion marker/);
+    expect(observed.some((chunk) => chunk.type === "tool_call_end")).toBe(false);
+  });
+
+  it("never completes a streaming call with malformed arguments", async () => {
+    const { iterChatCompletionStream } = await import("../openai-api.js");
+    const observed: StreamChunk[] = [];
+    await expect(
+      (async () => {
+        for await (const chunk of iterChatCompletionStream(
+          (async function* () {
+            yield {
+              choices: [
+                {
+                  delta: { tool_calls: [{ id: "call", index: 0, function: { name: "effect", arguments: "{" } }] },
+                  finish_reason: "tool_calls",
+                },
+              ],
+            };
+          })(),
+        ))
+          observed.push(chunk);
+      })(),
+    ).rejects.toThrow(/Invalid provider tool arguments/);
+    expect(observed.some((chunk) => chunk.type === "tool_call_end")).toBe(false);
   });
 });

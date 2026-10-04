@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID as uuidv4 } from "node:crypto";
 import { EventBus } from "../events/event-bus.js";
 import type { MessageContent, StreamChunk, TokenUsage } from "../models/types.js";
 import { registry, type ServableAgent } from "../serve.js";

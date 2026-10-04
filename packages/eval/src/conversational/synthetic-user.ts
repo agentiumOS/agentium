@@ -25,7 +25,10 @@ export class SyntheticUser {
     this.model = persona.model ?? model;
   }
 
-  async generateMessage(conversationHistory: ChatMessage[]): Promise<{ message: string; goalComplete: boolean }> {
+  async generateMessage(
+    conversationHistory: ChatMessage[],
+    context?: import("../types.js").ScorerContext,
+  ): Promise<{ message: string; goalComplete: boolean }> {
     const systemPrompt = SYSTEM_PROMPT.replace("{name}", this.persona.name)
       .replace("{description}", this.persona.description)
       .replace("{goal}", this.persona.goal);
@@ -38,7 +41,9 @@ export class SyntheticUser {
       })),
     ];
 
-    const response = await this.model.generate(messages);
+    context?.signal.throwIfAborted();
+    const response = await this.model.generate(messages, { signal: context?.signal });
+    context?.signal.throwIfAborted();
     const text =
       typeof response.message.content === "string"
         ? response.message.content
@@ -49,7 +54,7 @@ export class SyntheticUser {
 
     const trimmed = text.trim();
 
-    if (trimmed === "GOAL_COMPLETE" || trimmed.includes("GOAL_COMPLETE")) {
+    if (trimmed === "GOAL_COMPLETE") {
       return { message: trimmed, goalComplete: true };
     }
 

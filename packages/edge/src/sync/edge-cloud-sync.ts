@@ -46,6 +46,7 @@ export class EdgeCloudSync extends EventEmitter {
   private connected = false;
   private backoffMs = 1000;
   private readonly maxBackoff = 60_000;
+  private pendingFlush: Promise<{ sent: number; failed: number; remaining: number }> | null = null;
 
   constructor(config: EdgeCloudSyncConfig) {
     super();
@@ -102,10 +103,9 @@ export class EdgeCloudSync extends EventEmitter {
       this.queue.shift(); // drop oldest
     }
 
+    this.persistQueue();
     if (this.connected) {
       this.flush();
-    } else {
-      this.persistQueue();
     }
   }
 
@@ -154,6 +154,16 @@ export class EdgeCloudSync extends EventEmitter {
 
   /** Attempt to flush all queued events to the cloud. */
   async flush(): Promise<{ sent: number; failed: number; remaining: number }> {
+    if (this.pendingFlush) return this.pendingFlush;
+    this.pendingFlush = this.flushBatch();
+    try {
+      return await this.pendingFlush;
+    } finally {
+      this.pendingFlush = null;
+    }
+  }
+
+  private async flushBatch(): Promise<{ sent: number; failed: number; remaining: number }> {
     if (this.queue.length === 0) return { sent: 0, failed: 0, remaining: 0 };
 
     const batch = [...this.queue];
@@ -166,7 +176,8 @@ export class EdgeCloudSync extends EventEmitter {
         events: batch,
       });
       sent = batch.length;
-      this.queue = [];
+      const acknowledged = new Set(batch.map((event) => event.id));
+      this.queue = this.queue.filter((event) => !acknowledged.has(event.id));
       this.persistQueue();
       this.onConnected();
     } catch {

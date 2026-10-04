@@ -1,0 +1,68 @@
+{
+  "name": "@agentium/harness",
+  "version": "3.2.0",
+  "description": "Composable harness developer kit for Agentium tools, context, middleware and presets",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentiumOS/agentium.git",
+    "directory": "packages/harness"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "harness",
+    "tools",
+    "context",
+    "middleware"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js",
+      "require": "./dist/testing.cjs",
+      "default": "./dist/testing.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false",
+    "dev": "tsdown --config ../../tsdown.config.ts --watch",
+    "prepublishOnly": "npm run build",
+    "test:package": "cd ../.. && AGENTIUM_TEST_PACKAGES=1 vitest run packages/harness/src/__tests__/package-consumption.test.ts"
+  },
+  "peerDependencies": {
+    "@agentium/core": "^3.2.0"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.1",
+    "typescript": "^5.6.0",
+    "tsdown": "0.23.0"
+  },
+  "homepage": "https://agentium.in",
+  "bugs": {
+    "url": "https://github.com/agentiumOS/agentium/issues"
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": "^22.18.0 || ^24.11.0"
+  }
+}
