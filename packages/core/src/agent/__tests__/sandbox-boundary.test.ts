@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { access, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,5 +151,20 @@ describe("SandboxAgent execution boundary", () => {
     const agent = sandbox({ backend: "remote", remote });
     await agent.start();
     await expect(agent.snapshot()).rejects.toThrow("provider-specific");
+  });
+  it("signals each local process group only once during close", async () => {
+    const agent = sandbox();
+    await agent.start();
+    const spawned = vi.mocked(spawn);
+    const previousCalls = spawned.mock.calls.length;
+    const kill = vi.spyOn(process, "kill");
+    try {
+      const running = agent.run("setInterval(() => {}, 1000)");
+      await vi.waitFor(() => expect(spawned).toHaveBeenCalledTimes(previousCalls + 1));
+      await Promise.all([agent.close(), expect(running).resolves.toMatchObject({ cancelled: true })]);
+      expect(kill).toHaveBeenCalledTimes(1);
+    } finally {
+      kill.mockRestore();
+    }
   });
 });

@@ -194,13 +194,17 @@ export class SandboxAgent {
       let cancelled = false;
       let outputTruncated = false;
       let failure: Error | undefined;
+      let terminationRequested = false;
       const kill = () => {
-        if (child.pid)
-          try {
-            process.kill(-child.pid, "SIGKILL");
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") failure = error as Error;
-          }
+        if (terminationRequested || !child.pid) return;
+        // Shutdown paths can overlap before close is emitted. Signal the owned
+        // process group once, then wait for its exit and output pipes to settle.
+        terminationRequested = true;
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") failure = error as Error;
+        }
       };
       const stop = () => {
         cancelled = true;
