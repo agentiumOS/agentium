@@ -1,6 +1,6 @@
 {
   "name": "@agentium/browser",
-  "version": "3.2.0",
+  "version": "4.0.0",
   "description": "Browser automation agent for Agentium using Playwright",
   "license": "MIT",
   "publishConfig": {
@@ -49,7 +49,7 @@
     "tsdown": "0.23.0"
   },
   "peerDependencies": {
-    "@agentium/core": "^3.2.0",
+    "@agentium/core": "^4.0.0",
     "playwright": ">=1.40.0"
   },
   "peerDependenciesMeta": {

@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased — next breaking release
+## [4.0.0] - 2026-10-04
 
-This working tree contains intentional API removals and must not be published as a compatible patch/minor release. Package version numbers have not been changed or released.
+All ten packages, including the new `@agentium/harness`, share version 4.0.0. This major release includes intentional API removals; follow the package migration guides before upgrading from 3.x.
 
 - Harness definitions, composition, runtime, policies, controllers and drivers now live in `@agentium/harness`. Core exposes only a neutral `ExecutionServices` integration contract.
 - Removed `Agent.deep()`, `legacyDeep()`, Agent's `harness`/`harnessOptions`/`replaceTools` configuration and `harnessDescription`. Use an explicit definition and `HarnessRuntime` with `agentDriver`; the package README contains a tested migration.

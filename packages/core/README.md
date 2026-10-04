@@ -42,7 +42,7 @@ console.log(result.text);
 
 Use `HarnessRuntime({ definition, driver: agentDriver(config), ... })` for a harness-owned Agent, or pass an already configured Agent to borrow it. Agent-specific definition defaults apply only to the configuration form. Core's neutral `ExecutionServices` port supplies model/tool operations, authorization, cancellation and owned work; it contains no harness definitions, controllers or manifests. Application callers normally let a driver supply that port.
 
-`Agent.deep()`, `AgentConfig.harness`, `harnessOptions`, `replaceTools` and `harnessDescription` were removed for the next breaking release. Explicit workspace configuration requires `{path, mode: "read" | "write"}`. Ordinary Agent options remain available; the [harness migration guide](../harness/README.md) shows the removed deep preset's behaviors as explicit choices. Stored conversation readers and public Zod 3 tool schemas remain supported.
+`Agent.deep()`, `AgentConfig.harness`, `harnessOptions`, `replaceTools` and `harnessDescription` were removed in 4.0.0. Explicit workspace configuration requires `{path, mode: "read" | "write"}`. Ordinary Agent options remain available; the [harness migration guide](../harness/README.md) shows the removed deep preset's behaviors as explicit choices. Stored conversation readers and public Zod 3 tool schemas remain supported.
 
 Borrowed approval dispatchers stay open when an Agent closes. `Agent.close({closeStorage:false})` releases Agent-owned resources while leaving a supplied storage client with its host; harness-owned Agent drivers use this mode. Ordinary `close()` retains its existing storage-close behavior.
 
