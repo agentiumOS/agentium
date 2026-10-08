@@ -17,6 +17,7 @@ const DEFAULT_CONFIG: CircuitBreakerConfig = {
 
 export function defaultClassifyError(error: unknown): ErrorClassification {
   if (error && typeof error === "object") {
+    if ("retryable" in error && error.retryable === false) return "fatal";
     const status = (error as any).status ?? (error as any).statusCode;
     if (status === 401 || status === 403 || status === 404) return "cascade";
     if (status === 429 || (status >= 500 && status < 600)) return "retry";

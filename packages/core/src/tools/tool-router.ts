@@ -1,3 +1,4 @@
+import { meteredGenerateFor } from "../cost/accounting.js";
 import type { Logger } from "../logger/logger.js";
 import type { ModelProvider } from "../models/provider.js";
 import { countTokens } from "../utils/token-counter.js";
@@ -45,7 +46,9 @@ export class ToolRouter {
     this.logger?.debug(`[ToolRouter] Tool index size: ${toolIndex.length} chars (~${countTokens(toolIndex)} tokens)`);
 
     try {
-      const response = await this.config.model.generate(
+      const response = await meteredGenerateFor(
+        "tool-selection",
+        this.config.model,
         [
           {
             role: "system",

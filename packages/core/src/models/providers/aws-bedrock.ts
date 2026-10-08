@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { captureRetryFailure } from "../../cost/context.js";
 import type { ModelProvider } from "../provider.js";
 import {
   type ChatMessage,
@@ -6,10 +7,10 @@ import {
   type ModelConfig,
   type ModelResponse,
   type StreamChunk,
-  type TokenUsage,
   type ToolCall,
   type ToolDefinition,
 } from "../types.js";
+import { providerTokenUsage, safeResponseContext } from "../usage-normalizers.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -31,10 +32,12 @@ export class AwsBedrockProvider implements ModelProvider {
   readonly providerId = "aws-bedrock";
   readonly modelId: string;
   private client: any;
+  private readonly region: string;
   private Cmds: any;
 
   constructor(modelId: string, config?: AwsBedrockConfig) {
     this.modelId = modelId;
+    this.region = config?.region ?? process.env.AWS_REGION ?? "us-east-1";
     try {
       const mod = _require("@aws-sdk/client-bedrock-runtime");
       this.Cmds = mod;
@@ -77,6 +80,7 @@ export class AwsBedrockProvider implements ModelProvider {
           err?.code === "ECONNRESET" ||
           err?.code === "ETIMEDOUT";
         if (!isRetryable || attempt === retries) throw err;
+        await captureRetryFailure(err);
         const delay = Math.min(1000 * 2 ** attempt + Math.random() * 500, 10000);
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -92,6 +96,7 @@ export class AwsBedrockProvider implements ModelProvider {
 
     const input: Record<string, unknown> = {
       modelId: this.modelId,
+      region: this.region,
       messages: converseMessages,
     };
 
@@ -125,6 +130,7 @@ export class AwsBedrockProvider implements ModelProvider {
 
     const input: Record<string, unknown> = {
       modelId: this.modelId,
+      region: this.region,
       messages: converseMessages,
     };
 
@@ -150,6 +156,8 @@ export class AwsBedrockProvider implements ModelProvider {
 
     let currentToolId = "";
     let currentToolName = "";
+    let finishReason = "stop";
+    let sawUsage = false;
 
     for await (const event of response.stream ?? []) {
       if (event.contentBlockStart?.start?.toolUse) {
@@ -170,22 +178,20 @@ export class AwsBedrockProvider implements ModelProvider {
         currentToolId = "";
       } else if (event.messageStop) {
         const reason = event.messageStop.stopReason;
-        let finishReason: string = "stop";
+        finishReason = "stop";
         if (reason === "tool_use") finishReason = "tool_calls";
         else if (reason === "max_tokens") finishReason = "length";
         else if (reason === "end_turn") finishReason = "stop";
-        yield { type: "finish", finishReason, usage: undefined };
       } else if (event.metadata?.usage) {
-        const u = event.metadata.usage;
-        const usage: TokenUsage = {
-          promptTokens: u.inputTokens ?? 0,
-          completionTokens: u.outputTokens ?? 0,
-          totalTokens: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
-          providerMetrics: { ...u, ...event.metadata },
-        };
-        yield { type: "finish", finishReason: "stop", usage };
+        const usage = providerTokenUsage(this.providerId, "converse", event.metadata.usage, {
+          modelId: this.modelId,
+          region: this.region,
+        });
+        sawUsage = true;
+        yield { type: "finish", finishReason, usage };
       }
     }
+    if (!sawUsage) yield { type: "finish", finishReason };
   }
 
   private toConverseMessages(messages: ChatMessage[]): {
@@ -242,6 +248,11 @@ export class AwsBedrockProvider implements ModelProvider {
   }
 
   private normalizeResponse(response: any): ModelResponse {
+    const usage = providerTokenUsage(this.providerId, "converse", response.usage, {
+      modelId: this.modelId,
+      region: this.region,
+      ...safeResponseContext(response),
+    });
     const output = response.output?.message;
     const toolCalls: ToolCall[] = [];
     let textContent = "";
@@ -256,13 +267,6 @@ export class AwsBedrockProvider implements ModelProvider {
         });
       }
     }
-
-    const usage: TokenUsage = {
-      promptTokens: response.usage?.inputTokens ?? 0,
-      completionTokens: response.usage?.outputTokens ?? 0,
-      totalTokens: (response.usage?.inputTokens ?? 0) + (response.usage?.outputTokens ?? 0),
-      providerMetrics: response.usage ? { ...response.usage } : undefined,
-    };
 
     let finishReason: ModelResponse["finishReason"] = "stop";
     if (response.stopReason === "tool_use") finishReason = "tool_calls";

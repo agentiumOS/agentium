@@ -18,6 +18,7 @@ export function usage(value: any) {
     completionTokens: number(value?.completionTokens),
     reasoningTokens: number(value?.reasoningTokens),
     cachedTokens: number(value?.cachedTokens),
+    cacheWriteTokens: number(value?.cacheWriteTokens),
     audioInputTokens: number(value?.audioInputTokens),
     audioOutputTokens: number(value?.audioOutputTokens),
   };
@@ -69,11 +70,16 @@ export class Accounting {
   };
   totals = {
     total_cost_usd: 0,
+    known_attempt_cost_usd: 0,
+    assessed_attempts: 0,
+    provisional_attempts: 0,
     total_tokens: 0,
     prompt_tokens: 0,
     completion_tokens: 0,
     reasoning_tokens: 0,
     cached_tokens: 0,
+    cache_write_tokens: 0,
+    unpriced_attempts: 0,
     audio_input_tokens: 0,
     audio_output_tokens: 0,
   };
@@ -82,6 +88,10 @@ export class Accounting {
   private active = new Map<string, Active>();
   private tools = new Map<string, { runId: string; name: string; callId?: string; start: number }>();
   private sequence = 0;
+  private assessed = new Map<
+    string,
+    { revision: number; unpriced: boolean; provisional: boolean; knownCost: number }
+  >();
   dropped = 0;
   private bounds: Required<AccountingOptions>;
   constructor(options: AccountingOptions = {}) {
@@ -196,6 +206,26 @@ export class Accounting {
         this.histogram(this.latencies, now - candidates[0][1].start);
         this.tools.delete(candidates[0][0]);
       }
+    } else if (event === "cost.assessed") {
+      // Own-leaf canonical subtotal is separate from the legacy complete-run USD projection.
+      const assessment = data.assessment;
+      if (assessment?.targetKind !== "attempt" || typeof assessment.targetId !== "string") return;
+      const key = JSON.stringify([assessment.tenantId, assessment.targetId]);
+      const previous = this.assessed.get(key);
+      const revision = number(assessment.usageRevision);
+      if (previous && revision <= previous.revision) return;
+      if (!previous && this.assessed.size >= this.bounds.maxRecords * 10) {
+        this.dropped++;
+        return;
+      }
+      const unpriced = assessment.total === null;
+      const provisional = assessment.finality !== "final";
+      const knownCost = assessment.currency === "USD" ? number(Number(assessment.knownSubtotal)) : 0;
+      this.totals.unpriced_attempts += Number(unpriced) - Number(previous?.unpriced ?? false);
+      this.totals.provisional_attempts += Number(provisional) - Number(previous?.provisional ?? false);
+      this.totals.known_attempt_cost_usd += knownCost - (previous?.knownCost ?? 0);
+      if (!previous) this.totals.assessed_attempts++;
+      this.assessed.set(key, { revision, unpriced, provisional, knownCost });
     } else if (event === "cost.tracked") {
       const value = number(data.cost ?? data.usage?.cost);
       const active = this.active.get(id);
@@ -229,6 +259,7 @@ export class Accounting {
     this.totals.completion_tokens += sign * value.completionTokens;
     this.totals.reasoning_tokens += sign * value.reasoningTokens;
     this.totals.cached_tokens += sign * value.cachedTokens;
+    this.totals.cache_write_tokens += sign * value.cacheWriteTokens;
     this.totals.audio_input_tokens += sign * value.audioInputTokens;
     this.totals.audio_output_tokens += sign * value.audioOutputTokens;
   }

@@ -1,3 +1,4 @@
+import { meteredGenerate, meteredStream } from "../cost/accounting.js";
 import type { ModelProvider } from "./provider.js";
 import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefinition } from "./types.js";
 import { getTextContent } from "./types.js";
@@ -74,6 +75,7 @@ export function classifyComplexity(
 const MAX_OUTCOME_RECORDS = 1000;
 
 export class ModelRouter implements ModelProvider {
+  readonly accountingRole = "composite";
   readonly providerId = "router";
   readonly modelId: string;
   private tiers: ModelTier[];
@@ -135,7 +137,7 @@ export class ModelRouter implements ModelProvider {
     const { tierIndex, model } = this.selectTier(messages, options);
 
     try {
-      const response = await model.generate(messages, options);
+      const response = await meteredGenerate(model, messages, options);
       this.trackOutcome(messages, tierIndex, true);
       return response;
     } catch (error) {
@@ -151,7 +153,7 @@ export class ModelRouter implements ModelProvider {
     const { tierIndex, model } = this.selectTier(messages, options);
 
     try {
-      yield* model.stream(messages, options);
+      yield* meteredStream(model, messages, options);
       this.trackOutcome(messages, tierIndex, true);
     } catch (error) {
       this.trackOutcome(messages, tierIndex, false);

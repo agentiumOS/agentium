@@ -1,3 +1,4 @@
+import { meteredGenerateFor } from "../cost/accounting.js";
 import type { ModelProvider } from "../models/provider.js";
 import type { StorageDriver } from "../storage/driver.js";
 import type { CorrectionStore } from "./stores/correction-store.js";
@@ -153,7 +154,7 @@ export class Curator {
       const factsStr = facts.map((f) => `[${f.id}] ${f.fact}`).join("\n");
       const prompt = CONSOLIDATION_PROMPT.replace("{facts}", factsStr);
 
-      const response = await options.model.generate([{ role: "user", content: prompt }], {
+      const response = await meteredGenerateFor("memory-curation", options.model, [{ role: "user", content: prompt }], {
         temperature: 0,
         maxTokens: 800,
       });

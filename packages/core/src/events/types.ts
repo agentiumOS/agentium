@@ -78,7 +78,12 @@ export type AgentEventMap = {
     usage?: TokenUsage;
   };
   "run.complete": { runId: string; output: RunOutput };
-  "run.error": { runId: string; error: Error; status?: "failed" | "cancelled" };
+  "run.error": {
+    runId: string;
+    error: Error;
+    status?: "failed" | "cancelled";
+    costs?: import("../cost/accounting-types.js").RunCostSnapshot;
+  };
   "run.stream.chunk": { runId: string; chunk: string };
   "tool.call": { runId: string; toolCallId?: string; toolName: string; args: unknown };
   "tool.result": {
@@ -144,10 +149,24 @@ export type AgentEventMap = {
   "handoff.transfer": { runId: string; fromAgent: string; toAgent: string; reason: string };
   "handoff.complete": { runId: string; chain: string[]; finalAgent: string };
 
+  "usage.recorded": {
+    runId?: string;
+    attemptId: string;
+    operationId: string;
+    usageRevision: number;
+    usageStatus: import("../cost/accounting-types.js").UsageStatus;
+  };
+  "cost.assessed": { runId?: string; assessment: import("../cost/accounting-types.js").CostAssessment };
+  "budget.checked": {
+    runId?: string;
+    attemptId: string;
+    decision: import("../cost/accounting-types.js").BudgetDecision;
+  };
+  "accounting.error": { runId?: string; attemptId: string; error: unknown };
   "cost.tracked": { runId: string; agentName: string; modelId: string; usage: TokenUsage; cost?: number };
   "cache.hit": { agentName: string; input: string; cachedId: string };
   "cache.miss": { agentName: string; input: string };
-  "run.cancelled": { runId: string; agentName: string };
+  "run.cancelled": { runId: string; agentName: string; costs?: import("../cost/accounting-types.js").RunCostSnapshot };
 
   "subagent.start": { runId: string; parentRunId: string; agentName: string; task: string };
   "subagent.complete": { runId: string; parentRunId: string; agentName: string; text: string };

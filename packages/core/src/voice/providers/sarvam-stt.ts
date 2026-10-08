@@ -6,6 +6,7 @@ import {
   type TranscriptEvent,
   validateAudioFrame,
 } from "../speech-types.js";
+import { beginSpeechAccounting } from "./speech-accounting.js";
 import { defaultSpeechSocketFactory, SpeechWire, type SpeechWireOptions, speechKey } from "./speech-socket.js";
 export const SARVAM_LANGUAGES = [
   "auto",
@@ -68,11 +69,21 @@ export class SarvamRecognizer implements SpeechRecognizer {
       endpointing: "manual",
       stream_type: "balanced",
     });
+    const accounting = await beginSpeechAccounting(
+      this.options,
+      "sarvam",
+      this.options.model ?? "saaras:v3",
+      "speech.transcription",
+      signal,
+    );
     const socket = await (this.options.socketFactory ?? defaultSpeechSocketFactory)(
       `wss://api.sarvam.ai/speech-to-text-realtime/ws?${query}`,
       { "Api-Subscription-Key": speechKey(this.options, "SARVAM_API_KEY") },
       signal,
-    );
+    ).catch(async (error) => {
+      await accounting.fail();
+      throw error;
+    });
     let segment = 0;
     let started = false;
     let lastSequence = -1;
@@ -99,7 +110,7 @@ export class SarvamRecognizer implements SpeechRecognizer {
         }
         if (event.event === "session.end") {
           if (typeof event.audio_duration_s === "number")
-            this.options.onUsage?.({ provider: "sarvam", unit: "seconds", quantity: event.audio_duration_s });
+            accounting.record({ provider: "sarvam", unit: "seconds", quantity: event.audio_duration_s });
           wire.finish();
         }
         if (event.event === "error") throw new Error(`Sarvam STT service error: ${event.code ?? "unknown"}`);
@@ -122,7 +133,13 @@ export class SarvamRecognizer implements SpeechRecognizer {
         wire.send({ event: "flush" });
         started = false;
       },
-      close: async () => wire.close(),
+      close: async () => {
+        try {
+          wire.close();
+        } finally {
+          await accounting.close();
+        }
+      },
     };
   }
 }

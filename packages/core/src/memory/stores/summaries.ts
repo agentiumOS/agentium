@@ -1,3 +1,4 @@
+import { meteredGenerateFor } from "../../cost/accounting.js";
 import type { ModelProvider } from "../../models/provider.js";
 import { type ChatMessage, getTextContent } from "../../models/types.js";
 import type { StorageDriver } from "../../storage/driver.js";
@@ -41,7 +42,7 @@ export class Summaries {
     if (model) {
       try {
         const prompt = SUMMARIZE_PROMPT.replace("{conversation}", textParts.join("\n"));
-        const response = await model.generate([{ role: "user", content: prompt }], {
+        const response = await meteredGenerateFor("memory-summaries", model, [{ role: "user", content: prompt }], {
           temperature: 0,
           maxTokens: 300,
         });

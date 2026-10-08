@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { captureRetryFailure } from "../../cost/context.js";
 import type { ModelProvider } from "../provider.js";
 import {
   applyGoogleRequestExtras,
@@ -14,10 +15,10 @@ import {
   type ModelConfig,
   type ModelResponse,
   type StreamChunk,
-  type TokenUsage,
   type ToolCall,
   type ToolDefinition,
 } from "../types.js";
+import { providerTokenUsage, safeResponseContext } from "../usage-normalizers.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -92,6 +93,7 @@ export class VertexAIProvider implements ModelProvider {
           err?.code === "ETIMEDOUT" ||
           err?.message?.includes("rate limit");
         if (!isRetryable || attempt === retries) throw err;
+        await captureRetryFailure(err);
         const delay = Math.min(1000 * 2 ** attempt + Math.random() * 500, 10000);
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -145,7 +147,7 @@ export class VertexAIProvider implements ModelProvider {
     const client = this.getClient();
     const response = await this.withRetry(() => client.models.generateContent(params));
 
-    return this.normalizeResponse(response);
+    return this.normalizeResponse(response, options);
   }
 
   async *stream(
@@ -181,10 +183,32 @@ export class VertexAIProvider implements ModelProvider {
 
     let toolCallCounter = 0;
     let replayParts: unknown[] = [];
+    let lastFinishReason = "stop";
 
     for await (const chunk of streamResult) {
+      if (chunk.usageMetadata)
+        providerTokenUsage(this.providerId, "generate-content", chunk.usageMetadata, {
+          modelId: this.modelId,
+          region: this.location,
+          ...safeResponseContext(chunk),
+          ...(options?.providerOptions?.googleSearch ? { dimensions: { hostedTools: "google-search" } } : {}),
+        });
       const candidate = chunk.candidates?.[0];
-      if (!candidate?.content?.parts) continue;
+      if (!candidate?.content?.parts) {
+        if (chunk.usageMetadata)
+          yield {
+            type: "finish",
+            finishReason: lastFinishReason,
+            usage: providerTokenUsage(this.providerId, "generate-content", chunk.usageMetadata, {
+              modelId: this.modelId,
+              region: this.location,
+              ...safeResponseContext(chunk),
+              ...(options?.providerOptions?.googleSearch ? { dimensions: { hostedTools: "google-search" } } : {}),
+            }),
+            providerExtras: extrasFromGoogleParts(replayParts),
+          };
+        continue;
+      }
 
       if (candidate.finishReason && candidate.content.parts.length) {
         replayParts = candidate.content.parts;
@@ -223,19 +247,18 @@ export class VertexAIProvider implements ModelProvider {
         const hasToolCalls = candidate.content?.parts?.some((p: any) => p.functionCall);
         if (hasToolCalls) finishReason = "tool_calls";
 
+        lastFinishReason = finishReason;
         const cum = chunk.usageMetadata;
         yield {
           type: "finish",
           finishReason,
           usage: cum
-            ? {
-                promptTokens: cum.promptTokenCount ?? 0,
-                completionTokens: cum.candidatesTokenCount ?? 0,
-                totalTokens: cum.totalTokenCount ?? 0,
-                ...(cum.thoughtsTokenCount > 0 ? { reasoningTokens: cum.thoughtsTokenCount } : {}),
-                ...(cum.cachedContentTokenCount > 0 ? { cachedTokens: cum.cachedContentTokenCount } : {}),
-                providerMetrics: this.extractProviderMetrics(cum),
-              }
+            ? providerTokenUsage(this.providerId, "generate-content", cum, {
+                modelId: this.modelId,
+                region: this.location,
+                ...safeResponseContext(chunk),
+                ...(options?.providerOptions?.googleSearch ? { dimensions: { hostedTools: "google-search" } } : {}),
+              })
             : undefined,
           providerExtras: extrasFromGoogleParts(replayParts),
         };
@@ -379,22 +402,13 @@ export class VertexAIProvider implements ModelProvider {
     return cleaned;
   }
 
-  private extractProviderMetrics(um: any): Record<string, unknown> {
-    const m: Record<string, unknown> = {};
-    if (um.promptTokenCount != null) m.prompt_token_count = um.promptTokenCount;
-    if (um.candidatesTokenCount != null) m.candidates_token_count = um.candidatesTokenCount;
-    if (um.thoughtsTokenCount != null) m.thoughts_token_count = um.thoughtsTokenCount;
-    if (um.totalTokenCount != null) m.total_token_count = um.totalTokenCount;
-    if (um.cachedContentTokenCount != null) m.cached_content_token_count = um.cachedContentTokenCount;
-    if (um.toolUsePromptTokenCount != null) m.tool_use_prompt_token_count = um.toolUsePromptTokenCount;
-    if (um.promptTokensDetails) m.prompt_tokens_details = um.promptTokensDetails;
-    if (um.candidatesTokensDetails) m.candidates_tokens_details = um.candidatesTokensDetails;
-    if (um.cacheTokensDetails) m.cache_tokens_details = um.cacheTokensDetails;
-    if (um.trafficType ?? um.traffic_type) m.traffic_type = um.trafficType ?? um.traffic_type;
-    return m;
-  }
-
-  private normalizeResponse(response: any): ModelResponse & { thinking?: string } {
+  private normalizeResponse(response: any, options?: ModelConfig): ModelResponse & { thinking?: string } {
+    const usage = providerTokenUsage(this.providerId, "generate-content", response.usageMetadata, {
+      modelId: this.modelId,
+      region: this.location,
+      ...safeResponseContext(response),
+      ...(options?.providerOptions?.googleSearch ? { dimensions: { hostedTools: "google-search" } } : {}),
+    });
     const candidate = response.candidates?.[0];
     const parts = candidate?.content?.parts ?? [];
 
@@ -417,18 +431,6 @@ export class VertexAIProvider implements ModelProvider {
         });
       }
     }
-
-    const um = response.usageMetadata;
-    const thinkingTokens = um?.thoughtsTokenCount ?? 0;
-    const cachedTokens = um?.cachedContentTokenCount ?? 0;
-    const usage: TokenUsage = {
-      promptTokens: um?.promptTokenCount ?? 0,
-      completionTokens: um?.candidatesTokenCount ?? 0,
-      totalTokens: um?.totalTokenCount ?? 0,
-      ...(thinkingTokens > 0 ? { reasoningTokens: thinkingTokens } : {}),
-      ...(cachedTokens > 0 ? { cachedTokens } : {}),
-      providerMetrics: um ? this.extractProviderMetrics(um) : undefined,
-    };
 
     let finishReason: ModelResponse["finishReason"] = "stop";
     if (toolCalls.length > 0) finishReason = "tool_calls";

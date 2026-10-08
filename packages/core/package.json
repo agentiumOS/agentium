@@ -1,6 +1,6 @@
 {
   "name": "@agentium/core",
-  "version": "4.1.0",
+  "version": "4.5.0",
   "description": "Core framework for building AI agents with tools, memory, and multi-model support",
   "license": "MIT",
   "publishConfig": {
@@ -31,7 +31,7 @@
         "default": "./dist/index.js"
       },
       "require": {
-        "types": "./dist/index.d.ts",
+        "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
     },
@@ -41,7 +41,7 @@
         "default": "./dist/toolkits/index.js"
       },
       "require": {
-        "types": "./dist/toolkits/index.d.ts",
+        "types": "./dist/toolkits/index.d.cts",
         "default": "./dist/toolkits/index.cjs"
       }
     },
@@ -51,7 +51,7 @@
         "default": "./dist/toolkits/*.js"
       },
       "require": {
-        "types": "./dist/toolkits/*.d.ts",
+        "types": "./dist/toolkits/*.d.cts",
         "default": "./dist/toolkits/*.cjs"
       }
     },
@@ -62,7 +62,7 @@
         "default": "./dist/voice/index.js"
       },
       "require": {
-        "types": "./dist/voice/index.d.ts",
+        "types": "./dist/voice/index.d.cts",
         "default": "./dist/voice/index.cjs"
       }
     },
@@ -72,7 +72,7 @@
         "default": "./dist/telephony/index.js"
       },
       "require": {
-        "types": "./dist/telephony/index.d.ts",
+        "types": "./dist/telephony/index.d.cts",
         "default": "./dist/telephony/index.cjs"
       }
     }
@@ -82,7 +82,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false",
+    "build": "tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs",
     "dev": "tsdown --config ../../tsdown.config.ts --watch",
     "prepublishOnly": "npm run build"
   },

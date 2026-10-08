@@ -1,4 +1,7 @@
 import { createRequire } from "node:module";
+import { meteredOperation } from "../../cost/accounting.js";
+import type { AccountingContext } from "../../cost/context.js";
+import { normalizeOperationUsage } from "../../cost/operation-usage.js";
 import type { ContentPart } from "../../models/types.js";
 import type { EmbeddingInput, EmbeddingProvider } from "../types.js";
 import { fetchAsBase64 } from "./multimodal-utils.js";
@@ -6,6 +9,7 @@ import { fetchAsBase64 } from "./multimodal-utils.js";
 const _require = createRequire(import.meta.url);
 
 export interface GoogleEmbeddingConfig {
+  accounting?: AccountingContext;
   apiKey?: string;
   model?: string;
   dimensions?: number;
@@ -26,8 +30,10 @@ export class GoogleEmbedding implements EmbeddingProvider {
   readonly supportsMultimodal: boolean;
   private ai: any;
   private model: string;
+  private accounting?: AccountingContext;
 
   constructor(config: GoogleEmbeddingConfig = {}) {
+    this.accounting = config.accounting;
     this.model = config.model ?? "text-embedding-004";
     this.dimensions = config.dimensions ?? MODEL_DIMENSIONS[this.model] ?? 768;
     this.supportsMultimodal = this.model.startsWith("gemini-embedding-");
@@ -48,7 +54,24 @@ export class GoogleEmbedding implements EmbeddingProvider {
   private async withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await fn();
+        return await meteredOperation(
+          {
+            accounting: this.accounting,
+            context: {
+              providerId: "google",
+              billingProviderId: "google",
+              modelId: this.model,
+              api: "embeddings",
+              occurredAt: new Date().toISOString(),
+            },
+            attemptVisibility: "opaque",
+          },
+          async (capture) => {
+            const result = await fn();
+            capture(normalizeOperationUsage("google", "embeddings", result));
+            return result;
+          },
+        );
       } catch (err: any) {
         const status = err?.status ?? err?.statusCode;
         const isRetryable = status === 429 || status === 500 || status === 502 || status === 503;

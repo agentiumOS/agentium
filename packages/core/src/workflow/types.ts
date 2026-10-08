@@ -28,6 +28,8 @@ export interface ParallelStep<TState> {
 }
 
 export interface WorkflowConfig<TState extends Record<string, unknown> = Record<string, unknown>> {
+  cost?: boolean | import("../cost/types.js").CostTrackerConfig;
+  costTracker?: import("../cost/cost-tracker.js").CostTracker;
   name: string;
   initialState: TState;
   steps: StepDef<TState>[];
@@ -44,6 +46,7 @@ export interface WorkflowConfig<TState extends Record<string, unknown> = Record<
 }
 
 export interface WorkflowResult<TState> {
+  costs?: import("../cost/accounting-types.js").RunCostSnapshot;
   state: TState;
   stepResults: StepResult[];
 }

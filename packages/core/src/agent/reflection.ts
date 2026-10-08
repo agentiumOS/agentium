@@ -1,3 +1,4 @@
+import { meteredGenerateFor } from "../cost/accounting.js";
 import type { ModelProvider } from "../models/provider.js";
 import type { ChatMessage, ToolCall } from "../models/types.js";
 import type { RunOutput } from "./types.js";
@@ -76,7 +77,7 @@ export class ReflectionManager {
     ];
 
     try {
-      const response = await this.critic.generate(critiqueMessages);
+      const response = await meteredGenerateFor("reflection", this.critic, critiqueMessages);
       const text =
         typeof response.message.content === "string"
           ? response.message.content
@@ -112,7 +113,7 @@ export class ReflectionManager {
     ];
 
     try {
-      const response = await this.critic.generate(critiqueMessages);
+      const response = await meteredGenerateFor("reflection", this.critic, critiqueMessages);
       const text =
         typeof response.message.content === "string"
           ? response.message.content
@@ -193,7 +194,7 @@ export class ReflectionManager {
     ];
 
     try {
-      const response = await this.critic.generate(messages);
+      const response = await meteredGenerateFor("reflection", this.critic, messages);
       const text = typeof response.message.content === "string" ? response.message.content : "";
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) return { lesson: error.message, category: "external" };

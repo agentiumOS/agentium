@@ -126,7 +126,10 @@ export type RealtimeEventMap = {
     generationId?: string;
   };
   tool_call: RealtimeToolCall;
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+  usage: import("../models/types.js").TokenUsage & {
+    responseId?: string;
+    executionStatus?: import("../cost/accounting-types.js").ExecutionStatus;
+  };
   interrupted: {};
   error: { error: Error };
   connected: {};

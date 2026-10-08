@@ -1,6 +1,7 @@
 import { randomUUID as uuidv4 } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { RunContext } from "../agent/run-context.js";
+import { AccountingBudgetError, recordObservedUsage } from "../cost/accounting.js";
 import { EventBus } from "../events/event-bus.js";
 import { Logger } from "../logger/logger.js";
 import { MemoryManager } from "../memory/memory-manager.js";
@@ -324,6 +325,16 @@ export class VoiceAgent {
     };
 
     opts?.signal?.throwIfAborted();
+    const accountingRunId = uuidv4();
+    if (this.config.costTracker) {
+      const decision = await this.config.costTracker.checkBudget({
+        tenantId: opts?.tenantId,
+        runId: accountingRunId,
+        sessionId,
+        userId,
+      });
+      if (decision.status === "blocked") throw new AccountingBudgetError(decision.reason);
+    }
     this.logger.info("Connecting to realtime provider...");
     const connection = this.config.recovery
       ? await RecoveringRealtimeConnection.connect(this.config.provider, sessionConfig, this.config.recovery)
@@ -337,6 +348,7 @@ export class VoiceAgent {
 
     const controller = new AbortController();
     const ctx = new RunContext({
+      runId: accountingRunId,
       sessionId,
       userId,
       tenantId,
@@ -601,14 +613,30 @@ export class VoiceAgent {
     connection.on("usage", (data) => {
       session.emit("usage", data);
       if (this.config.costTracker) {
-        this.config.costTracker.track({
-          runId: ctx.runId,
-          agentName: this.name,
-          modelId: this.config.provider.modelId,
-          usage: data,
-          sessionId: ctx.sessionId,
-          userId: ctx.userId,
-        });
+        void recordObservedUsage(
+          {
+            tracker: this.config.costTracker,
+            runId: ctx.runId,
+            rootRunId: ctx.runId,
+            tenantId: ctx.tenantId,
+            sessionId: ctx.sessionId,
+            userId: ctx.userId,
+            agentName: this.name,
+            eventBus: this.eventBus,
+          },
+          {
+            providerId: this.config.provider.providerId,
+            billingProviderId: this.config.provider.providerId,
+            modelId: this.config.provider.modelId,
+            api: "realtime",
+            occurredAt: new Date().toISOString(),
+          },
+          data,
+          {
+            attemptId: data.responseId ? `${ctx.runId}:${data.responseId}` : undefined,
+            executionStatus: data.executionStatus,
+          },
+        );
       }
       this.logger.debug(`Usage: ${data.totalTokens} tokens`);
     });

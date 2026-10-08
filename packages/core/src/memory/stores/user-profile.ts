@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { meteredGenerateFor } from "../../cost/accounting.js";
 import type { ModelProvider } from "../../models/provider.js";
 import type { ChatMessage } from "../../models/types.js";
 import type { StorageDriver } from "../../storage/driver.js";
@@ -200,7 +201,7 @@ export class UserProfile {
         .replace("{currentProfile}", currentStr)
         .replace("{conversation}", conversationStr);
 
-      const response = await model.generate([{ role: "user", content: prompt }], {
+      const response = await meteredGenerateFor("memory-user-profile", model, [{ role: "user", content: prompt }], {
         temperature: 0,
         maxTokens: 500,
       });

@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { captureRetryFailure } from "../../cost/context.js";
 import { generateOpenAIStyle, streamOpenAIStyle } from "../openai-api.js";
 import type { ModelProvider } from "../provider.js";
 import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefinition } from "../types.js";
@@ -75,6 +76,7 @@ export class OpenAIProvider implements ModelProvider {
           err?.code === "ETIMEDOUT" ||
           err?.message?.includes("rate limit");
         if (!isRetryable || attempt === retries) throw err;
+        await captureRetryFailure(err);
         const delay = Math.min(1000 * 2 ** attempt + Math.random() * 500, 10000);
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -92,7 +94,7 @@ export class OpenAIProvider implements ModelProvider {
       messages,
       options,
       this.withRetry.bind(this),
-      { maxTokensField: "max_completion_tokens" },
+      { maxTokensField: "max_completion_tokens", providerId: this.providerId },
     );
   }
 
@@ -106,7 +108,7 @@ export class OpenAIProvider implements ModelProvider {
       messages,
       options,
       this.withRetry.bind(this),
-      { maxTokensField: "max_completion_tokens" },
+      { maxTokensField: "max_completion_tokens", providerId: this.providerId },
     );
   }
 }

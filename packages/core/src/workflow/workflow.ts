@@ -1,6 +1,9 @@
 import { randomUUID as uuidv4 } from "node:crypto";
 import { RunContext } from "../agent/run-context.js";
 import type { RunOpts } from "../agent/types.js";
+import { getRunCostSnapshot } from "../cost/accounting.js";
+import { getAccountingContext, withAccountingContext } from "../cost/context.js";
+import { CostTracker } from "../cost/cost-tracker.js";
 import { EventBus } from "../events/event-bus.js";
 import { registry } from "../serve.js";
 import type { WorkflowCheckpoint } from "./checkpoints.js";
@@ -13,10 +16,18 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
   readonly eventBus: EventBus;
 
   private config: WorkflowConfig<TState>;
+  private readonly ownsCostTracker: boolean;
   private stepRunner: StepRunner<TState>;
 
   constructor(config: WorkflowConfig<TState>) {
-    this.config = config;
+    if (config.cost !== undefined && config.costTracker) throw new TypeError("Choose cost or costTracker, not both");
+    this.ownsCostTracker = !config.costTracker && Boolean(config.cost);
+    this.config = {
+      ...config,
+      costTracker:
+        config.costTracker ??
+        (config.cost ? new CostTracker(config.cost === true ? undefined : config.cost) : undefined),
+    };
     this.name = config.name;
     this.eventBus = config.eventBus ?? new EventBus();
     this.stepRunner = new StepRunner<TState>(config.retryPolicy);
@@ -24,6 +35,53 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
     if (config.register !== false) {
       registry.add(this);
     }
+  }
+
+  private async runInAccountingScope<T>(ctx: RunContext, operation: () => Promise<T>): Promise<T> {
+    const parent = getAccountingContext();
+    const tracker = parent?.tracker ?? this.config.costTracker;
+    if (!tracker) return operation();
+    const pendingId = `workflow-run:${ctx.runId}:${uuidv4()}`;
+    tracker.beginPendingAttempt(pendingId);
+    try {
+      return await withAccountingContext(
+        {
+          ...parent,
+          tracker,
+          runId: ctx.runId,
+          rootRunId: parent?.rootRunId ?? parent?.runId ?? ctx.runId,
+          parentRunId: parent?.runId,
+          tenantId: ctx.tenantId,
+          userId: ctx.userId,
+          sessionId: ctx.sessionId,
+          agentName: `workflow:${this.name}`,
+          eventBus: this.eventBus,
+          purpose: "workflow-step",
+        },
+        operation,
+      );
+    } finally {
+      tracker.endPendingAttempt(pendingId);
+    }
+  }
+
+  private async withCosts(result: WorkflowResult<TState>, ctx: RunContext): Promise<WorkflowResult<TState>> {
+    const parent = getAccountingContext();
+    const tracker = parent?.tracker ?? this.config.costTracker;
+    if (!tracker) return result;
+    return {
+      ...result,
+      costs: await getRunCostSnapshot({
+        ...parent,
+        tracker,
+        runId: ctx.runId,
+        tenantId: ctx.tenantId ?? parent?.tenantId,
+        eventBus: this.eventBus,
+      }),
+    };
+  }
+  async close(): Promise<void> {
+    if (this.ownsCostTracker) await this.config.costTracker?.close();
   }
 
   async run(opts?: RunOpts & { initialState?: Partial<TState> }): Promise<WorkflowResult<TState>> {
@@ -48,16 +106,11 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
     });
 
     try {
-      const { state, results } = await this.stepRunner.executeSteps(
-        this.config.steps,
-        { ...this.config.initialState, ...opts?.initialState },
-        ctx,
+      const { state, results } = await this.runInAccountingScope(ctx, () =>
+        this.stepRunner.executeSteps(this.config.steps, { ...this.config.initialState, ...opts?.initialState }, ctx),
       );
 
-      const workflowResult: WorkflowResult<TState> = {
-        state,
-        stepResults: results,
-      };
+      const workflowResult = await this.withCosts({ state, stepResults: results }, ctx);
 
       this.eventBus.emit("run.complete", {
         runId: ctx.runId,
@@ -65,6 +118,7 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
           text: JSON.stringify(state),
           toolCalls: [],
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          costs: workflowResult.costs,
         },
       });
 
@@ -108,6 +162,7 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
           text: JSON.stringify(result.state),
           toolCalls: [],
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          costs: result.costs,
         },
       });
       return { ...result, runId: ctx.runId };
@@ -127,7 +182,9 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
     const allResults: StepResult[] = [];
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
-      const { state: newState, results } = await this.stepRunner.executeSteps([step], state, ctx);
+      const { state: newState, results } = await this.runInAccountingScope(ctx, () =>
+        this.stepRunner.executeSteps([step], state, ctx),
+      );
       state = newState;
       allResults.push(...results);
       if (this.config.checkpointStore) {
@@ -144,7 +201,7 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
         await this.config.checkpointStore.save(cp);
       }
     }
-    return { state, stepResults: allResults };
+    return this.withCosts({ state, stepResults: allResults }, ctx);
   }
 
   /** List all checkpoints for a given runId. */

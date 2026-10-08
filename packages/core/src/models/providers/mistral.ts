@@ -9,10 +9,10 @@ import {
   type ModelConfig,
   type ModelResponse,
   type StreamChunk,
-  type TokenUsage,
   type ToolCall,
   type ToolDefinition,
 } from "../types.js";
+import { providerTokenUsage, safeResponseContext } from "../usage-normalizers.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -122,7 +122,20 @@ export class MistralProvider implements ModelProvider {
     for await (const event of stream) {
       const chunk = event.data ?? event;
       const choice = chunk.choices?.[0];
-      if (!choice) continue;
+      if (!choice) {
+        if (chunk.usage) {
+          yield {
+            type: "finish",
+            finishReason: finishReason ?? "stop",
+            usage: providerTokenUsage(this.providerId, "chat-completions", chunk.usage, {
+              modelId: this.modelId,
+              ...safeResponseContext(chunk),
+            }),
+          };
+          finishReason = null;
+        }
+        continue;
+      }
 
       const delta = choice.delta;
       if (delta?.content) yield { type: "text", text: delta.content };
@@ -151,12 +164,10 @@ export class MistralProvider implements ModelProvider {
           yield {
             type: "finish",
             finishReason: finishReason === "tool_calls" ? "tool_calls" : (finishReason ?? "stop"),
-            usage: {
-              promptTokens: chunk.usage.promptTokens ?? chunk.usage.prompt_tokens ?? 0,
-              completionTokens: chunk.usage.completionTokens ?? chunk.usage.completion_tokens ?? 0,
-              totalTokens: chunk.usage.totalTokens ?? chunk.usage.total_tokens ?? 0,
-              providerMetrics: { ...chunk.usage },
-            },
+            usage: providerTokenUsage(this.providerId, "chat-completions", chunk.usage, {
+              modelId: this.modelId,
+              ...safeResponseContext(chunk),
+            }),
           };
           finishReason = null;
         }
@@ -213,6 +224,10 @@ export class MistralProvider implements ModelProvider {
   }
 
   private normalizeNative(response: any): ModelResponse {
+    const usage = providerTokenUsage(this.providerId, "chat-completions", response.usage, {
+      modelId: this.modelId,
+      ...safeResponseContext(response),
+    });
     const choice = response.choices?.[0];
     const msg = choice?.message;
 
@@ -226,14 +241,6 @@ export class MistralProvider implements ModelProvider {
       }
       return { id: tc.id, name: fn.name, arguments: args };
     });
-
-    const u = response.usage;
-    const usage: TokenUsage = {
-      promptTokens: u?.promptTokens ?? u?.prompt_tokens ?? 0,
-      completionTokens: u?.completionTokens ?? u?.completion_tokens ?? 0,
-      totalTokens: u?.totalTokens ?? u?.total_tokens ?? 0,
-      providerMetrics: u ? { ...u } : undefined,
-    };
 
     const fr = choice?.finishReason ?? choice?.finish_reason;
     let finishReason: ModelResponse["finishReason"] = "stop";
@@ -258,13 +265,15 @@ export class MistralProvider implements ModelProvider {
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): Promise<ModelResponse> {
-    return generateOpenAIStyle(this.client, this.modelId, messages, options);
+    return generateOpenAIStyle(this.client, this.modelId, messages, options, undefined, {
+      providerId: this.providerId,
+    });
   }
 
   private async *streamOpenAI(
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): AsyncGenerator<StreamChunk> {
-    yield* streamOpenAIStyle(this.client, this.modelId, messages, options);
+    yield* streamOpenAIStyle(this.client, this.modelId, messages, options, undefined, { providerId: this.providerId });
   }
 }

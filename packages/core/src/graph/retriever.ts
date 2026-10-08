@@ -1,3 +1,4 @@
+import { meteredGenerateFor } from "../cost/accounting.js";
 import type { ModelProvider } from "../models/provider.js";
 import type { ChatMessage } from "../models/types.js";
 import type { CypherRecord, CypherStore } from "./cypher-store.js";
@@ -72,7 +73,7 @@ export class GraphRAGRetriever {
       { role: "user", content: userPrompt },
     ];
 
-    const response = await this.model.generate(messages);
+    const response = await meteredGenerateFor("graph-retrieval", this.model, messages);
     const respContent = response.message.content;
     const respText =
       typeof respContent === "string"

@@ -4,6 +4,12 @@ import type { DecisionInputMessage, DecisionInputPart } from "openai/resources/d
 import { type DecisionQuestion, parseDecisionQuestions, parseDecisionResponse } from "../decisions.js";
 import type { ModelProvider } from "../provider.js";
 import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefinition } from "../types.js";
+import {
+  endpointBillingContext,
+  ModelUsageError,
+  mergeResponseContext,
+  providerTokenUsage,
+} from "../usage-normalizers.js";
 
 const requireSDK = createRequire(import.meta.url);
 const SDK_REQUIRED = "OpenAI Decisions requires openai >= 7.30.0. Install it: npm install openai@^7.30.0";
@@ -110,20 +116,27 @@ export class OpenAIDecisionsProvider implements ModelProvider {
       },
       { signal: options?.signal },
     );
-    options?.signal?.throwIfAborted();
-    const response = parseDecisionResponse(raw, questions);
+    const usage = providerTokenUsage(
+      this.providerId,
+      "decisions",
+      raw.usage,
+      mergeResponseContext(
+        { ...endpointBillingContext(this.providerId, this.config.baseURL), modelId: this.modelId },
+        raw,
+      ),
+    );
+    usage.pricingKey = `${this.providerId}/${this.modelId}`;
+    let response;
+    try {
+      options?.signal?.throwIfAborted();
+      response = parseDecisionResponse(raw, questions);
+    } catch (cause) {
+      throw new ModelUsageError(cause instanceof Error ? cause.message : "Invalid Decisions response", usage, cause);
+    }
     return {
       message: { role: "assistant", content: JSON.stringify(response.answers) },
       decisions: response.answers,
-      usage: {
-        promptTokens: response.usage.input_tokens,
-        completionTokens: response.usage.output_tokens,
-        totalTokens: response.usage.total_tokens,
-        cachedTokens: response.usage.input_tokens_details.cached_tokens,
-        reasoningTokens: response.usage.output_tokens_details.reasoning_tokens,
-        providerMetrics: response.usage,
-        pricingKey: `${this.providerId}/${this.modelId}`,
-      },
+      usage,
       finishReason: response.answers.every((answer) => answer.type === "refusal") ? "content_filter" : "stop",
       raw,
     };

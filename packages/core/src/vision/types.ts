@@ -32,7 +32,10 @@ export type VisionEventMap = {
   text: { text: string };
   transcript: { text: string; role: "user" | "assistant" };
   tool_call: VisionToolCall;
-  usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+  usage: import("../models/types.js").TokenUsage & {
+    responseId?: string;
+    executionStatus?: import("../cost/accounting-types.js").ExecutionStatus;
+  };
   interrupted: {};
   error: { error: Error };
   connected: {};

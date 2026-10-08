@@ -1,4 +1,5 @@
 import type { ContextCompactorConfig } from "../agent/types.js";
+import { meteredGenerateFor } from "../cost/accounting.js";
 import type { ChatMessage } from "../models/types.js";
 import { getTextContent } from "../models/types.js";
 import { countMessageTokens, countTokens } from "../utils/token-counter.js";
@@ -94,7 +95,9 @@ export class ContextCompactor {
     if (remaining <= 16) return this.trim(system, exchanges, budget);
     const history = exchanges.slice(0, -1).flat();
     try {
-      const response = await model.generate(
+      const response = await meteredGenerateFor(
+        "compaction",
+        model,
         [
           { role: "system", content: SUMMARIZE_SYSTEM },
           {

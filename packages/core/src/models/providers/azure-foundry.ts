@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+import type { BillingContext } from "../../cost/accounting-types.js";
+import { captureRetryFailure } from "../../cost/context.js";
 import { generateOpenAIStyle, streamOpenAIStyle } from "../openai-api.js";
 import type { ModelProvider } from "../provider.js";
 import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefinition } from "../types.js";
@@ -25,6 +27,7 @@ export class AzureFoundryProvider implements ModelProvider {
   readonly providerId = "azure-foundry";
   readonly modelId: string;
   private client: any;
+  private billingContext: Partial<BillingContext> = {};
   private OpenAICtor: any;
 
   constructor(modelId: string, config?: AzureFoundryConfig) {
@@ -42,6 +45,12 @@ export class AzureFoundryProvider implements ModelProvider {
             "Format: https://<host>.<region>.models.ai.azure.com",
         );
       }
+
+      const url = new URL(endpoint);
+      this.billingContext = {
+        resourceId: `${url.origin}${url.pathname.replace(/\/$/, "")}`,
+        provenance: { resourceId: "request" },
+      };
 
       this.client = new this.OpenAICtor({
         apiKey,
@@ -70,6 +79,7 @@ export class AzureFoundryProvider implements ModelProvider {
           err?.code === "ETIMEDOUT" ||
           err?.message?.includes("rate limit");
         if (!isRetryable || attempt === retries) throw err;
+        await captureRetryFailure(err);
         const delay = Math.min(1000 * 2 ** attempt + Math.random() * 500, 10000);
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -81,13 +91,19 @@ export class AzureFoundryProvider implements ModelProvider {
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): Promise<ModelResponse> {
-    return generateOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this));
+    return generateOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this), {
+      providerId: this.providerId,
+      billingContext: this.billingContext,
+    });
   }
 
   async *stream(
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): AsyncGenerator<StreamChunk> {
-    yield* streamOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this));
+    yield* streamOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this), {
+      providerId: this.providerId,
+      billingContext: this.billingContext,
+    });
   }
 }

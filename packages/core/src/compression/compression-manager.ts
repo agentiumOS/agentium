@@ -1,3 +1,4 @@
+import { meteredGenerateFor } from "../cost/accounting.js";
 import type { ModelProvider } from "../models/provider.js";
 import { type ChatMessage, getTextContent } from "../models/types.js";
 import { countMessagesTokens } from "../utils/token-counter.js";
@@ -116,7 +117,9 @@ export class CompressionManager {
 
     try {
       const prompt = this.config.instructions ?? DEFAULT_COMPRESS_PROMPT;
-      const response = await this.model.generate(
+      const response = await meteredGenerateFor(
+        "compression",
+        this.model,
         [
           { role: "system", content: prompt },
           { role: "user", content: content.slice(0, 200_000) },

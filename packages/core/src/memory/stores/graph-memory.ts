@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { meteredGenerateFor } from "../../cost/accounting.js";
 import type { GraphStore } from "../../graph/types.js";
 import type { ModelProvider } from "../../models/provider.js";
 import type { ChatMessage } from "../../models/types.js";
@@ -148,7 +149,7 @@ export class GraphMemory {
 
       const prompt = EXTRACTION_PROMPT.replace("{knownEntities}", knownStr).replace("{conversation}", conversationStr);
 
-      const response = await model.generate([{ role: "user", content: prompt }], {
+      const response = await meteredGenerateFor("memory-graph-memory", model, [{ role: "user", content: prompt }], {
         temperature: 0,
         maxTokens: 1000,
       });

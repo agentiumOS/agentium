@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CostTracker } from "../cost-tracker.js";
+import { CostTracker, IncompleteCostError, LegacyUsageError } from "../cost-tracker.js";
 
 describe("CostTracker", () => {
   it("tracks a cost entry with calculated cost", () => {
@@ -32,16 +32,16 @@ describe("CostTracker", () => {
     expect(entry.cost).toBe(3.0);
   });
 
-  it("returns zero cost for unknown models", () => {
+  it("rejects an unknown numeric cost projection", () => {
     const tracker = new CostTracker();
-    const entry = tracker.track({
-      runId: "r1",
-      agentName: "a",
-      modelId: "unknown-model-xyz",
-      usage: { promptTokens: 100, completionTokens: 100, totalTokens: 200 },
-    });
-
-    expect(entry.cost).toBe(0);
+    expect(() =>
+      tracker.track({
+        runId: "r1",
+        agentName: "a",
+        modelId: "unknown-model-xyz",
+        usage: { promptTokens: 100, completionTokens: 100, totalTokens: 200 },
+      }),
+    ).toThrow(IncompleteCostError);
   });
 
   it("generates a summary by agent and model", () => {
@@ -144,10 +144,17 @@ describe("CostTracker", () => {
     expect(() => tracker.checkBudget("r2", "s1")).not.toThrow();
   });
 
-  it("provides per-category cost breakdown", () => {
+  it("prices inclusive legacy input/read/write/output with reasoning counted once", () => {
     const tracker = new CostTracker({
+      legacyUsageSemantics: "inclusive",
       pricing: {
-        "test-reasoning": { promptPer1k: 1.0, completionPer1k: 2.0, reasoningPer1k: 3.0, cachedPromptPer1k: 0.25 },
+        "test-reasoning": {
+          promptPer1k: 1.0,
+          completionPer1k: 2.0,
+          reasoningPer1k: 3.0,
+          cachedPromptPer1k: 0.25,
+          cacheWritePer1k: 1.5,
+        },
       },
     });
 
@@ -158,19 +165,19 @@ describe("CostTracker", () => {
       usage: {
         promptTokens: 2000,
         completionTokens: 500,
-        totalTokens: 3000,
+        totalTokens: 2500,
         reasoningTokens: 500,
         cachedTokens: 1000,
+        cacheWriteTokens: 500,
       },
     });
 
-    // non-cached prompt = 2000 - 1000 = 1000 tokens
-    expect(entry.breakdown.input).toBeCloseTo(1.0); // 1000/1000 * 1.0
-    expect(entry.breakdown.output).toBeCloseTo(1.0); // 500/1000 * 2.0
-    expect(entry.breakdown.reasoning).toBeCloseTo(1.5); // 500/1000 * 3.0
-    expect(entry.breakdown.cached).toBeCloseTo(0.25); // 1000/1000 * 0.25
-    expect(entry.breakdown.total).toBeCloseTo(3.75);
-    expect(entry.cost).toBeCloseTo(3.75);
+    expect(entry.breakdown.input).toBe(0.5);
+    expect(entry.breakdown.output).toBe(1);
+    expect(entry.breakdown.reasoning).toBe(0);
+    expect(entry.breakdown.cached).toBe(1); // Read 0.25 plus write 0.75 in the legacy projection.
+    expect(entry.breakdown.total).toBe(2.5);
+    expect(entry.cost).toBe(2.5);
   });
 
   it("includes breakdown in summary", () => {
@@ -193,7 +200,7 @@ describe("CostTracker", () => {
     expect(summary.byModel.m1.breakdown.total).toBeCloseTo(3.0);
   });
 
-  it("handles audio token pricing", () => {
+  it("rejects overlapping audio marginals instead of adding them twice", () => {
     const tracker = new CostTracker({
       pricing: {
         "audio-model": {
@@ -205,28 +212,24 @@ describe("CostTracker", () => {
       },
     });
 
-    const entry = tracker.track({
-      runId: "r1",
-      agentName: "a",
-      modelId: "audio-model",
-      usage: {
-        promptTokens: 1000,
-        completionTokens: 500,
-        totalTokens: 1500,
-        audioInputTokens: 2000,
-        audioOutputTokens: 1000,
-      },
-    });
-
-    expect(entry.breakdown.input).toBeCloseTo(0.005);
-    expect(entry.breakdown.output).toBeCloseTo(0.01);
-    expect(entry.breakdown.audioInput).toBeCloseTo(0.08);
-    expect(entry.breakdown.audioOutput).toBeCloseTo(0.08);
-    expect(entry.breakdown.total).toBeCloseTo(0.175);
+    expect(() =>
+      tracker.track({
+        runId: "r1",
+        agentName: "a",
+        modelId: "audio-model",
+        usage: {
+          promptTokens: 1000,
+          completionTokens: 500,
+          totalTokens: 1500,
+          audioInputTokens: 2000,
+          audioOutputTokens: 1000,
+        },
+      }),
+    ).toThrow(LegacyUsageError);
   });
 
-  it("resets all entries", () => {
-    const tracker = new CostTracker();
+  it("resets local legacy entries", () => {
+    const tracker = new CostTracker({ pricing: { m1: { promptPer1k: 0, completionPer1k: 0 } } });
     tracker.track({
       runId: "r1",
       agentName: "a",

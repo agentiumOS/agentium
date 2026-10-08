@@ -1,3 +1,4 @@
+import type { BillingContext } from "../cost/accounting-types.js";
 import {
   type ChatMessage,
   type ContentPart,
@@ -11,11 +12,21 @@ import {
   type ToolCall,
   type ToolDefinition,
 } from "./types.js";
+import {
+  endpointBillingContext,
+  ModelUsageError,
+  mergeResponseContext,
+  providerTokenUsage,
+  safeResponseContext,
+} from "./usage-normalizers.js";
 
 export type ChatMaxTokensField = "max_tokens" | "max_completion_tokens";
 
 export interface ChatCompletionsExtra {
   stream?: boolean;
+  /** Actual biller; compatible wire formats do not imply OpenAI tariffs. */
+  providerId?: string;
+  billingContext?: Partial<BillingContext>;
   /** OpenAI/Azure always use max_completion_tokens. Compatible APIs keep max_tokens unless the model is a reasoning family. */
   maxTokensField?: ChatMaxTokensField;
 }
@@ -224,6 +235,10 @@ export async function generateOpenAIStyle(
 ): Promise<ModelResponse> {
   options?.signal?.throwIfAborted();
   const owner = replayOwner(client);
+  const billingContext = {
+    ...endpointBillingContext(extra?.providerId ?? "openai", client.baseURL),
+    ...extra?.billingContext,
+  };
   const continuing = hasResponsesReplay(messages);
   if (continuing) toResponsesInput(messages, owner, modelId); // Validate ownership before any request.
   if (continuing && typeof client.responses?.create !== "function") {
@@ -238,7 +253,7 @@ export async function generateOpenAIStyle(
           ...(options?.signal ? [{ signal: options.signal }] : []),
         ),
       );
-      return normalizeResponsesResponse(response, owner, modelId);
+      return normalizeResponsesResponse(response, owner, modelId, extra?.providerId ?? "openai", billingContext);
     } catch (err) {
       if (continuing || !isResponsesUnavailable(err)) throw err;
     }
@@ -248,7 +263,7 @@ export async function generateOpenAIStyle(
   const response = await withRetry(() =>
     client.chat!.completions!.create(params, ...(options?.signal ? [{ signal: options.signal }] : [])),
   );
-  return normalizeChatCompletionsResponse(response);
+  return normalizeChatCompletionsResponse(response, extra?.providerId ?? "openai", modelId, billingContext);
 }
 
 export async function* streamOpenAIStyle(
@@ -267,6 +282,10 @@ export async function* streamOpenAIStyle(
 ): AsyncGenerator<StreamChunk> {
   options?.signal?.throwIfAborted();
   const owner = replayOwner(client);
+  const billingContext = {
+    ...endpointBillingContext(extra?.providerId ?? "openai", client.baseURL),
+    ...extra?.billingContext,
+  };
   const continuing = hasResponsesReplay(messages);
   if (continuing) toResponsesInput(messages, owner, modelId); // Validate ownership before any request.
   if (continuing && typeof client.responses?.create !== "function") {
@@ -282,7 +301,12 @@ export async function* streamOpenAIStyle(
           ...(options?.signal ? [{ signal: options.signal }] : []),
         ),
       );
-      for await (const chunk of iterResponsesStream(stream as AsyncIterable<unknown>, owner, modelId)) {
+      for await (const chunk of iterResponsesStream(
+        stream as AsyncIterable<unknown>,
+        owner,
+        modelId,
+        extra?.providerId ?? "openai",
+      )) {
         committed = true;
         yield chunk;
       }
@@ -296,7 +320,12 @@ export async function* streamOpenAIStyle(
   const stream = await withRetry(() =>
     client.chat!.completions!.create(params, ...(options?.signal ? [{ signal: options.signal }] : [])),
   );
-  yield* iterChatCompletionStream(stream as AsyncIterable<unknown>);
+  yield* iterChatCompletionStream(
+    stream as AsyncIterable<unknown>,
+    extra?.providerId ?? "openai",
+    modelId,
+    billingContext,
+  );
 }
 
 export function toChatCompletionsMessages(messages: ChatMessage[]): unknown[] {
@@ -594,7 +623,25 @@ function parseToolArguments(value: unknown): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-export function normalizeChatCompletionsResponse(response: any): ModelResponse & { thinking?: string } {
+export function normalizeChatCompletionsResponse(
+  response: any,
+  providerId = "openai",
+  modelId?: string,
+  billingContext: Partial<BillingContext> = {},
+): ModelResponse & { thinking?: string } {
+  const usage = usageFromChatCompletions(
+    response?.usage,
+    providerId,
+    mergeResponseContext({ ...billingContext, modelId }, response),
+  );
+  try {
+    return normalizeChatOutput(response, usage);
+  } catch (cause) {
+    throw new ModelUsageError(cause instanceof Error ? cause.message : "Invalid Chat Completions output", usage, cause);
+  }
+}
+
+function normalizeChatOutput(response: any, usage: TokenUsage): ModelResponse & { thinking?: string } {
   const choice = response.choices[0];
   const msg = choice.message;
 
@@ -610,7 +657,6 @@ export function normalizeChatCompletionsResponse(response: any): ModelResponse &
   if (toolCalls.length && choice.finish_reason && choice.finish_reason !== "tool_calls") {
     throw new Error("Incomplete Chat Completions tool turn; no tools executed");
   }
-  const usage = usageFromChatCompletions(response.usage);
 
   let finishReason: ModelResponse["finishReason"] = "stop";
   if (choice.finish_reason === "tool_calls") finishReason = "tool_calls";
@@ -639,6 +685,26 @@ export function normalizeResponsesResponse(
   response: any,
   owner = OPENAI_REPLAY_OWNER,
   model?: string,
+  providerId = "openai",
+  billingContext: Partial<BillingContext> = {},
+): ModelResponse & { thinking?: string } {
+  const usage = usageFromResponses(
+    response?.usage,
+    providerId,
+    mergeResponseContext({ ...billingContext, modelId: model }, response),
+  );
+  try {
+    return normalizeResponsesOutput(response, owner, model, usage);
+  } catch (cause) {
+    throw new ModelUsageError(cause instanceof Error ? cause.message : "Invalid Responses output", usage, cause);
+  }
+}
+
+function normalizeResponsesOutput(
+  response: any,
+  owner: string,
+  model: string | undefined,
+  usage: TokenUsage,
 ): ModelResponse & { thinking?: string } {
   if (response.status === "failed" || response.status === "cancelled") {
     throw new Error(`Responses request ${response.status}`);
@@ -647,7 +713,6 @@ export function normalizeResponsesResponse(
   if (toolCalls.length && response.status && response.status !== "completed") {
     throw new Error("Incomplete Responses tool turn; no tools executed");
   }
-  const usage = usageFromResponses(response.usage);
 
   const result: ModelResponse & { thinking?: string } = {
     message: {
@@ -711,49 +776,40 @@ function responsesStatusToFinish(status: unknown): ModelResponse["finishReason"]
   return "stop";
 }
 
-function usageFromChatCompletions(usage: any): TokenUsage {
-  const reasoningTokens = usage?.completion_tokens_details?.reasoning_tokens ?? 0;
-  const cachedTokens = usage?.prompt_tokens_details?.cached_tokens ?? 0;
-  const audioInputTokens = usage?.prompt_tokens_details?.audio_tokens ?? 0;
-  const audioOutputTokens = usage?.completion_tokens_details?.audio_tokens ?? 0;
-  return {
-    promptTokens: usage?.prompt_tokens ?? 0,
-    completionTokens: usage?.completion_tokens ?? 0,
-    totalTokens: usage?.total_tokens ?? 0,
-    ...(reasoningTokens > 0 ? { reasoningTokens } : {}),
-    ...(cachedTokens > 0 ? { cachedTokens } : {}),
-    ...(audioInputTokens > 0 ? { audioInputTokens } : {}),
-    ...(audioOutputTokens > 0 ? { audioOutputTokens } : {}),
-    providerMetrics: usage ? { ...usage } : undefined,
-  };
+function usageFromChatCompletions(
+  usage: unknown,
+  providerId = "openai",
+  context?: Partial<BillingContext>,
+): TokenUsage {
+  return providerTokenUsage(providerId, "chat-completions", usage, context);
 }
 
-function usageFromResponses(usage: any): TokenUsage {
-  const reasoningTokens = usage?.output_tokens_details?.reasoning_tokens ?? 0;
-  const cachedTokens = usage?.input_tokens_details?.cached_tokens ?? 0;
-  return {
-    promptTokens: usage?.input_tokens ?? 0,
-    completionTokens: usage?.output_tokens ?? 0,
-    totalTokens: usage?.total_tokens ?? 0,
-    ...(reasoningTokens > 0 ? { reasoningTokens } : {}),
-    ...(cachedTokens > 0 ? { cachedTokens } : {}),
-    providerMetrics: usage ? { ...usage } : undefined,
-  };
+function usageFromResponses(usage: unknown, providerId = "openai", context?: Partial<BillingContext>): TokenUsage {
+  return providerTokenUsage(providerId, "responses", usage, context);
 }
 
-export async function* iterChatCompletionStream(stream: AsyncIterable<any>): AsyncGenerator<StreamChunk> {
+export async function* iterChatCompletionStream(
+  stream: AsyncIterable<any>,
+  providerId = "openai",
+  modelId?: string,
+  billingContext: Partial<BillingContext> = {},
+): AsyncGenerator<StreamChunk> {
   const activeToolCalls = new Map<number, { id: string; name: string; args: string }>();
   let finishReason: string | null = null;
   let completed = false;
+  let lastUsage: TokenUsage | undefined;
+  let streamContext: Partial<BillingContext> = { ...billingContext, modelId };
 
   for await (const chunk of stream) {
+    streamContext = mergeResponseContext(streamContext, chunk);
+    if (chunk.usage) lastUsage = usageFromChatCompletions(chunk.usage, providerId, streamContext);
     const choice = chunk.choices?.[0];
     if (!choice) {
       if (chunk.usage && finishReason) {
         yield {
           type: "finish",
           finishReason: finishReason === "tool_calls" ? "tool_calls" : finishReason,
-          usage: usageFromChatCompletions(chunk.usage),
+          usage: usageFromChatCompletions(chunk.usage, providerId, streamContext),
         };
         finishReason = null;
       }
@@ -811,10 +867,21 @@ export async function* iterChatCompletionStream(stream: AsyncIterable<any>): Asy
 
     if (choice.finish_reason) {
       if (activeToolCalls.size && choice.finish_reason !== "tool_calls") {
-        throw new Error("Incomplete Chat Completions tool turn; no tools executed");
+        throw new ModelUsageError(
+          "Incomplete Chat Completions tool turn; no tools executed",
+          lastUsage ?? usageFromChatCompletions(undefined, providerId, { modelId }),
+        );
       }
       // Validate the whole batch before marking any call complete.
-      for (const tc of activeToolCalls.values()) parseToolArguments(tc.args);
+      try {
+        for (const tc of activeToolCalls.values()) parseToolArguments(tc.args);
+      } catch (cause) {
+        throw new ModelUsageError(
+          "Invalid provider tool arguments; no tools executed",
+          lastUsage ?? usageFromChatCompletions(undefined, providerId, { modelId }),
+          cause,
+        );
+      }
       completed = true;
       for (const [, tc] of activeToolCalls) {
         yield { type: "tool_call_end", toolCallId: tc.id };
@@ -826,7 +893,7 @@ export async function* iterChatCompletionStream(stream: AsyncIterable<any>): Asy
         yield {
           type: "finish",
           finishReason: reason === "tool_calls" ? "tool_calls" : reason,
-          usage: usageFromChatCompletions(chunk.usage),
+          usage: usageFromChatCompletions(chunk.usage, providerId, streamContext),
         };
         finishReason = null;
       }
@@ -843,11 +910,15 @@ export async function* iterResponsesStream(
   stream: AsyncIterable<any>,
   owner = OPENAI_REPLAY_OWNER,
   model?: string,
+  providerId = "openai",
+  billingContext: Partial<BillingContext> = {},
 ): AsyncGenerator<StreamChunk> {
   const itemToCall = new Map<string, { callId: string; name: string; args: string }>();
   let emittedFinish = false;
+  let streamContext: Partial<BillingContext> = { ...billingContext, modelId: model };
 
   for await (const event of stream) {
+    if (event.response) streamContext = mergeResponseContext(streamContext, event.response);
     const type = event?.type as string | undefined;
     if (!type) continue;
 
@@ -893,16 +964,31 @@ export async function* iterResponsesStream(
     }
 
     if (type === "error" || type === "response.failed" || type === "response.incomplete") {
-      throw new Error(`Responses stream interrupted: ${type}`);
+      throw new ModelUsageError(
+        `Responses stream interrupted: ${type}`,
+        usageFromResponses(event.response?.usage, providerId, {
+          modelId: model,
+          ...safeResponseContext(event.response),
+        }),
+      );
     }
 
     if (type === "response.completed") {
       const response = event.response ?? event;
-      const { toolCalls } = extractResponsesOutput(response);
+      const usage = usageFromResponses(response?.usage, providerId, {
+        modelId: model,
+        ...safeResponseContext(response),
+      });
+      let toolCalls: ToolCall[];
+      try {
+        ({ toolCalls } = extractResponsesOutput(response));
+      } catch (cause) {
+        throw new ModelUsageError("Invalid Responses tool output", usage, cause);
+      }
       yield {
         type: "finish",
         finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
-        usage: usageFromResponses(response?.usage),
+        usage,
         providerExtras: responsesExtras(response, owner, model),
       };
       emittedFinish = true;

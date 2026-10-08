@@ -1,10 +1,14 @@
 import { createRequire } from "node:module";
+import { meteredOperation } from "../../cost/accounting.js";
+import type { AccountingContext } from "../../cost/context.js";
+import { normalizeOperationUsage } from "../../cost/operation-usage.js";
 import type { RerankDocument, Reranker, RerankOptions, RerankResult } from "../types.js";
 import { toRerankInput } from "../types.js";
 
 const _require = createRequire(import.meta.url);
 
 export interface CohereRerankerConfig {
+  accounting?: AccountingContext;
   apiKey?: string;
   /** Cohere rerank model. Defaults to `rerank-v3.5`. */
   model?: string;
@@ -19,8 +23,10 @@ export class CohereReranker implements Reranker {
   readonly providerId = "cohere";
   private client: any;
   private model: string;
+  private accounting?: AccountingContext;
 
   constructor(config: CohereRerankerConfig = {}) {
+    this.accounting = config.accounting;
     this.model = config.model ?? "rerank-v3.5";
     try {
       const mod = _require("cohere-ai");
@@ -40,7 +46,24 @@ export class CohereReranker implements Reranker {
   private async withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await fn();
+        return await meteredOperation(
+          {
+            accounting: this.accounting,
+            context: {
+              providerId: "cohere",
+              billingProviderId: "cohere",
+              modelId: this.model,
+              api: "rerank",
+              occurredAt: new Date().toISOString(),
+            },
+            attemptVisibility: "opaque",
+          },
+          async (capture) => {
+            const result = await fn();
+            capture(normalizeOperationUsage("cohere", "rerank", result));
+            return result;
+          },
+        );
       } catch (err: any) {
         const status = err?.status ?? err?.statusCode;
         const isRetryable = status === 429 || status === 500 || status === 502 || status === 503;

@@ -3,11 +3,14 @@ import {
   ApprovalManager,
   choice,
   EventBus,
+  getAccountingContext,
   jev,
   Logger,
   MemoryManager,
+  meteredGenerate,
   RunContext,
   ToolExecutor,
+  withAccountingContext,
 } from "@agentium/core";
 import { z } from "zod/v3";
 import {
@@ -144,6 +147,38 @@ export class BrowserAgent {
   }
 
   async run(task: string, opts?: BrowserRunOpts): Promise<BrowserRunOutput> {
+    const parent = getAccountingContext();
+    const tracker = this.costTracker ?? parent?.tracker;
+    if (!tracker) return this.runAccounted(task, opts);
+    const ctx =
+      opts?.context ??
+      new RunContext({
+        sessionId: opts?.sessionId ?? `browser_${Date.now()}`,
+        userId: opts?.userId,
+        tenantId: opts?.tenantId,
+        signal: opts?.signal,
+        runMode: opts?.runMode,
+        executionPolicy: this.executionPolicy,
+        eventBus: this.eventBus,
+      });
+    return withAccountingContext(
+      {
+        ...parent,
+        tracker,
+        runId: ctx.runId,
+        rootRunId: parent?.rootRunId ?? parent?.runId ?? ctx.runId,
+        parentRunId: parent?.runId,
+        sessionId: ctx.sessionId,
+        tenantId: ctx.tenantId,
+        userId: ctx.userId,
+        agentName: this.name,
+        eventBus: this.eventBus,
+      },
+      () => this.runAccounted(task, { ...opts, context: ctx }),
+    );
+  }
+
+  private async runAccounted(task: string, opts?: BrowserRunOpts): Promise<BrowserRunOutput> {
     const startTime = Date.now();
     const maxSteps = opts?.maxSteps ?? this.maxSteps;
     const sessionId = opts?.context?.sessionId ?? opts?.sessionId ?? `browser_${startTime}`;
@@ -311,7 +346,6 @@ export class BrowserAgent {
         this.logger.debug("Calling planner", { step, url: pageInfo.url, planner: this.planner, vision: wantVision });
 
         let envelope: AgentOutput | null = null;
-        let modelUsed: ModelProvider = this.model;
 
         if (this.planner === "jev") {
           const planned = await this.planWithJev({
@@ -328,21 +362,9 @@ export class BrowserAgent {
             signal: ctx.signal,
           });
           envelope = planned.envelope;
-          modelUsed = planned.modelUsed;
-          if (this.costTracker && planned.usage) {
-            this.costTracker.track({
-              runId: sessionId,
-              agentName: this.name,
-              modelId: modelUsed.modelId,
-              usage: planned.usage,
-              sessionId,
-              userId,
-            });
-          }
         } else {
           const messages = this.buildMessages(systemPrompt, historyTurns, userText, wantVision ? screenshot : null);
-          const { response, modelUsed: used } = await this.callModelWithFallback(messages, opts?.apiKey, ctx.signal);
-          modelUsed = used;
+          const { response } = await this.callModelWithFallback(messages, opts?.apiKey, ctx.signal);
           if (!response) {
             consecutiveFailures++;
             actionHistory.push(`(model call failed — retrying, ${consecutiveFailures}/${this.maxFailures})`);
@@ -351,16 +373,7 @@ export class BrowserAgent {
             }
             continue;
           }
-          if (this.costTracker && response.usage) {
-            this.costTracker.track({
-              runId: sessionId,
-              agentName: this.name,
-              modelId: modelUsed.modelId,
-              usage: response.usage,
-              sessionId,
-              userId,
-            });
-          }
+
           const raw = typeof response.message.content === "string" ? response.message.content : "";
           envelope = this.parseEnvelope(raw);
         }
@@ -648,7 +661,7 @@ export class BrowserAgent {
     const reqOpts = { temperature: 0.1, maxTokens: 1024, apiKey, signal, responseFormat: "json" as const };
     try {
       signal?.throwIfAborted();
-      const r = await this.model.generate(messages, reqOpts);
+      const r = await meteredGenerate(this.model, messages, reqOpts);
       signal?.throwIfAborted();
       return { response: r, modelUsed: this.model };
     } catch (e: any) {
@@ -660,7 +673,7 @@ export class BrowserAgent {
           fallback: this.fallbackModel.modelId,
         });
         try {
-          const r = await this.fallbackModel.generate(messages, reqOpts);
+          const r = await meteredGenerate(this.fallbackModel, messages, reqOpts);
           signal?.throwIfAborted();
           return { response: r, modelUsed: this.fallbackModel };
         } catch (e2: any) {
@@ -720,7 +733,8 @@ export class BrowserAgent {
     const provider = this.getJev();
     args.signal?.throwIfAborted();
     try {
-      const response = await provider.generate(
+      const response = await meteredGenerate(
+        provider,
         [
           {
             role: "user",
@@ -818,7 +832,8 @@ export class BrowserAgent {
     const model = this.pageExtractionLLM ?? (this.model.providerId === "jev" ? null : this.model);
     if (!model) return guessSearchQuery(task);
     try {
-      const response = await model.generate(
+      const response = await meteredGenerate(
+        model,
         [
           {
             role: "user",
@@ -1215,7 +1230,11 @@ export class BrowserAgent {
             content: `Query: ${action.query}\n\nPage content:\n${pageText}`,
           },
         ];
-        const response = await model.generate(messages, { temperature: 0.0, maxTokens: 2048, signal: ctx.signal });
+        const response = await meteredGenerate(model, messages, {
+          temperature: 0.0,
+          maxTokens: 2048,
+          signal: ctx.signal,
+        });
         ctx.signal?.throwIfAborted();
         const out = typeof response.message.content === "string" ? response.message.content : "";
         const masked = this.credentials ? this.credentials.mask(out) : out;

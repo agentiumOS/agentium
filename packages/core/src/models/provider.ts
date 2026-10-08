@@ -3,6 +3,10 @@ import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefiniti
 export interface ModelProvider {
   readonly providerId: string;
   readonly modelId: string;
+  /** Composite adapters delegate metering to their leaf providers. */
+  readonly accountingRole?: "leaf" | "composite";
+  /** Physical requires documented retry control or transport instrumentation. */
+  readonly attemptVisibility?: "physical" | "opaque";
 
   generate(messages: ChatMessage[], options?: ModelConfig & { tools?: ToolDefinition[] }): Promise<ModelResponse>;
 

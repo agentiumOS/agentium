@@ -14,6 +14,8 @@ export enum TeamMode {
 }
 
 export interface TeamConfig {
+  cost?: boolean | import("../cost/types.js").CostTrackerConfig;
+  costTracker?: import("../cost/cost-tracker.js").CostTracker;
   name: string;
   mode: TeamMode;
   model: ModelProvider;

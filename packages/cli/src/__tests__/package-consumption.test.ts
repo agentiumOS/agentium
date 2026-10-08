@@ -180,10 +180,11 @@ const sessions = new SessionManager(storage);
 await sessions.getOrCreate("manual"); await sessions.appendMessage("manual", { role: "user", content: "history" });
 if ((await sessions.getHistory("manual")).length !== 1) throw new Error("SessionManager contract");
 for (const factory of [openai, anthropic, google]) if (typeof factory !== "function") throw new Error("Provider export");
-const agent = new Agent({ name: "consumer", model, tools: [tool], register: false, memory: { storage } });
+const agent = new Agent({ name: "consumer", model, tools: [tool], register: false, memory: { storage }, cost: true });
 try {
  const result = await agent.run("hello", { sessionId: "reuse" });
  if (result.text !== "done" || effects !== 1 || result.toolCalls.length !== 1) throw new Error("Agent/tool contract");
+ if (result.costs?.status !== "available" || result.costs.total !== null || result.costs.attemptCount !== 2) throw new Error("Run cost snapshot contract");
  await agent.run("again", { sessionId: "reuse" });
  let text = ""; for await (const chunk of agent.stream("stream", { sessionId: "reuse" })) if (chunk.type === "text") text += chunk.text;
  if (text !== "streamed") throw new Error("Streaming contract");
@@ -191,7 +192,7 @@ try {
 `;
       await writeFile(join(fixture, "ordinary.mjs"), ordinary);
       await exec(process.execPath, [join(fixture, "ordinary.mjs")], { cwd: fixture, timeout: 20_000 });
-      const types = `import { Agent, defineTool, SessionManager, InMemoryStorage, type ModelProvider } from "@agentium/core";
+      const types = `import { Agent, defineTool, SessionManager, InMemoryStorage, type ModelProvider, type RunCostSnapshot, type ModelBillingContext } from "@agentium/core";
 import { z } from "zod";
 import { EvalSuite } from "@agentium/eval";
 import { Tracer } from "@agentium/observability";
@@ -205,7 +206,15 @@ import { defineHarness, HarnessRuntime } from "@agentium/harness";
 void AgentQueue; void createAdminRouter; void EdgeRuntime; void BrowserAgent; void HarnessRuntime; defineHarness({ abilities: [] });
 declare const model: ModelProvider;
 const tool = defineTool({name:"echo",description:"Echo",parameters:z.object({text:z.string()}),execute:async ({text})=>text});
-const agent = new Agent({name:"consumer",model,tools:[tool],workspace:{path:".",mode:"read"}});
+const billingContext: ModelBillingContext = {region:"global",actualServiceTier:"standard",dimensions:{pricePlan:"paid"}};
+const agent = new Agent({name:"consumer",model,tools:[tool],workspace:{path:".",mode:"read"},cost:true,billingContext});
+async function readCosts() {
+ const result = await agent.run("hello");
+ const costs: RunCostSnapshot | undefined = result.costs;
+ if (costs?.status === "available") { const total: string | null = costs.total; const attempts: number = costs.attemptCount; void total; void attempts; }
+ if (costs?.status === "unavailable") { const total: null = costs.total; const reason: "accounting_unavailable" = costs.reason; void total; void reason; }
+}
+void readCosts;
 new SessionManager(new InMemoryStorage());
 new EvalSuite({name:"consumer",agent,cases:[],scorers:[{name:"check",score:async()=>({score:1,pass:true})}]});
 const security: GatewayOptions["security"] = {mode:"local"};

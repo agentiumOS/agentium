@@ -8,10 +8,10 @@ import {
   type ModelConfig,
   type ModelResponse,
   type StreamChunk,
-  type TokenUsage,
   type ToolCall,
   type ToolDefinition,
 } from "../types.js";
+import { providerTokenUsage, safeResponseContext } from "../usage-normalizers.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -160,14 +160,7 @@ export class CohereProvider implements ModelProvider {
         yield {
           type: "finish",
           finishReason: toolCallsAcc.length > 0 ? "tool_calls" : "stop",
-          usage: usage
-            ? {
-                promptTokens: usage.tokens?.inputTokens ?? 0,
-                completionTokens: usage.tokens?.outputTokens ?? 0,
-                totalTokens: (usage.tokens?.inputTokens ?? 0) + (usage.tokens?.outputTokens ?? 0),
-                providerMetrics: usage.tokens ? { ...usage.tokens } : undefined,
-              }
-            : undefined,
+          usage: usage ? providerTokenUsage(this.providerId, "chat-v2", usage, { modelId: this.modelId }) : undefined,
         };
       }
     }
@@ -208,6 +201,15 @@ export class CohereProvider implements ModelProvider {
   }
 
   private normalizeNative(response: any): ModelResponse {
+    const usage = providerTokenUsage(
+      this.providerId,
+      "chat-v2",
+      response.usage ??
+        (response.meta
+          ? { tokens: response.meta.tokens, billedUnits: response.meta.billedUnits ?? response.meta.billed_units }
+          : undefined),
+      { modelId: this.modelId, ...safeResponseContext(response) },
+    );
     const msg = response.message ?? response;
     let thinking = "";
     if (Array.isArray(msg.content)) {
@@ -229,14 +231,6 @@ export class CohereProvider implements ModelProvider {
       return { id: tc.id, name: fn.name, arguments: args };
     });
 
-    const u = response.meta?.tokens ?? response.usage ?? {};
-    const usage: TokenUsage = {
-      promptTokens: u.inputTokens ?? u.prompt_tokens ?? 0,
-      completionTokens: u.outputTokens ?? u.completion_tokens ?? 0,
-      totalTokens: (u.inputTokens ?? u.prompt_tokens ?? 0) + (u.outputTokens ?? u.completion_tokens ?? 0),
-      providerMetrics: { ...u },
-    };
-
     const result: ModelResponse & { thinking?: string } = {
       message: { role: "assistant", content, toolCalls: toolCalls.length > 0 ? toolCalls : undefined },
       usage,
@@ -253,13 +247,15 @@ export class CohereProvider implements ModelProvider {
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): Promise<ModelResponse> {
-    return generateOpenAIStyle(this.client, this.modelId, messages, options);
+    return generateOpenAIStyle(this.client, this.modelId, messages, options, undefined, {
+      providerId: this.providerId,
+    });
   }
 
   private async *streamOpenAI(
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): AsyncGenerator<StreamChunk> {
-    yield* streamOpenAIStyle(this.client, this.modelId, messages, options);
+    yield* streamOpenAIStyle(this.client, this.modelId, messages, options, undefined, { providerId: this.providerId });
   }
 }

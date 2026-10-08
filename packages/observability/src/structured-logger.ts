@@ -37,6 +37,10 @@ export class StructuredLogger {
           "cache.hit",
           "cache.miss",
           "cost.tracked",
+          "cost.assessed",
+          "usage.recorded",
+          "budget.checked",
+          "accounting.error",
           "model.start",
           "model.result",
           "model.error",
@@ -46,6 +50,19 @@ export class StructuredLogger {
       const data = raw as any;
       const attributes = this.capture.attributes({
         ...data,
+        ...(data.assessment
+          ? {
+              assessmentId: data.assessment.assessmentId,
+              attemptId: data.assessment.attemptId,
+              usageRevision: data.assessment.usageRevision,
+              pricingStatus: data.assessment.pricingStatus,
+              usageStatus: data.assessment.usageStatus,
+              knownSubtotal: data.assessment.knownSubtotal,
+              total: data.assessment.total,
+              unpricedCount: data.assessment.unpricedCount,
+              currency: data.assessment.currency,
+            }
+          : {}),
         ...usage(data.output?.usage ?? data.usage),
         status: event.startsWith("run.") && event !== "run.start" ? outcome(event, data) : data.status,
         errorType: data.error ? "Error" : undefined,

@@ -179,14 +179,22 @@ describe("OpenAI Decisions actual SDK HTTP integration", () => {
     expect((await provider().generate(input)).finishReason).toBe("content_filter");
   });
 
-  it("exposes decisions and endpoint-specific cost through Agent.run", async () => {
+  it("exposes decisions and records unknown billing for a custom endpoint", async () => {
     const costTracker = new CostTracker();
     const agent = new Agent({ name: "decisions-run", model: provider(), costTracker, register: false });
     const output = await agent.run("Charged twice", { questions });
     expect(output.decisions).toEqual(answers);
     expect(output.usage.providerMetrics).toEqual(result().usage);
-    expect(costTracker.getSummary().totalCost).toBeCloseTo(0.00009);
-    expect(costTracker.getEntries()[0]?.modelId).toBe("gpt-6-luna");
+    const costs = await costTracker.queryCosts();
+    expect(costs.total).toBeNull();
+    expect(costs.knownSubtotal).toBe("0");
+    const records = await costTracker.queryUsage();
+    expect(
+      records.items.some(
+        (record) => record.context.modelId === "gpt-6-luna" && record.context.billingProviderId === "unknown",
+      ),
+    ).toBe(true);
+    expect(costs.attemptCount).toBe(1);
   });
 
   it("streams one completed answer, preserves decisions in run.complete and tracks costs", async () => {
@@ -201,7 +209,9 @@ describe("OpenAI Decisions actual SDK HTTP integration", () => {
     expect(completed).toHaveBeenCalledWith(
       expect.objectContaining({ output: expect.objectContaining({ decisions: answers }) }),
     );
-    expect(costTracker.getSummary().totalCost).toBeCloseTo(0.00009);
+    const costs = await costTracker.queryCosts();
+    expect(costs.total).toBeNull();
+    expect(costs.attemptCount).toBe(1);
   });
 
   it("bypasses semantic cache lookup and storage for decision agents", async () => {
@@ -219,17 +229,40 @@ describe("OpenAI Decisions actual SDK HTTP integration", () => {
 
   it("uses custom endpoint pricing without changing ordinary model costs", async () => {
     const costTracker = new CostTracker({
-      pricing: { "openai-decisions/gpt-6-luna": { promptPer1k: 0.002, completionPer1k: 0, cachedPromptPer1k: 0 } },
+      legacyUsageSemantics: "inclusive",
+      pricing: {
+        "openai-decisions/gpt-6-luna": {
+          promptPer1k: 0.002,
+          completionPer1k: 0,
+          cachedPromptPer1k: 0,
+          cacheWritePer1k: 0,
+        },
+      },
     });
     await new Agent({ name: "custom-price", model: provider(), costTracker, register: false }).run("Ticket");
-    expect(costTracker.getSummary().totalCost).toBeCloseTo(0.0018);
-    costTracker.track({
-      runId: "other",
-      agentName: "chat",
+    expect((await costTracker.queryCosts()).total).toBeNull();
+    const explicitLegacy = costTracker.track({
+      runId: "legacy",
+      agentName: "fixture",
       modelId: "gpt-6-luna",
-      usage: { promptTokens: 1000, completionTokens: 0, totalTokens: 1000 },
+      usage: {
+        promptTokens: 1000,
+        completionTokens: 0,
+        totalTokens: 1000,
+        cachedTokens: 100,
+        cacheWriteTokens: 0,
+        pricingKey: "openai-decisions/gpt-6-luna",
+      },
     });
-    expect(costTracker.getEntries()[1]?.cost).toBe(0);
+    expect(explicitLegacy.cost).toBe(0.0018);
+    expect(() =>
+      costTracker.track({
+        runId: "other",
+        agentName: "chat",
+        modelId: "gpt-6-luna",
+        usage: { promptTokens: 1000, completionTokens: 0, totalTokens: 1000 },
+      }),
+    ).toThrow("No exact legacy tariff");
   });
 
   it("forwards cancellation to the HTTP request", async () => {

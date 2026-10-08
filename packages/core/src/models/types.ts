@@ -1,3 +1,4 @@
+import type { NormalizedUsage } from "../cost/accounting-types.js";
 import type { DecisionAnswer, ModelQuestions } from "./decisions.js";
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
@@ -84,10 +85,15 @@ export interface TokenUsage {
   completionTokens: number;
   totalTokens: number;
   reasoningTokens?: number;
+  /** Cache reads are a subset of promptTokens. */
   cachedTokens?: number;
+  /** Cache writes are a disjoint subset of promptTokens. */
+  cacheWriteTokens?: number;
+  /** Canonical evidence for accounting. Missing counters remain null here. */
+  accounting?: NormalizedUsage;
   audioInputTokens?: number;
   audioOutputTokens?: number;
-  /** Raw usage / metrics object returned by the underlying provider API (unmodified). */
+  /** Bounded usage evidence; excludes prompts and credentials. */
   providerMetrics?: Record<string, unknown>;
   /** Endpoint-specific pricing identity when a model has more than one tariff. */
   pricingKey?: string;
@@ -112,8 +118,12 @@ export type StreamChunk =
   | { type: "tool_call_end"; toolCallId: string }
   | {
       type: "finish";
+      /** Present on an Agent terminal finish when cost accounting is enabled. */
+      costs?: import("../cost/accounting-types.js").RunCostSnapshot;
       finishReason: string;
       usage?: TokenUsage;
+      /** Usage defaults to a cumulative snapshot. Deltas require a stable event identity. */
+      usageObservation?: { kind: "snapshot" | "delta"; id: string; sequence: number };
       providerExtras?: Record<string, unknown>;
       decisions?: DecisionAnswer[];
     };
@@ -160,7 +170,40 @@ export interface ProviderOptions {
   googleSearch?: boolean;
 }
 
+/**
+ * Trusted host billing facts for metered calls. No paid plan or service tier is inferred.
+ * Returned facts override configured facts; configured facts override documented defaults.
+ * These values do not select a request tier or change the remote provider request.
+ * @example
+ * ```ts
+ * const agent = new Agent({
+ *   name: "assistant",
+ *   model: google("gemini-3.8-flash"),
+ *   cost: true,
+ *   billingContext: {
+ *     region: "global",
+ *     actualServiceTier: "standard",
+ *     dimensions: { pricePlan: "paid" },
+ *   },
+ * });
+ * const result = await agent.run("Hello");
+ * console.log(result.costs?.total); // Decimal string, or null if any cost is unknown.
+ * await agent.close();
+ * ```
+ */
+export interface ModelBillingContext {
+  accountId?: string;
+  contractId?: string;
+  region?: string;
+  /** Known effective account/endpoint tier. A returned service tier takes precedence. */
+  actualServiceTier?: string;
+  /** For example { pricePlan: "paid" }. Never include credentials or prompt data. */
+  dimensions?: Record<string, string>;
+}
+
 export interface ModelConfig {
+  /** Billing facts for metered calls. Provider-returned facts take precedence. */
+  billingContext?: ModelBillingContext;
   /** Cooperative cancellation, forwarded by compatible providers. */
   signal?: AbortSignal;
   temperature?: number;

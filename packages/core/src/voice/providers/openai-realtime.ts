@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
+import { providerTokenUsage } from "../../models/usage-normalizers.js";
 import { buildOpenAIRealtimeSession, DEFAULT_REALTIME_MODEL } from "../openai-session.js";
 import type {
   CreateResponseOpts,
@@ -35,6 +36,7 @@ export class OpenAIRealtimeConnection extends EventEmitter implements RealtimeCo
     return this.closed || this.ws.readyState !== 1 ? "closed" : "open";
   }
   private activeResponse?: string;
+  private accountedResponses = new Set<string>();
   private cancelledResponses = new Set<string>();
   private transcriptText = new Map<string, string>();
   private pendingFunctionCalls = new Map<string, { name: string; args: string }>();
@@ -250,12 +252,21 @@ export class OpenAIRealtimeConnection extends EventEmitter implements RealtimeCo
 
       case "response.done":
         this.emit("turn_complete", { generationId: event.response?.id });
-        if (event.response?.usage) {
-          const u = event.response.usage;
+        if (event.response?.usage && !this.accountedResponses.has(event.response.id)) {
+          this.accountedResponses.add(event.response.id);
+          const usage = providerTokenUsage("openai", "realtime", event.response.usage, {
+            providerRequestId: event.response.id,
+          });
+          if (usage.accounting) usage.accounting.coverage.unsupportedFeatures.push("realtime_modality_billing");
           this.emit("usage", {
-            promptTokens: u.input_tokens ?? 0,
-            completionTokens: u.output_tokens ?? 0,
-            totalTokens: u.total_tokens ?? (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
+            ...usage,
+            responseId: event.response.id,
+            executionStatus:
+              event.response.status === "completed"
+                ? "succeeded"
+                : event.response.status === "cancelled"
+                  ? "cancelled"
+                  : "failed",
           });
         }
         break;

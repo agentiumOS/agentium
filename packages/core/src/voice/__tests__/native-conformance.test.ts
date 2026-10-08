@@ -92,7 +92,16 @@ it("Gemini 3.8 fixture processes mixed content and preserves tool name separatel
   expect(tools).toHaveBeenCalledTimes(1);
   expect(audio).toHaveBeenCalledTimes(1);
   expect(transcript.mock.calls.filter(([e]) => e.kind === "final").map(([e]) => e.text)).toEqual(["नमस्ते", "Hello"]);
-  expect(usage).toHaveBeenCalledWith({ promptTokens: 3, completionTokens: 4, totalTokens: 7 });
+  expect(usage).toHaveBeenCalledWith(
+    expect.objectContaining({
+      promptTokens: 3,
+      completionTokens: 4,
+      totalTokens: 7,
+      accounting: expect.objectContaining({
+        rawUsage: { promptTokenCount: 3, responseTokenCount: 4, totalTokenCount: 7 },
+      }),
+    }),
+  );
   expect(goAway).toHaveBeenCalled();
   expect(resume).toHaveBeenCalled();
   connection.sendToolResult("call-123", '{"ok":true}');

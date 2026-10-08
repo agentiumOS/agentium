@@ -93,11 +93,5 @@ export function lookupPricing(modelId: string, customPricing?: Record<string, Mo
   if (customPricing?.[modelId]) return customPricing[modelId];
   if (DEFAULT_PRICING[modelId]) return DEFAULT_PRICING[modelId];
 
-  for (const key of Object.keys({ ...DEFAULT_PRICING, ...customPricing })) {
-    if (modelId.startsWith(key) || modelId.includes(key)) {
-      return customPricing?.[key] ?? DEFAULT_PRICING[key];
-    }
-  }
-
   return undefined;
 }

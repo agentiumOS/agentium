@@ -1,6 +1,6 @@
 {
   "name": "agentium",
-  "version": "4.1.0",
+  "version": "4.5.0",
   "description": "Production-ready AI agent framework with multi-model support, workflows, teams, and observability",
   "private": true,
   "keywords": [
@@ -51,6 +51,7 @@
     "@biomejs/biome": "^2.5.14",
     "@modelcontextprotocol/client": "2.3.0",
     "@modelcontextprotocol/server": "2.3.0",
+    "better-sqlite3": "^11.10.0",
     "bullmq": "6.3.11",
     "bullmq-v5": "npm:bullmq@5.81.5",
     "cohere-ai": "^8.1.0",
@@ -59,6 +60,7 @@
     "lint-staged": "^16.2.7",
     "openai": "^7.30.0",
     "pdf-parse": "2.4.5",
+    "pg": "^8.23.1",
     "socket.io-client": "^4.8.4",
     "tsdown": "0.23.0",
     "tsx": "^4.23.15",

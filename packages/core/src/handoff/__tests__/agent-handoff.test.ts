@@ -97,7 +97,13 @@ describe("public Agent handoff", () => {
       expect(result.handoffChain).toEqual(["source", "specialist"]);
       expect(result.finalAgent).toBe("specialist");
       expect(result.usage.totalTokens).toBe(6);
-      expect(costs.getEntries().map((entry) => [entry.agentName, entry.usage.totalTokens])).toEqual([
+      expect(result.costs).toMatchObject({ status: "available", total: null, attemptCount: 2 });
+      expect(
+        (await costs.queryUsage({ tenantId: "tenant" })).items
+          .filter((entry) => entry.executionStatus === "succeeded")
+          .map((entry) => [entry.agentName, entry.usage.tokens?.total])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      ).toEqual([
         ["source", 3],
         ["specialist", 3],
       ]);
@@ -388,7 +394,11 @@ describe("public Agent handoff", () => {
       handoff: { targets: [{ agent: target, description: "target" }] },
     });
     await expect(source.run("help", options)).rejects.toThrow("target failed");
-    expect(costs.getEntries().map((entry) => entry.usage.totalTokens)).toEqual([3]);
+    const failedUsage = (await costs.queryUsage({ tenantId: "tenant" })).items;
+    expect(
+      failedUsage.filter((entry) => entry.executionStatus === "succeeded").map((entry) => entry.usage.tokens?.total),
+    ).toEqual([3]);
+    expect(failedUsage.some((entry) => entry.executionStatus === "failed" && entry.agentName === "target")).toBe(true);
     await source.run("continue", options);
     const messages = vi.mocked(sourceModel.generate).mock.calls[1][0];
     complete(messages);

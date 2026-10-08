@@ -6,6 +6,7 @@ import {
   type SpeechSynthesizer,
   validateAudioFrame,
 } from "../speech-types.js";
+import { beginSpeechAccounting } from "./speech-accounting.js";
 import { defaultSpeechSocketFactory, SpeechWire, type SpeechWireOptions, speechKey } from "./speech-socket.js";
 export interface ElevenLabsSynthesizerOptions extends SpeechWireOptions {
   voiceId: string;
@@ -35,11 +36,21 @@ export class ElevenLabsSynthesizer implements SpeechSynthesizer {
       model_id: this.options.model ?? "eleven_flash_v2_5",
       output_format: `pcm_${config.format.sampleRateHz}`,
     });
+    const accounting = await beginSpeechAccounting(
+      this.options,
+      "elevenlabs",
+      this.options.model ?? "eleven_flash_v2_5",
+      "speech.synthesis",
+      signal,
+    );
     const socket = await (this.options.socketFactory ?? defaultSpeechSocketFactory)(
       `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(config.voice ?? this.options.voiceId)}/stream-input?${query}`,
       { "xi-api-key": speechKey(this.options, "ELEVENLABS_API_KEY") },
       signal,
-    );
+    ).catch(async (error) => {
+      await accounting.fail();
+      throw error;
+    });
     let sequence = 0;
     let textChars = 0;
     let flushed = false;
@@ -79,9 +90,15 @@ export class ElevenLabsSynthesizer implements SpeechSynthesizer {
         flushed = true;
         wire.send({ text: " ", flush: true });
         wire.send({ text: "" });
-        this.options.onUsage?.({ provider: "elevenlabs", unit: "characters", quantity: textChars });
+        accounting.record({ provider: "elevenlabs", unit: "characters", quantity: textChars });
       },
-      close: async () => wire.close(),
+      close: async () => {
+        try {
+          wire.close();
+        } finally {
+          await accounting.close();
+        }
+      },
     };
   }
 }

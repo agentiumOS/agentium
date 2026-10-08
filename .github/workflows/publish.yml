@@ -50,7 +50,7 @@ jobs:
       - name: Verify tests and packed public API
         run: |
           npm run lint
-          node --test scripts/release-lock.test.mjs
+          node --test scripts/release-lock.test.mjs scripts/cjs-declarations.test.mjs
           npm test
           npm run test:package
 

@@ -1,6 +1,8 @@
 import { createRequire } from "node:module";
 import { z } from "zod/v3";
 import type { RunContext } from "../agent/run-context.js";
+import { meteredOperation } from "../cost/accounting.js";
+import { normalizeOperationUsage } from "../cost/operation-usage.js";
 import type { ToolDef } from "../tools/types.js";
 import { Toolkit } from "./base.js";
 
@@ -69,14 +71,35 @@ export class ImageGenerationToolkit extends Toolkit {
         execute: async (args: Record<string, unknown>, _ctx: RunContext): Promise<string> => {
           try {
             const openai = this.getOpenAI();
-            const response = await openai.images.generate({
-              model: this.model,
-              prompt: args.prompt as string,
-              n: (args.n as number) ?? 1,
-              size: (args.size as string) ?? this.size,
-              quality: (args.quality as string) ?? this.quality,
-              response_format: "url",
-            });
+            const response = await meteredOperation(
+              {
+                context: {
+                  providerId: "openai",
+                  billingProviderId: "openai",
+                  modelId: this.model,
+                  api: "images",
+                  occurredAt: new Date().toISOString(),
+                  dimensions: { size: String(args.size ?? this.size), quality: String(args.quality ?? this.quality) },
+                },
+              },
+              async (capture) => {
+                const response = await openai.images.generate({
+                  model: this.model,
+                  prompt: args.prompt as string,
+                  n: (args.n as number) ?? 1,
+                  size: (args.size as string) ?? this.size,
+                  quality: (args.quality as string) ?? this.quality,
+                  response_format: "url",
+                });
+                capture(
+                  normalizeOperationUsage("openai", "images", response, {
+                    size: String(args.size ?? this.size),
+                    quality: String(args.quality ?? this.quality),
+                  }),
+                );
+                return response;
+              },
+            );
             const images = response.data.map((img: any, i: number) => ({
               index: i,
               url: img.url,
@@ -105,12 +128,29 @@ export class ImageGenerationToolkit extends Toolkit {
             const imageBuffer = Buffer.from(await imageRes.arrayBuffer());
             const imageFile = new File([imageBuffer], "image.png", { type: "image/png" });
 
-            const response = await openai.images.edit({
-              image: imageFile,
-              prompt: args.prompt as string,
-              n: 1,
-              size: (args.size as string) ?? "1024x1024",
-            });
+            const response = await meteredOperation(
+              {
+                context: {
+                  providerId: "openai",
+                  billingProviderId: "openai",
+                  modelId: "dall-e-2",
+                  api: "images.edit",
+                  occurredAt: new Date().toISOString(),
+                },
+              },
+              async (capture) => {
+                const response = await openai.images.edit({
+                  image: imageFile,
+                  prompt: args.prompt as string,
+                  n: 1,
+                  size: (args.size as string) ?? "1024x1024",
+                });
+                capture(
+                  normalizeOperationUsage("openai", "images", response, { size: String(args.size ?? "1024x1024") }),
+                );
+                return response;
+              },
+            );
             const images = response.data.map((img: any, i: number) => ({
               index: i,
               url: img.url,

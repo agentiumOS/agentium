@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+import type { BillingContext } from "../../cost/accounting-types.js";
+import { captureRetryFailure } from "../../cost/context.js";
 import type { ModelProvider } from "../provider.js";
 import { anthropicReplayContent, applyAnthropicThinking, extrasFromAnthropicContent } from "../thinking-replay.js";
 import {
@@ -9,10 +11,10 @@ import {
   type ModelConfig,
   type ModelResponse,
   type StreamChunk,
-  type TokenUsage,
   type ToolCall,
   type ToolDefinition,
 } from "../types.js";
+import { mergeResponseContext, providerTokenUsage, safeResponseContext } from "../usage-normalizers.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -33,10 +35,12 @@ export class AwsClaudeProvider implements ModelProvider {
   readonly providerId = "aws-claude";
   readonly modelId: string;
   private client: any;
+  private readonly region: string;
   private BedrockCtor: any;
 
   constructor(modelId: string, config?: AwsClaudeConfig) {
     this.modelId = modelId;
+    this.region = config?.awsRegion ?? process.env.AWS_REGION ?? "us-east-1";
     try {
       const mod = _require("@anthropic-ai/bedrock-sdk");
       this.BedrockCtor = mod.AnthropicBedrock ?? mod.default ?? mod;
@@ -72,6 +76,7 @@ export class AwsClaudeProvider implements ModelProvider {
           err?.message?.includes("rate limit") ||
           err?.message?.includes("ThrottlingException");
         if (!isRetryable || attempt === retries) throw err;
+        await captureRetryFailure(err);
         const delay = Math.min(1000 * 2 ** attempt + Math.random() * 500, 10000);
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -138,7 +143,8 @@ export class AwsClaudeProvider implements ModelProvider {
 
     let currentToolId = "";
     let inThinkingBlock = false;
-    let inputTokens = 0;
+    let streamUsage: Record<string, unknown> = {};
+    let streamContext: Partial<BillingContext> = { modelId: this.modelId, region: this.region };
     const replayContent: unknown[] = [];
     let currentBlock: Record<string, unknown> | null = null;
     let toolInputJson = "";
@@ -212,14 +218,8 @@ export class AwsClaudeProvider implements ModelProvider {
           break;
         }
         case "message_delta": {
-          const usage: TokenUsage | undefined = event.usage
-            ? {
-                promptTokens: inputTokens,
-                completionTokens: event.usage.output_tokens ?? 0,
-                totalTokens: inputTokens + (event.usage.output_tokens ?? 0),
-                providerMetrics: { input_tokens: inputTokens, ...event.usage },
-              }
-            : undefined;
+          if (event.usage) streamUsage = { ...streamUsage, ...event.usage };
+          const usage = providerTokenUsage(this.providerId, "messages", streamUsage, streamContext);
 
           let finishReason = event.delta?.stop_reason ?? "stop";
           if (finishReason === "tool_use") finishReason = "tool_calls";
@@ -235,7 +235,9 @@ export class AwsClaudeProvider implements ModelProvider {
         }
         case "message_start": {
           if (event.message?.usage) {
-            inputTokens = event.message.usage.input_tokens ?? 0;
+            streamUsage = { ...event.message.usage };
+            streamContext = mergeResponseContext(streamContext, event.message);
+            providerTokenUsage(this.providerId, "messages", streamUsage, streamContext);
           }
           break;
         }
@@ -355,6 +357,11 @@ export class AwsClaudeProvider implements ModelProvider {
   }
 
   private normalizeResponse(response: any): ModelResponse & { thinking?: string } {
+    const usage = providerTokenUsage(this.providerId, "messages", response.usage, {
+      modelId: this.modelId,
+      region: this.region,
+      ...safeResponseContext(response),
+    });
     const toolCalls: ToolCall[] = [];
     let textContent = "";
     let thinkingContent = "";
@@ -366,13 +373,6 @@ export class AwsClaudeProvider implements ModelProvider {
         toolCalls.push({ id: block.id, name: block.name, arguments: block.input ?? {} });
       }
     }
-
-    const usage: TokenUsage = {
-      promptTokens: response.usage?.input_tokens ?? 0,
-      completionTokens: response.usage?.output_tokens ?? 0,
-      totalTokens: (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0),
-      providerMetrics: response.usage ? { ...response.usage } : undefined,
-    };
 
     let finishReason: ModelResponse["finishReason"] = "stop";
     if (response.stop_reason === "tool_use") finishReason = "tool_calls";

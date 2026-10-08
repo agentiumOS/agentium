@@ -1,3 +1,8 @@
+import { meteredOperation, unknownUsage } from "../../cost/accounting.js";
+import type { AccountingContext } from "../../cost/context.js";
+import { retainRawUsage } from "../../cost/usage.js";
+import { endpointBillingContext } from "../../models/usage-normalizers.js";
+
 /** Context for the current GPT transcription models, not conversation instructions. */
 export interface OpenAITranscriptionContext {
   prompt?: string;
@@ -36,6 +41,7 @@ export function detectedLanguages(value: unknown): string[] | undefined {
   return value.map((item) => item.code);
 }
 export interface OpenAIFileTranscriberOptions extends OpenAITranscriptionContext {
+  accounting?: AccountingContext;
   apiKey?: string;
   /** API origin, optionally ending in /v1. Custom endpoints are explicitly host-trusted. */
   baseURL?: string;
@@ -102,18 +108,42 @@ export class OpenAIFileTranscriber {
     const timeout = AbortSignal.timeout(this.options.timeoutMs ?? 60_000);
     const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const root = (this.options.baseURL ?? "https://api.openai.com").replace(/\/+$/, "").replace(/\/v1$/, "");
-    const response = await (this.options.fetch ?? fetch)(`${root}/v1/audio/transcriptions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}` },
-      body: form,
-      signal: requestSignal,
-      redirect: "error",
-    });
-    const json = (await response.json()) as { text?: unknown; languages?: unknown; error?: { message?: string } };
-    requestSignal.throwIfAborted();
-    if (!response.ok) throw new Error(json.error?.message ?? `Transcription failed (${response.status})`);
-    if (typeof json.text !== "string") throw new Error("Transcription response lacks text");
-    const languages = detectedLanguages(json.languages);
-    return { text: json.text, ...(languages !== undefined ? { languages } : {}) };
+    return meteredOperation(
+      {
+        accounting: this.options.accounting,
+        context: {
+          providerId: "openai",
+          billingProviderId: "openai",
+          modelId: this.options.model ?? DEFAULT_FILE_TRANSCRIPTION_MODEL,
+          api: "audio.transcriptions",
+          occurredAt: new Date().toISOString(),
+          ...endpointBillingContext("openai", this.options.baseURL),
+        },
+        purpose: "file-transcription",
+        attemptVisibility: "physical",
+        signal: requestSignal,
+      },
+      async (capture) => {
+        const response = await (this.options.fetch ?? fetch)(`${root}/v1/audio/transcriptions`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${key}` },
+          body: form,
+          signal: requestSignal,
+          redirect: "error",
+        });
+        const json = (await response.json()) as {
+          text?: unknown;
+          languages?: unknown;
+          usage?: unknown;
+          error?: { message?: string };
+        };
+        capture({ ...unknownUsage("transcription_billing_contract_required"), ...retainRawUsage(json.usage) });
+        requestSignal.throwIfAborted();
+        if (!response.ok) throw new Error(json.error?.message ?? `Transcription failed (${response.status})`);
+        if (typeof json.text !== "string") throw new Error("Transcription response lacks text");
+        const languages = detectedLanguages(json.languages);
+        return { text: json.text, ...(languages !== undefined ? { languages } : {}) };
+      },
+    );
   }
 }

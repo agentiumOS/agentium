@@ -6,6 +6,7 @@ import {
   type SpeechSynthesizer,
   validateAudioFrame,
 } from "../speech-types.js";
+import { beginSpeechAccounting } from "./speech-accounting.js";
 import { defaultSpeechSocketFactory, SpeechWire, type SpeechWireOptions, speechKey } from "./speech-socket.js";
 export interface SarvamSynthesizerOptions extends SpeechWireOptions {
   speaker: string;
@@ -33,11 +34,21 @@ export class SarvamSynthesizer implements SpeechSynthesizer {
     )
       throw new Error("Unsupported Sarvam synthesis language");
     const query = new URLSearchParams({ model: this.options.model ?? "bulbul:v3", send_completion_event: "true" });
+    const accounting = await beginSpeechAccounting(
+      this.options,
+      "sarvam",
+      this.options.model ?? "bulbul:v3",
+      "speech.synthesis",
+      signal,
+    );
     const socket = await (this.options.socketFactory ?? defaultSpeechSocketFactory)(
       `wss://api.sarvam.ai/text-to-speech/ws?${query}`,
       { "Api-Subscription-Key": speechKey(this.options, "SARVAM_API_KEY") },
       signal,
-    );
+    ).catch(async (error) => {
+      await accounting.fail();
+      throw error;
+    });
     let sequence = 0;
     let chars = 0;
     let flushed = false;
@@ -84,9 +95,15 @@ export class SarvamSynthesizer implements SpeechSynthesizer {
         if (flushed) return;
         flushed = true;
         wire.send({ type: "flush" });
-        this.options.onUsage?.({ provider: "sarvam", unit: "characters", quantity: chars });
+        accounting.record({ provider: "sarvam", unit: "characters", quantity: chars });
       },
-      close: async () => wire.close(),
+      close: async () => {
+        try {
+          wire.close();
+        } finally {
+          await accounting.close();
+        }
+      },
     };
   }
 }

@@ -169,10 +169,19 @@ describe("streaming handoff", () => {
     expect(targetMessages[0].some((message) => message.providerExtras)).toBe(false);
     closed(targetMessages[0]);
     expect(vi.mocked(targetModel.generate).mock.calls[0][1]?.apiKey).toBeUndefined();
-    expect(costs.getEntries().map((entry) => [entry.agentName, entry.usage.totalTokens])).toEqual([
+    const charged = (await costs.queryUsage({ tenantId: "tenant" })).items.filter(
+      (entry) => entry.executionStatus === "succeeded",
+    );
+    expect(
+      charged
+        .map((entry) => [entry.agentName, entry.usage.tokens?.total])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    ).toEqual([
       ["source", 3],
-      ["target", 6],
+      ["target", 3],
+      ["target", 3],
     ]);
+    expect((await costs.queryCosts({ tenantId: "tenant" })).total).toBeNull(); // Bare mock usage has no billing contract.
     await source.run("continue", scopes);
     const replay = vi.mocked(sourceModel.generate).mock.calls[1][0];
     closed(replay);

@@ -1,10 +1,13 @@
 import type { TokenUsage } from "../models/types.js";
+import type { BudgetPolicy, PricingCatalog } from "./accounting-types.js";
+import type { AccountingStore } from "./store.js";
 
 export interface ModelPricing {
   promptPer1k: number;
   completionPer1k: number;
   reasoningPer1k?: number;
   cachedPromptPer1k?: number;
+  cacheWritePer1k?: number;
   audioInputPer1k?: number;
   audioOutputPer1k?: number;
 }
@@ -51,5 +54,9 @@ export interface CostSummary {
 
 export interface CostTrackerConfig {
   pricing?: Record<string, ModelPricing>;
-  budget?: CostBudget;
+  budget?: CostBudget | BudgetPolicy;
+  catalog?: PricingCatalog;
+  store?: AccountingStore;
+  currency?: string;
+  legacyUsageSemantics?: "inclusive";
 }

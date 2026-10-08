@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+import type { BillingContext } from "../../cost/accounting-types.js";
+import { captureRetryFailure } from "../../cost/context.js";
 import { generateOpenAIStyle, streamOpenAIStyle } from "../openai-api.js";
 import type { ModelProvider } from "../provider.js";
 import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefinition } from "../types.js";
@@ -24,6 +26,7 @@ export class AzureOpenAIProvider implements ModelProvider {
   readonly providerId = "azure-openai";
   readonly modelId: string;
   private client: any;
+  private billingContext: Partial<BillingContext> = {};
   private AzureOpenAICtor: any;
 
   constructor(modelId: string, config?: AzureOpenAIConfig) {
@@ -39,6 +42,13 @@ export class AzureOpenAIProvider implements ModelProvider {
       const endpoint = config?.endpoint ?? process.env.AZURE_OPENAI_ENDPOINT;
       const deployment = config?.deployment ?? process.env.AZURE_OPENAI_DEPLOYMENT;
       const apiVersion = config?.apiVersion ?? process.env.AZURE_OPENAI_API_VERSION ?? "2024-10-21";
+      if (endpoint) {
+        const url = new URL(endpoint);
+        this.billingContext = {
+          resourceId: `${url.origin}${url.pathname.replace(/\/$/, "")}${deployment ? `/deployments/${deployment}` : ""}`,
+          provenance: { resourceId: "request" },
+        };
+      }
 
       this.client = new this.AzureOpenAICtor({
         apiKey,
@@ -69,6 +79,7 @@ export class AzureOpenAIProvider implements ModelProvider {
           err?.code === "ETIMEDOUT" ||
           err?.message?.includes("rate limit");
         if (!isRetryable || attempt === retries) throw err;
+        await captureRetryFailure(err);
         const delay = Math.min(1000 * 2 ** attempt + Math.random() * 500, 10000);
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -82,6 +93,8 @@ export class AzureOpenAIProvider implements ModelProvider {
   ): Promise<ModelResponse> {
     return generateOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this), {
       maxTokensField: "max_completion_tokens",
+      providerId: this.providerId,
+      billingContext: this.billingContext,
     });
   }
 
@@ -91,6 +104,8 @@ export class AzureOpenAIProvider implements ModelProvider {
   ): AsyncGenerator<StreamChunk> {
     yield* streamOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this), {
       maxTokensField: "max_completion_tokens",
+      providerId: this.providerId,
+      billingContext: this.billingContext,
     });
   }
 }

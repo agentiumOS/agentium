@@ -164,4 +164,96 @@ try {
 
 The default model is `gpt-6-luna`. A run question array replaces constructor defaults. Answers can include individual refusals; scores can be fractional. `stream()` emits completed JSON followed by a finish chunk containing `decisions`. Only text and inline base64 images are supported. Conversation roles become labeled text evidence in user messages; question instructions define the classification task. Tools, arbitrary output schemas, chat sampling options, and semantic caching are unsupported.
 
-Costs use the `openai-decisions/gpt-6-luna` pricing key with a base input rate of $0.10 per million tokens. Regional and long-context premiums require custom pricing. See the [Decisions guide](https://docs.agentium.in/models/openai-decisions).
+Decisions usage is recorded under its own API and actual billing context. Regional, context, and account conditions must match a catalog rule; missing conditions remain unpriced. See the [Decisions guide](https://docs.agentium.in/models/openai-decisions).
+
+## Usage and cost accounting
+
+Cost accounting stays in `@agentium/core`. Enable it once with `cost: true`. Core records observable provider calls, auxiliary model work, retries, and fallback leaves. A parent summary does not add another charge.
+
+```typescript
+import { Agent, openai } from "@agentium/core";
+
+const agent = new Agent({
+  name: "assistant",
+  model: openai("gpt-6.1-sol"),
+  cost: true,
+});
+const result = await agent.run("Summarize this request");
+console.log(result.costs); // Snapshot for this run and its child work.
+await agent.close(); // Drain owned accounting when the application stops using this agent.
+```
+
+There is no per-run flush or query step. `result.costs.status === "available"` means the ledger was read. It does not mean every charge has a price. `total` is a decimal string when all required charges are known, and `null` when usage, a rate, or a billing condition is missing. `knownSubtotal` contains the priced part. A read failure returns `status: "unavailable"` with both amounts `null`, and emits `accounting.error`. The model result is preserved.
+
+Reports include `asOf` and `finality`; ongoing child work can leave a snapshot provisional. The final Agent stream finish also includes `costs`. Cancellation events include the available snapshot. `Team` and `Workflow` support the same `cost` option. By default, accounting is disabled unless a parent run supplies it. `cost: false` does not bypass a parent's budget.
+
+Use `cost: { catalog, budget, store }` to configure accounting, or pass an existing `costTracker` to share a ledger. Configure one option at a time. Agent close drains its owned tracker; it does not flush or close a borrowed tracker or close a caller-owned store. The default store is local memory. `SqliteUsageStore(path)` and `PostgresUsageStore(connectionString)` support durable storage and require the optional `better-sqlite3` or `pg` package. Advanced reports and raw evidence remain available through `CostTracker.queryCosts()` and `queryUsage()`.
+
+`billingContext` supplies trusted account facts for the agent's main model calls. For example, use `billingContext: { actualServiceTier: "standard", region: "global" }` only if these match the account contract. It does not change the provider request or select a service tier. Response facts override configured defaults. Missing facts stay unpriced.
+
+### Input, output, and cache tokens
+
+Canonical input includes ordinary input, cache reads, and cache writes. Output includes reasoning tokens. Reasoning is a detail of output; do not add it again. Raw provider usage is retained separately from normalized quantities.
+
+The following rates are **synthetic test rates**, in USD per million tokens:
+
+| Charge | Tokens | Rate | Cost |
+| --- | ---: | ---: | ---: |
+| Ordinary input | 1,000 | 10 | 0.010 |
+| Cache read | 12,000 | 1 | 0.012 |
+| Cache write | 2,000 | 12.5 | 0.025 |
+| Output, including 100 reasoning tokens | 500 | 50 | 0.025 |
+| Total | 15,500 | | 0.072 |
+
+If the write rate is missing, `total` is `null` and `knownSubtotal` is `"0.047"`. Cache-write TTL buckets partition write tokens; the total and its buckets cannot both be charged. Missing modality/cache intersections also stay unknown.
+
+### Price rules and budgets
+
+Supply a versioned `PricingCatalog` to pin rates or apply account contracts. Rules match the actual provider, biller, model, API, date, and required billing dimensions. They can price tokens, requests, images, characters, duration, and custom units. Fixed fees, context bands, cache TTL, explicit adjustments, and billing-group rounding use the same charge engine. Each charge retains its rule and rate snapshot.
+
+Store requested and returned service tiers separately. Use the returned tier for a documented Fast downgrade. A Pro mode does not imply a universal multiplier; its reported usage is counted once. Missing billing conditions produce an unpriced item.
+
+```typescript
+import { CostTracker } from "@agentium/core";
+
+const costs = new CostTracker({
+  budget: {
+    mode: "threshold",
+    onExceeded: "warn",
+    onUnknown: "warn",
+    limits: [{
+      scope: "session", amount: "2", currency: "USD",
+      period: { start: "2026-10-01T00:00:00Z", end: "2026-11-01T00:00:00Z" },
+    }],
+  },
+});
+```
+
+Threshold checks can overshoot while accepted work is running. Warning mode continues. A zero limit is a real limit. Reservation mode requires an atomic accounting store and a conservative bound. It cannot guarantee a provider invoice. SDK retries with no reliable transport evidence are labelled `opaque`. Failed, cancelled, or malformed responses can still have usage; core preserves that evidence.
+
+Streaming usage is saved before transport close. Changed cumulative snapshots replace prior snapshots. A custom adapter can mark a finish chunk with `usageObservation: { kind: "delta", id, sequence }`; use a stable event ID and sequence so replayed deltas count once. Observations stay provisional until transport close. Budget checks run after each new usage observation. `Team` and `Workflow` pass the accounting scope to child work.
+
+An accounting write failure after a successful provider call emits `accounting.error`. It does not retry the provider. `flush()` retries the accounting write with the original identity. `usage.recorded`, `cost.assessed`, and `budget.checked` expose canonical status. The legacy `cost.tracked` event remains a replacement run total. Do not add its value to `cost.assessed` amounts.
+
+### Paid operations beyond chat
+
+Use `meteredOperation` for custom paid tools or adapters. Supply a `BillingContext`, capture a `NormalizedUsage` before output parsing, and return the usual application result. Supply `accounting: { tracker, tenantId, runId, ... }` explicitly outside an Agent run. Inside a run, async context carries the scope. A tool's elapsed time or text length does not establish its bill.
+
+| Built-in path | Captured evidence | Current limit |
+| --- | --- | --- |
+| OpenAI embeddings | Provider input tokens | SDK retries are opaque; custom gateways need a tariff |
+| Google embeddings | Provider usage metadata | Multimodal quantities remain partial |
+| Cohere reranking | Billed search units | SDK retries are opaque |
+| Jina and Voyage reranking | Provider tokens per HTTP attempt | Missing usage stays unknown |
+| OpenAI images | Returned image count, raw token usage, size, quality | Image/token billing remains partial |
+| OpenAI realtime | Response ID, status, raw cache and modality usage | Modality prices and automatic-turn budgets remain partial |
+| Google Live | Raw Live usage metadata | Modality and event aggregation remain partial |
+| Speech adapters | Available character or duration measurements | Provider billing contracts remain partial |
+| File transcription and voice pipeline | Raw STT usage, model usage, measured TTS characters | Speech pricing contracts remain partial |
+| Other paid toolkits | Explicitly unmetered | Use a custom operation with billing evidence |
+
+`BUILTIN_ACCOUNTING_CAPABILITIES` lists individual toolkit coverage. Local embeddings, local reranking, and calculator work do not imply that application infrastructure is free. No adapter is promised accurate pricing for future provider fields or undocumented account contracts.
+
+### Migration from the old tracker
+
+Use `recordUsage`, `queryUsage`, `queryCosts`, and `flush` for canonical accounting. `track()` and `getSummary()` remain synchronous compatibility APIs. They are not durable ledger queries. Legacy flat token data needs an explicit inclusive usage contract; incomplete legacy pricing raises a typed error. Configure `legacyUsageSemantics: "inclusive"` only when the input/cache/output definitions are known. Remove assumptions that missing prices mean zero or that reasoning must be added to output.

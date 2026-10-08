@@ -14,6 +14,19 @@ jobs:
         node-version: [22, 24]
 
     services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agentium_test
+          POSTGRES_PASSWORD: agentium_test
+          POSTGRES_DB: agentium_test
+        ports:
+          - 55473:5432
+        options: >-
+          --health-cmd "pg_isready -U agentium_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
       mongo:
         image: mongo:8.0
         ports:
@@ -63,13 +76,14 @@ jobs:
         run: npx biome ci .
 
       - name: Verify release metadata
-        run: node --test scripts/release-lock.test.mjs
+        run: node --test scripts/release-lock.test.mjs scripts/cjs-declarations.test.mjs
 
       - name: Run tests, including Redis delivery and MongoDB crash recovery
         run: npx vitest run
         env:
           AGENTIUM_REDIS_TEST: "1"
           AGENTIUM_DURABLE_MONGO_TEST: "1"
+          AGENTIUM_COST_POSTGRES_TEST_URL: "postgresql://agentium_test:agentium_test@127.0.0.1:55473/agentium_test"
 
       - name: Verify packed package consumers and CLI scaffolds
         run: npm run test:package

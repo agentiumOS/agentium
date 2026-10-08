@@ -1,5 +1,6 @@
 import { randomUUID as uuidv4 } from "node:crypto";
 import { z } from "zod/v3";
+import { meteredGenerateFor } from "../../cost/accounting.js";
 import type { ModelProvider } from "../../models/provider.js";
 import type { ChatMessage } from "../../models/types.js";
 import type { StorageDriver } from "../../storage/driver.js";
@@ -286,7 +287,7 @@ export class EntityMemory {
         .replace("{knownEntities}", knownStr)
         .replace("{conversation}", conversationStr);
 
-      const response = await model.generate([{ role: "user", content: prompt }], {
+      const response = await meteredGenerateFor("memory-entity-memory", model, [{ role: "user", content: prompt }], {
         temperature: 0,
         maxTokens: 800,
       });

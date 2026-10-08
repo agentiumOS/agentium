@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { captureRetryFailure } from "../../cost/context.js";
 import { generateOpenAIStyle, streamOpenAIStyle } from "../openai-api.js";
 import type { ModelProvider } from "../provider.js";
 import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefinition } from "../types.js";
@@ -64,6 +65,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           err?.code === "ETIMEDOUT" ||
           err?.message?.includes("rate limit");
         if (!isRetryable || attempt === retries) throw err;
+        await captureRetryFailure(err);
         const delay = Math.min(1000 * 2 ** attempt + Math.random() * 500, 10000);
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -75,13 +77,17 @@ export class OpenAICompatibleProvider implements ModelProvider {
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): Promise<ModelResponse> {
-    return generateOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this));
+    return generateOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this), {
+      providerId: this.providerId,
+    });
   }
 
   async *stream(
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): AsyncGenerator<StreamChunk> {
-    yield* streamOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this));
+    yield* streamOpenAIStyle(this.client, this.modelId, messages, options, this.withRetry.bind(this), {
+      providerId: this.providerId,
+    });
   }
 }

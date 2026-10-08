@@ -1,7 +1,11 @@
+import { meteredOperation } from "../../cost/accounting.js";
+import type { AccountingContext } from "../../cost/context.js";
+import { normalizeOperationUsage } from "../../cost/operation-usage.js";
 import type { RerankDocument, Reranker, RerankOptions, RerankResult } from "../types.js";
 import { toRerankInput } from "../types.js";
 
 export interface VoyageRerankerConfig {
+  accounting?: AccountingContext;
   apiKey?: string;
   /** Voyage rerank model. Defaults to `rerank-2`. */
   model?: string;
@@ -18,10 +22,12 @@ export class VoyageReranker implements Reranker {
   readonly providerId = "voyage";
   private apiKey: string | undefined;
   private model: string;
+  private accounting?: AccountingContext;
   private baseURL: string;
 
   constructor(config: VoyageRerankerConfig = {}) {
     this.apiKey = config.apiKey ?? process.env.VOYAGE_API_KEY;
+    this.accounting = config.accounting;
     this.model = config.model ?? "rerank-2";
     this.baseURL = (config.baseURL ?? "https://api.voyageai.com/v1").replace(/\/$/, "");
   }
@@ -29,7 +35,24 @@ export class VoyageReranker implements Reranker {
   private async withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await fn();
+        return await meteredOperation(
+          {
+            accounting: this.accounting,
+            context: {
+              providerId: "voyage",
+              billingProviderId: "voyage",
+              modelId: this.model,
+              api: "rerank",
+              occurredAt: new Date().toISOString(),
+            },
+            attemptVisibility: "physical",
+          },
+          async (capture) => {
+            const result = await fn();
+            capture(normalizeOperationUsage("voyage", "rerank", result));
+            return result;
+          },
+        );
       } catch (err: any) {
         const status = err?.status ?? err?.statusCode;
         const isRetryable = status === 429 || status === 500 || status === 502 || status === 503;

@@ -6,10 +6,13 @@ import { CompressionManager } from "../compression/compression-manager.js";
 import { ContextCompactor, countConversationTokens, groupConversationTurns } from "../context/context-compactor.js";
 import { formatContextFiles, loadContextFiles } from "../context/context-files.js";
 import { retainRecentTurns } from "../context/conversation-history.js";
+import { createMeteredProvider, getRunCostSnapshot, unknownUsage } from "../cost/accounting.js";
+import { getAccountingContext, withAccountingContext, withAccountingStream } from "../cost/context.js";
+import { CostTracker } from "../cost/cost-tracker.js";
 import { applyTemplates, resolveDependencies } from "../dependencies/resolver.js";
 import { EventBus } from "../events/event-bus.js";
 import { AgentFileSystem } from "../fs/agent-fs.js";
-import { getHandoffControl, getHandoffScope, setHandoffControl } from "../handoff/control.js";
+import { getHandoffControl, getHandoffScope, setHandoffControl, setHandoffScope } from "../handoff/control.js";
 import { HandoffManager, settledHandoffPrefix } from "../handoff/handoff-manager.js";
 import { createHandoffTool } from "../handoff/handoff-tool.js";
 import type { HandoffResult } from "../handoff/types.js";
@@ -84,6 +87,7 @@ export class Agent {
   private _toolExecutor: ToolExecutor | null = null;
   private toolRouter: ToolRouter | null = null;
   private skillsInitPromise: Promise<void> | null = null;
+  private ownedCostTracker: CostTracker | undefined;
 
   get tools() {
     return this.config.tools ?? [];
@@ -231,10 +235,9 @@ export class Agent {
   private buildLoopHooks(): LoopHooks | undefined {
     const userHooks = this.config.loopHooks;
     const compactor = this.config.contextCompactor ? new ContextCompactor(this.config.contextCompactor) : null;
-    const costTracker = this.config.costTracker;
     const compression = this.compressionManager;
 
-    if (!userHooks && !compactor && !costTracker && !compression) return undefined;
+    if (!userHooks && !compactor && !compression) return undefined;
 
     return {
       beforeLLMCall: async (messages, roundtrip) => {
@@ -256,14 +259,6 @@ export class Agent {
       beforeToolExec: userHooks?.beforeToolExec,
       afterToolExec: userHooks?.afterToolExec,
       onRoundtripComplete: async (roundtrip, tokensSoFar) => {
-        // Mid-run budget check without persisting an entry (avoids double-counting)
-        if (costTracker) {
-          const exceeded = costTracker.checkInProgressBudget(this.config.model.modelId, tokensSoFar);
-          if (exceeded) {
-            return { stop: true };
-          }
-        }
-
         if (userHooks?.onRoundtripComplete) {
           return userHooks.onRoundtripComplete(roundtrip, tokensSoFar);
         }
@@ -282,6 +277,7 @@ export class Agent {
       logger: this.logger,
       reasoning: this.config.reasoning,
       providerOptions: this.config.providerOptions,
+      billingContext: this.config.billingContext,
       retry: this.config.retry,
       toolResultLimit: this.config.toolResultLimit,
       loopHooks: this.buildLoopHooks(),
@@ -329,6 +325,9 @@ export class Agent {
   }
 
   constructor(config: AgentConfig) {
+    if (config.cost !== undefined && config.costTracker !== undefined)
+      throw new TypeError("Configure either cost or costTracker, not both");
+    if (config.cost) this.ownedCostTracker = new CostTracker(config.cost === true ? undefined : config.cost);
     for (const key of ["harness", "harnessOptions", "replaceTools"]) {
       if (Object.hasOwn(config, key))
         throw new Error(
@@ -446,6 +445,7 @@ export class Agent {
       logger: this.logger,
       reasoning: config.reasoning,
       providerOptions: config.providerOptions,
+      billingContext: config.billingContext,
       retry: config.retry,
       toolResultLimit: config.toolResultLimit,
       loopHooks: this.buildLoopHooks(),
@@ -513,6 +513,7 @@ export class Agent {
 
     const provider = ctx?.executionServices
       ? {
+          accountingRole: "composite" as const,
           providerId: this.config.model.providerId,
           modelId: this.config.model.modelId,
           generate: (
@@ -520,13 +521,13 @@ export class Agent {
             options?: import("../models/types.js").ModelConfig & {
               tools?: import("../models/types.js").ToolDefinition[];
             },
-          ) => ctx.executionServices!.model(this.config.model, messages, options, ctx),
+          ) => ctx.executionServices!.model(createMeteredProvider(this.config.model), messages, options, ctx),
           stream: (
             messages: ChatMessage[],
             options?: import("../models/types.js").ModelConfig & {
               tools?: import("../models/types.js").ToolDefinition[];
             },
-          ) => ctx.executionServices!.streamModel(this.config.model, messages, options, ctx),
+          ) => ctx.executionServices!.streamModel(createMeteredProvider(this.config.model), messages, options, ctx),
         }
       : this.config.model;
     return new LLMLoop(provider, executor, {
@@ -537,6 +538,7 @@ export class Agent {
       logger: this.logger,
       reasoning: this.config.reasoning,
       providerOptions: this.config.providerOptions,
+      billingContext: this.config.billingContext,
       retry: this.config.retry,
       toolResultLimit: this.config.toolResultLimit,
       loopHooks: this.buildLoopHooks(),
@@ -555,6 +557,7 @@ export class Agent {
   }
 
   async close(options: { closeStorage?: boolean } = {}): Promise<void> {
+    await this.ownedCostTracker?.close();
     if (this.ownsApprovalService) this.approvalService?.close();
     if (this.webhookManager) {
       this.webhookManager.detach(this.eventBus);
@@ -564,6 +567,18 @@ export class Agent {
       if (typeof (storage as any).close === "function") {
         await (storage as any).close();
       }
+    }
+  }
+
+  private async currentRunUsage(runId: string, tenantId?: string): Promise<import("../models/types.js").TokenUsage> {
+    const scope = getAccountingContext();
+    const empty = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    if (!scope) return empty;
+    try {
+      return await scope.tracker.queryRunUsage({ tenantId: tenantId ?? scope.tenantId, runId });
+    } catch (error) {
+      this.eventBus.emit("accounting.error", { runId, attemptId: `run:${runId}:usage`, error });
+      return { ...empty, accounting: unknownUsage("accounting_unavailable") };
     }
   }
 
@@ -584,6 +599,47 @@ export class Agent {
   }
 
   async run(input: MessageContent, opts?: RunOpts): Promise<RunOutput> {
+    opts = this.normalizeControlledRun(opts);
+    const parent = getAccountingContext();
+    const tracker = parent?.tracker ?? this.config.costTracker ?? this.ownedCostTracker;
+    if (!tracker) return this.runAccounted(input, opts);
+    const runId = opts?.runId ?? uuidv4();
+    const sessionId = opts?.sessionId ?? this.config.sessionId ?? uuidv4();
+    const scopedOptions = { ...opts, runId, sessionId };
+    const handoffScope = getHandoffScope(opts);
+    if (handoffScope) setHandoffScope(scopedOptions, handoffScope);
+    const lifetime = `agent-run:${uuidv4()}`;
+    tracker.beginPendingAttempt(lifetime);
+    try {
+      return await withAccountingContext(
+        {
+          ...parent,
+          tracker,
+          runId,
+          sessionId,
+          rootRunId:
+            typeof opts?.metadata?.rootRunId === "string"
+              ? opts.metadata.rootRunId
+              : (parent?.rootRunId ?? parent?.runId ?? runId),
+          parentRunId: typeof opts?.metadata?.parentRunId === "string" ? opts.metadata.parentRunId : parent?.runId,
+          tenantId: opts?.tenantId ?? parent?.tenantId,
+          userId: opts?.userId ?? this.config.userId ?? parent?.userId,
+          agentName: this.name,
+          eventBus: this.eventBus,
+        },
+        async () => {
+          const output = await this.runAccounted(input, scopedOptions);
+          const scope = getAccountingContext();
+          if (scope) output.costs = await getRunCostSnapshot(scope);
+          return output;
+        },
+      );
+    } finally {
+      tracker.endPendingAttempt(lifetime);
+    }
+  }
+
+  private async runAccounted(input: MessageContent, opts?: RunOpts): Promise<RunOutput> {
     opts = this.normalizeControlledRun(opts);
     this.validateControlledRun(opts);
     await this.readyPromise;
@@ -616,9 +672,23 @@ export class Agent {
           input: inputText,
           cachedId: hit.id,
         });
+        const runId = opts?.runId ?? uuidv4();
+        const durationMs = Date.now() - startTime;
+        const usage = await this.currentRunUsage(runId, opts?.tenantId);
         const cachedOutput: RunOutput = {
           ...hit.output,
-          durationMs: Date.now() - startTime,
+          runId,
+          sessionId,
+          userId,
+          agentName: this.name,
+          createdAt: startTime,
+          usage,
+          costs: undefined,
+          toolCalls: [],
+          newMessages: [],
+          status: "completed",
+          durationMs,
+          metrics: this.buildMetrics({ ...hit.output, usage }, durationMs),
         };
         if (this.config.guardrails?.output) {
           let guardrailFailed = false;
@@ -756,11 +826,6 @@ export class Agent {
         }
       }
 
-      // Cost budget check before LLM call
-      if (this.config.costTracker) {
-        this.config.costTracker.checkBudget(ctx.runId, sessionId, userId);
-      }
-
       // Reset compression state for this run
       if (this.compressionManager) this.compressionManager.reset();
 
@@ -831,24 +896,6 @@ export class Agent {
       }
 
       const sourceUsage = { ...output.usage };
-      // Cost tracking after LLM call
-      if (this.config.costTracker) {
-        const entry = this.config.costTracker.track({
-          runId: ctx.runId,
-          agentName: this.name,
-          modelId: this.config.model.modelId,
-          usage: sourceUsage,
-          sessionId,
-          userId,
-        });
-        this.eventBus.emit("cost.tracked", {
-          runId: ctx.runId,
-          agentName: this.name,
-          modelId: this.config.model.modelId,
-          usage: sourceUsage,
-          cost: entry.cost,
-        });
-      }
 
       const transfer = getHandoffControl(output);
       if (transfer) {
@@ -874,7 +921,13 @@ export class Agent {
           completionTokens: sourceUsage.completionTokens + delegated.usage.completionTokens,
           totalTokens: sourceUsage.totalTokens + delegated.usage.totalTokens,
         };
-        for (const key of ["reasoningTokens", "cachedTokens", "audioInputTokens", "audioOutputTokens"] as const) {
+        for (const key of [
+          "reasoningTokens",
+          "cachedTokens",
+          "cacheWriteTokens",
+          "audioInputTokens",
+          "audioOutputTokens",
+        ] as const) {
           if (sourceUsage[key] !== undefined || delegated.usage[key] !== undefined)
             output.usage[key] = (sourceUsage[key] ?? 0) + (delegated.usage[key] ?? 0);
         }
@@ -934,6 +987,8 @@ export class Agent {
       }
       this.logger.agentEnd(this.name, output.text, output.usage, output.durationMs);
 
+      const costScope = getAccountingContext();
+      if (costScope) output.costs = await getRunCostSnapshot(costScope);
       this.eventBus.emit("run.complete", {
         runId: ctx.runId,
         output,
@@ -961,11 +1016,30 @@ export class Agent {
       await persistHandoffTranscript();
       // Handle cancellation
       if (error instanceof RunCancelledError || ctx.signal?.aborted) {
-        this.eventBus.emit("run.cancelled", { runId: ctx.runId, agentName: this.name });
+        const scope = getAccountingContext();
+        this.eventBus.emit("run.cancelled", {
+          runId: ctx.runId,
+          agentName: this.name,
+          costs: scope ? await getRunCostSnapshot(scope) : undefined,
+        });
         const cancelledOutput: RunOutput = {
           text: "",
           toolCalls: [],
-          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          usage: await (getAccountingContext()
+            ?.tracker.queryRunUsage({ tenantId: ctx.tenantId, runId: ctx.runId })
+            .catch((accountingError) => {
+              this.eventBus.emit("accounting.error", {
+                runId: ctx.runId,
+                attemptId: `run:${ctx.runId}:usage`,
+                error: accountingError,
+              });
+              return {
+                promptTokens: 0,
+                completionTokens: 0,
+                totalTokens: 0,
+                accounting: unknownUsage("accounting_unavailable"),
+              };
+            }) ?? Promise.resolve({ promptTokens: 0, completionTokens: 0, totalTokens: 0 })),
           status: "cancelled",
           runId: ctx.runId,
           agentName: this.name,
@@ -998,6 +1072,72 @@ export class Agent {
 
   async *stream(input: MessageContent, opts?: RunOpts): AsyncGenerator<StreamChunk> {
     opts = this.normalizeControlledRun(opts);
+    const parent = getAccountingContext();
+    const tracker = parent?.tracker ?? this.config.costTracker ?? this.ownedCostTracker;
+    if (!tracker) {
+      yield* this.streamAccounted(input, opts);
+      return;
+    }
+    const runId = opts?.runId ?? uuidv4();
+    const sessionId = opts?.sessionId ?? this.config.sessionId ?? uuidv4();
+    const scopedOptions = { ...opts, runId, sessionId };
+    const handoffScope = getHandoffScope(opts);
+    if (handoffScope) setHandoffScope(scopedOptions, handoffScope);
+    const stream = withAccountingStream(
+      {
+        ...parent,
+        tracker,
+        runId,
+        sessionId,
+        rootRunId:
+          typeof opts?.metadata?.rootRunId === "string"
+            ? opts.metadata.rootRunId
+            : (parent?.rootRunId ?? parent?.runId ?? runId),
+        parentRunId: typeof opts?.metadata?.parentRunId === "string" ? opts.metadata.parentRunId : parent?.runId,
+        tenantId: opts?.tenantId ?? parent?.tenantId,
+        userId: opts?.userId ?? this.config.userId ?? parent?.userId,
+        agentName: this.name,
+        eventBus: this.eventBus,
+      },
+      () => this.streamAccounted(input, scopedOptions),
+    );
+    const lifetime = `agent-stream:${uuidv4()}`;
+    tracker.beginPendingAttempt(lifetime);
+    try {
+      let terminal: Extract<StreamChunk, { type: "finish" }> | undefined;
+      for await (const chunk of stream) {
+        if (chunk.type === "finish") {
+          if (terminal) yield terminal;
+          terminal = chunk;
+        } else {
+          if (terminal) {
+            yield terminal;
+            terminal = undefined;
+          }
+          yield chunk;
+        }
+      }
+      if (terminal)
+        yield {
+          ...terminal,
+          costs: await getRunCostSnapshot({
+            tracker,
+            runId,
+            rootRunId:
+              typeof opts?.metadata?.rootRunId === "string"
+                ? opts.metadata.rootRunId
+                : (parent?.rootRunId ?? parent?.runId ?? runId),
+            tenantId: opts?.tenantId ?? parent?.tenantId,
+            eventBus: this.eventBus,
+          }),
+        };
+    } finally {
+      tracker.endPendingAttempt(lifetime);
+    }
+  }
+
+  private async *streamAccounted(input: MessageContent, opts?: RunOpts): AsyncGenerator<StreamChunk> {
+    opts = this.normalizeControlledRun(opts);
     this.validateControlledRun(opts);
     await this.readyPromise;
     const streamStartTime = Date.now();
@@ -1023,7 +1163,11 @@ export class Agent {
           cachedId: hit.id,
         });
         yield { type: "text", text: hit.output.text };
-        yield { type: "finish", finishReason: "stop", usage: hit.output.usage };
+        yield {
+          type: "finish",
+          finishReason: "stop",
+          usage: await this.currentRunUsage(opts?.runId ?? uuidv4(), opts?.tenantId),
+        };
         return;
       }
       this.eventBus.emit("cache.miss", {
@@ -1098,8 +1242,6 @@ export class Agent {
     const streamToolCalls: import("../tools/types.js").ToolCallResult[] = [];
     const streamOutcome: { status: "completed" | "stopped" } = { status: "completed" };
     let streamUsage: import("../models/types.js").TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-    let sourceUsage: typeof streamUsage | undefined;
-    let costTracked = false;
     let decisions: RunOutput["decisions"];
     const recordChunk = (chunk: StreamChunk) => {
       if (chunk.type === "finish") decisions = chunk.decisions;
@@ -1115,31 +1257,18 @@ export class Agent {
           ...(chunk.usage.pricingKey ? { pricingKey: chunk.usage.pricingKey } : {}),
           ...(chunk.usage.providerMetrics ? { providerMetrics: chunk.usage.providerMetrics } : {}),
         };
-        for (const key of ["reasoningTokens", "cachedTokens", "audioInputTokens", "audioOutputTokens"] as const)
+        for (const key of [
+          "reasoningTokens",
+          "cachedTokens",
+          "cacheWriteTokens",
+          "audioInputTokens",
+          "audioOutputTokens",
+        ] as const)
           if (previous[key] !== undefined || chunk.usage[key] !== undefined)
             streamUsage[key] = (previous[key] ?? 0) + (chunk.usage[key] ?? 0);
       }
     };
-    const trackSourceCost = () => {
-      if (costTracked || !this.config.costTracker) return;
-      costTracked = true;
-      const usage = sourceUsage ?? streamUsage;
-      const entry = this.config.costTracker.track({
-        runId: ctx.runId,
-        agentName: this.name,
-        modelId: this.config.model.modelId,
-        usage,
-        sessionId,
-        userId,
-      });
-      this.eventBus.emit("cost.tracked", {
-        runId: ctx.runId,
-        agentName: this.name,
-        modelId: this.config.model.modelId,
-        usage,
-        cost: entry.cost,
-      });
-    };
+
     const persist = async (messages: ChatMessage[]) => {
       if (ephemeral || messages.length <= persistedMessages) return;
       if (this.memoryManager) {
@@ -1169,7 +1298,7 @@ export class Agent {
         const result = await guardrail.validate(input, ctx);
         if (!result.pass) throw new Error(`Input guardrail "${guardrail.name}" blocked: ${result.reason}`);
       }
-      this.config.costTracker?.checkBudget(ctx.runId, sessionId, userId);
+
       const runLoop = await this.buildRunLoop(inputText, ctx, opts);
       const messages = await this.buildMessages(input, session, ctx, inputText, !inheritedStream?.continuation);
       streamMessages = messages;
@@ -1185,8 +1314,6 @@ export class Agent {
         recordChunk(chunk);
         yield chunk;
       }
-      sourceUsage = { ...streamUsage };
-      trackSourceCost();
       const transfer = getHandoffControl(streamOutcome);
       if (transfer) {
         await persistSettledHandoff();
@@ -1266,6 +1393,8 @@ export class Agent {
       }
       await this.config.hooks?.afterRun?.(ctx, streamOutput);
       ctx.signal?.throwIfAborted();
+      const costScope = getAccountingContext();
+      if (costScope) streamOutput.costs = await getRunCostSnapshot(costScope);
       inheritedStream?.complete(streamOutput);
       completed = true;
       terminalEmitted = true;
@@ -1289,14 +1418,21 @@ export class Agent {
         runId: ctx.runId,
         error: err,
         status: ctx.signal?.aborted || error instanceof RunCancelledError ? "cancelled" : "failed",
+        costs: getAccountingContext() ? await getRunCostSnapshot(getAccountingContext()!) : undefined,
       });
       throw err;
     } finally {
       this.approvalService?.cancelRun(ctx.runId);
       for (const manager of getHandoffScope(opts)?.approvals ?? []) manager.cancelRun(ctx.runId);
-      trackSourceCost();
       if (!completed) await persistSettledHandoff();
-      if (!terminalEmitted) this.eventBus.emit("run.cancelled", { runId: ctx.runId, agentName: this.name });
+      if (!terminalEmitted) {
+        const scope = getAccountingContext();
+        this.eventBus.emit("run.cancelled", {
+          runId: ctx.runId,
+          agentName: this.name,
+          costs: scope ? await getRunCostSnapshot(scope) : undefined,
+        });
+      }
     }
   }
 

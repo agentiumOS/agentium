@@ -77,7 +77,14 @@ export interface MetricsSnapshot {
     tool_latency_ms: number[];
   };
   gauges: {
+    /** Compatibility projection from complete per-run replacement events. */
     total_cost_usd: number;
+    /** Known priced USD subtotal of selected own-attempt assessments; incomplete costs stay separate. */
+    known_attempt_cost_usd: number;
+    assessed_attempts: number;
+    unpriced_attempts: number;
+    provisional_attempts: number;
+    cache_write_tokens: number;
     total_tokens: number;
     prompt_tokens: number;
     completion_tokens: number;

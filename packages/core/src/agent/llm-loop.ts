@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { CheckpointManager } from "../checkpoint/checkpoint-manager.js";
 import { validateConversationTransform } from "../context/conversation-transform.js";
+import { meteredGenerate, meteredStream } from "../cost/accounting.js";
+import { getAccountingContext } from "../cost/context.js";
 import { getHandoffControl, setHandoffControl } from "../handoff/control.js";
 import type { HandoffSignal } from "../handoff/types.js";
 import type { Logger } from "../logger/logger.js";
@@ -117,6 +119,7 @@ export class LLMLoop {
   private logger?: Logger;
   private reasoning?: ReasoningConfig;
   private providerOptions?: ProviderOptions;
+  private billingContext?: ModelConfig["billingContext"];
   private retry?: Partial<RetryConfig>;
   private toolResultLimit?: ToolResultLimitConfig;
   private loopHooks?: LoopHooks;
@@ -136,6 +139,7 @@ export class LLMLoop {
       logger?: Logger;
       reasoning?: ReasoningConfig;
       providerOptions?: ProviderOptions;
+      billingContext?: ModelConfig["billingContext"];
       retry?: Partial<RetryConfig>;
       toolResultLimit?: ToolResultLimitConfig;
       loopHooks?: LoopHooks;
@@ -152,6 +156,7 @@ export class LLMLoop {
     this.logger = options.logger;
     this.reasoning = options.reasoning;
     this.providerOptions = options.providerOptions;
+    this.billingContext = options.billingContext;
     this.retry = options.retry;
     this.toolResultLimit = options.toolResultLimit;
     this.loopHooks = options.loopHooks;
@@ -167,11 +172,13 @@ export class LLMLoop {
     messages: ChatMessage[],
     options: ModelConfig & { tools?: ToolDefinition[] },
     ctx: RunContext,
+    purpose = "answer",
+    operationId?: string,
   ) {
     const identity = this.modelIdentity(provider, ctx);
     ctx.eventBus.emit("model.start", identity);
     try {
-      const response = await provider.generate(messages, options);
+      const response = await meteredGenerate(provider, messages, options, purpose, operationId);
       ctx.eventBus.emit("model.result", {
         ...identity,
         usage: response.usage,
@@ -183,6 +190,25 @@ export class LLMLoop {
       throw error;
     }
   }
+  private async generateWithRetries(
+    messages: ChatMessage[],
+    options: ModelConfig & { tools?: ToolDefinition[] },
+    ctx: RunContext,
+  ) {
+    const operationId = randomUUID();
+    const tracker = getAccountingContext()?.tracker;
+    const lifetime = `model-retry-operation:${operationId}`;
+    tracker?.beginPendingAttempt(lifetime);
+    try {
+      return await withRetry(
+        () => this.generateObserved(this.provider, messages, options, ctx, "answer", operationId),
+        this.retry,
+      );
+    } finally {
+      tracker?.endPendingAttempt(lifetime);
+    }
+  }
+
   private async *streamObserved(
     messages: ChatMessage[],
     options: ModelConfig & { tools?: ToolDefinition[] },
@@ -190,22 +216,30 @@ export class LLMLoop {
   ): AsyncGenerator<StreamChunk> {
     const identity = this.modelIdentity(this.provider, ctx);
     let ended = false;
+    let terminal: Extract<StreamChunk, { type: "finish" }> | undefined;
     ctx.eventBus.emit("model.start", identity);
     try {
-      for await (const chunk of this.provider.stream(messages, options)) {
-        if (chunk.type === "finish" && !ended) {
-          ended = true;
-          ctx.eventBus.emit("model.result", {
-            ...identity,
-            usage: chunk.usage,
-            status: ctx.signal?.aborted ? "cancelled" : "success",
-          });
+      for await (const chunk of meteredStream(this.provider, messages, options, "answer")) {
+        if (chunk.type === "finish") {
+          terminal = { ...chunk, usage: chunk.usage ?? terminal?.usage };
+        } else {
+          yield chunk;
         }
-        yield chunk;
       }
+      ended = true;
+      ctx.eventBus.emit("model.result", {
+        ...identity,
+        usage: terminal?.usage,
+        status: ctx.signal?.aborted ? "cancelled" : "success",
+      });
+      if (terminal) yield terminal;
     } finally {
       if (!ended)
-        ctx.eventBus.emit("model.error", { ...identity, status: ctx.signal?.aborted ? "cancelled" : "error" });
+        ctx.eventBus.emit("model.error", {
+          ...identity,
+          usage: terminal?.usage,
+          status: ctx.signal?.aborted ? "cancelled" : "error",
+        });
     }
   }
 
@@ -238,6 +272,7 @@ export class LLMLoop {
           ],
           { maxTokens: 4096, temperature: 0, signal: ctx.signal },
           ctx,
+          "tool-result-summary",
         );
         const summary = getTextContent(response.message.content);
         if (summary) {
@@ -258,6 +293,7 @@ export class LLMLoop {
     let totalCompletionTokens = 0;
     let totalReasoningTokens = 0;
     let totalCachedTokens = 0;
+    let totalCacheWriteTokens = 0;
     let totalAudioInputTokens = 0;
     let totalAudioOutputTokens = 0;
     let thinkingContent = "";
@@ -294,6 +330,7 @@ export class LLMLoop {
       if (mandatoryMessages) validateConversationTransform(mandatoryMessages, currentMessages);
 
       const modelConfig: ModelConfig & { tools?: ToolDefinition[] } = {};
+      if (this.billingContext) modelConfig.billingContext = this.billingContext;
       if (apiKey) modelConfig.apiKey = apiKey;
       if (this.temperature !== undefined) modelConfig.temperature = this.temperature;
       if (this.maxTokens !== undefined) modelConfig.maxTokens = this.maxTokens;
@@ -310,10 +347,7 @@ export class LLMLoop {
         };
       }
 
-      const response = await withRetry(
-        () => this.generateObserved(this.provider, currentMessages, { ...modelConfig, signal: ctx.signal }, ctx),
-        this.retry,
-      );
+      const response = await this.generateWithRetries(currentMessages, { ...modelConfig, signal: ctx.signal }, ctx);
 
       if (roundtrip === 0) {
         timeToFirstTokenMs = Date.now() - loopStartTime;
@@ -337,6 +371,7 @@ export class LLMLoop {
       totalCompletionTokens += response.usage.completionTokens;
       if (response.usage.reasoningTokens) totalReasoningTokens += response.usage.reasoningTokens;
       if (response.usage.cachedTokens) totalCachedTokens += response.usage.cachedTokens;
+      if (response.usage.cacheWriteTokens) totalCacheWriteTokens += response.usage.cacheWriteTokens;
       if (response.usage.audioInputTokens) totalAudioInputTokens += response.usage.audioInputTokens;
       if (response.usage.audioOutputTokens) totalAudioOutputTokens += response.usage.audioOutputTokens;
       if (response.usage.providerMetrics) lastProviderMetrics = response.usage.providerMetrics;
@@ -357,9 +392,10 @@ export class LLMLoop {
         const usage = {
           promptTokens: totalPromptTokens,
           completionTokens: totalCompletionTokens,
-          totalTokens: totalPromptTokens + totalCompletionTokens + totalReasoningTokens,
+          totalTokens: totalPromptTokens + totalCompletionTokens,
           ...(totalReasoningTokens > 0 ? { reasoningTokens: totalReasoningTokens } : {}),
           ...(totalCachedTokens > 0 ? { cachedTokens: totalCachedTokens } : {}),
+          ...(totalCacheWriteTokens > 0 ? { cacheWriteTokens: totalCacheWriteTokens } : {}),
           ...(totalAudioInputTokens > 0 ? { audioInputTokens: totalAudioInputTokens } : {}),
           ...(totalAudioOutputTokens > 0 ? { audioOutputTokens: totalAudioOutputTokens } : {}),
           ...(lastProviderMetrics ? { providerMetrics: lastProviderMetrics } : {}),
@@ -474,9 +510,10 @@ export class LLMLoop {
         const tokensSoFar = {
           promptTokens: totalPromptTokens,
           completionTokens: totalCompletionTokens,
-          totalTokens: totalPromptTokens + totalCompletionTokens + totalReasoningTokens,
+          totalTokens: totalPromptTokens + totalCompletionTokens,
           ...(totalReasoningTokens > 0 ? { reasoningTokens: totalReasoningTokens } : {}),
           ...(totalCachedTokens > 0 ? { cachedTokens: totalCachedTokens } : {}),
+          ...(totalCacheWriteTokens > 0 ? { cacheWriteTokens: totalCacheWriteTokens } : {}),
           ...(totalAudioInputTokens > 0 ? { audioInputTokens: totalAudioInputTokens } : {}),
           ...(totalAudioOutputTokens > 0 ? { audioOutputTokens: totalAudioOutputTokens } : {}),
           ...(lastProviderMetrics ? { providerMetrics: lastProviderMetrics } : {}),
@@ -517,9 +554,10 @@ export class LLMLoop {
       usage: {
         promptTokens: totalPromptTokens,
         completionTokens: totalCompletionTokens,
-        totalTokens: totalPromptTokens + totalCompletionTokens + totalReasoningTokens,
+        totalTokens: totalPromptTokens + totalCompletionTokens,
         ...(totalReasoningTokens > 0 ? { reasoningTokens: totalReasoningTokens } : {}),
         ...(totalCachedTokens > 0 ? { cachedTokens: totalCachedTokens } : {}),
+        ...(totalCacheWriteTokens > 0 ? { cacheWriteTokens: totalCacheWriteTokens } : {}),
         ...(totalAudioInputTokens > 0 ? { audioInputTokens: totalAudioInputTokens } : {}),
         ...(totalAudioOutputTokens > 0 ? { audioOutputTokens: totalAudioOutputTokens } : {}),
         ...(lastProviderMetrics ? { providerMetrics: lastProviderMetrics } : {}),
@@ -556,6 +594,7 @@ export class LLMLoop {
     let totalCompletionTokens = 0;
     let totalReasoningTokens = 0;
     let totalCachedTokens = 0;
+    let totalCacheWriteTokens = 0;
     let totalAudioInputTokens = 0;
     let totalAudioOutputTokens = 0;
     let lastProviderMetrics: Record<string, unknown> | undefined;
@@ -576,6 +615,7 @@ export class LLMLoop {
       if (mandatoryMessages) validateConversationTransform(mandatoryMessages, currentMessages);
 
       const modelConfig: ModelConfig & { tools?: ToolDefinition[] } = {};
+      if (this.billingContext) modelConfig.billingContext = this.billingContext;
       if (apiKey) modelConfig.apiKey = apiKey;
       if (this.temperature !== undefined) modelConfig.temperature = this.temperature;
       if (this.maxTokens !== undefined) modelConfig.maxTokens = this.maxTokens;
@@ -639,6 +679,7 @@ export class LLMLoop {
       totalCompletionTokens += chunkUsage.completionTokens;
       if ((chunkUsage as any).reasoningTokens) totalReasoningTokens += (chunkUsage as any).reasoningTokens;
       if ((chunkUsage as any).cachedTokens) totalCachedTokens += (chunkUsage as any).cachedTokens;
+      if ((chunkUsage as any).cacheWriteTokens) totalCacheWriteTokens += (chunkUsage as any).cacheWriteTokens;
       if ((chunkUsage as any).audioInputTokens) totalAudioInputTokens += (chunkUsage as any).audioInputTokens;
       if ((chunkUsage as any).audioOutputTokens) totalAudioOutputTokens += (chunkUsage as any).audioOutputTokens;
       if ((chunkUsage as any).providerMetrics) lastProviderMetrics = (chunkUsage as any).providerMetrics;
@@ -744,9 +785,10 @@ export class LLMLoop {
         const tokensSoFar = {
           promptTokens: totalPromptTokens,
           completionTokens: totalCompletionTokens,
-          totalTokens: totalPromptTokens + totalCompletionTokens + totalReasoningTokens,
+          totalTokens: totalPromptTokens + totalCompletionTokens,
           ...(totalReasoningTokens > 0 ? { reasoningTokens: totalReasoningTokens } : {}),
           ...(totalCachedTokens > 0 ? { cachedTokens: totalCachedTokens } : {}),
+          ...(totalCacheWriteTokens > 0 ? { cacheWriteTokens: totalCacheWriteTokens } : {}),
           ...(totalAudioInputTokens > 0 ? { audioInputTokens: totalAudioInputTokens } : {}),
           ...(totalAudioOutputTokens > 0 ? { audioOutputTokens: totalAudioOutputTokens } : {}),
           ...(lastProviderMetrics ? { providerMetrics: lastProviderMetrics } : {}),

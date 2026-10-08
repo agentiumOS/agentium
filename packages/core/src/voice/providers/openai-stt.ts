@@ -13,6 +13,7 @@ import {
   type OpenAITranscriptionContext,
   transcriptionContext,
 } from "./openai-transcription.js";
+import { beginSpeechAccounting } from "./speech-accounting.js";
 import { defaultSpeechSocketFactory, SpeechWire, type SpeechWireOptions, speechKey } from "./speech-socket.js";
 export interface OpenAIStreamingRecognizerOptions extends SpeechWireOptions, OpenAITranscriptionContext {
   model?: "gpt-live-transcribe" | "gpt-transcribe";
@@ -52,11 +53,21 @@ export class OpenAIStreamingRecognizer implements SpeechRecognizer {
       ...this.options,
       languages: this.options.languages ?? (config.language ? [config.language] : undefined),
     });
+    const accounting = await beginSpeechAccounting(
+      this.options,
+      "openai",
+      this.options.model ?? "gpt-live-transcribe",
+      "speech.transcription",
+      signal,
+    );
     const socket = await (this.options.socketFactory ?? defaultSpeechSocketFactory)(
       "wss://api.openai.com/v1/realtime?intent=transcription",
       { Authorization: `Bearer ${speechKey(this.options, "OPENAI_API_KEY")}` },
       signal,
-    );
+    ).catch(async (error) => {
+      await accounting.fail();
+      throw error;
+    });
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => {
@@ -180,6 +191,7 @@ export class OpenAIStreamingRecognizer implements SpeechRecognizer {
     } catch (error) {
       clearInterval(timer);
       wire.close();
+      await accounting.fail();
       throw error;
     } finally {
       clearTimeout(timeout);
@@ -208,6 +220,7 @@ export class OpenAIStreamingRecognizer implements SpeechRecognizer {
         }
       },
       close: async () => {
+        await accounting.close();
         clearInterval(timer);
         wire.close();
         items.clear();

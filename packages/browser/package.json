@@ -1,6 +1,6 @@
 {
   "name": "@agentium/browser",
-  "version": "4.1.0",
+  "version": "4.5.0",
   "description": "Browser automation agent for Agentium using Playwright",
   "license": "MIT",
   "publishConfig": {
@@ -25,9 +25,14 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      },
       "default": "./dist/index.js"
     }
   },
@@ -35,7 +40,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false",
+    "build": "tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs",
     "dev": "tsdown --config ../../tsdown.config.ts --watch",
     "prepublishOnly": "npm run build"
   },
@@ -49,7 +54,7 @@
     "tsdown": "0.23.0"
   },
   "peerDependencies": {
-    "@agentium/core": "^4.1.0",
+    "@agentium/core": "^4.5.0",
     "playwright": ">=1.40.0"
   },
   "peerDependenciesMeta": {

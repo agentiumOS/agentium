@@ -15,6 +15,7 @@ export type SpeechSocketFactory = (
   signal: AbortSignal,
 ) => Promise<SpeechSocket>;
 export interface SpeechWireOptions {
+  accounting?: import("../../cost/context.js").AccountingContext;
   apiKey?: string;
   socketFactory?: SpeechSocketFactory;
   maxQueueBytes?: number;

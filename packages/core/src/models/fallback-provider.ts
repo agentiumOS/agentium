@@ -1,3 +1,4 @@
+import { meteredGenerate, meteredStream } from "../cost/accounting.js";
 import { CircuitBreaker, type CircuitBreakerConfig } from "./circuit-breaker.js";
 import type { ModelProvider } from "./provider.js";
 import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefinition } from "./types.js";
@@ -9,6 +10,7 @@ export interface FallbackProviderConfig {
 }
 
 export class FallbackProvider implements ModelProvider {
+  readonly accountingRole = "composite";
   readonly providerId = "fallback";
   readonly modelId: string;
   private providers: ModelProvider[];
@@ -49,7 +51,7 @@ export class FallbackProvider implements ModelProvider {
       if (!breaker.canAttempt()) continue;
 
       try {
-        const response = await provider.generate(messages, options);
+        const response = await meteredGenerate(provider, messages, options);
         breaker.recordSuccess();
         return response;
       } catch (error) {
@@ -89,7 +91,7 @@ export class FallbackProvider implements ModelProvider {
 
       let committed = false;
       try {
-        const gen = provider.stream(messages, options);
+        const gen = meteredStream(provider, messages, options);
         for await (const chunk of gen) {
           options?.signal?.throwIfAborted();
           // Every public chunk commits this attempt, including thinking and finish metadata.

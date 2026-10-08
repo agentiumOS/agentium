@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
+import { providerTokenUsage } from "../../models/usage-normalizers.js";
 import type {
   CreateResponseOpts,
   RealtimeConnection,
@@ -229,12 +230,12 @@ export class GoogleLiveConnection extends EventEmitter implements RealtimeConnec
       this.suppressed = false;
     }
     if (message.usageMetadata) {
-      const usage = message.usageMetadata;
-      this.emit("usage", {
-        promptTokens: usage.promptTokenCount ?? 0,
-        completionTokens: usage.responseTokenCount ?? 0,
-        totalTokens: usage.totalTokenCount ?? 0,
-      });
+      const usage = providerTokenUsage("google", "live", message.usageMetadata);
+      if (usage.accounting) {
+        usage.accounting.context = { ...usage.accounting.context, api: "live" };
+        usage.accounting.coverage.unsupportedFeatures.push("live_modality_and_snapshot_semantics");
+      }
+      this.emit("usage", usage);
     }
     if (message.goAway) this.emit("go_away", { timeLeft: message.goAway.timeLeft });
     if (message.sessionResumptionUpdate)

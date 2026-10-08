@@ -1,9 +1,13 @@
 import { createRequire } from "node:module";
+import { meteredOperation } from "../../cost/accounting.js";
+import type { AccountingContext } from "../../cost/context.js";
+import { normalizeOperationUsage } from "../../cost/operation-usage.js";
 import type { EmbeddingProvider } from "../types.js";
 
 const _require = createRequire(import.meta.url);
 
 export interface OpenAIEmbeddingConfig {
+  accounting?: AccountingContext;
   apiKey?: string;
   baseURL?: string;
   model?: string;
@@ -21,8 +25,10 @@ export class OpenAIEmbedding implements EmbeddingProvider {
   readonly supportsMultimodal = false;
   private client: any;
   private model: string;
+  private accounting?: AccountingContext;
 
   constructor(config: OpenAIEmbeddingConfig = {}) {
+    this.accounting = config.accounting;
     this.model = config.model ?? "text-embedding-3-small";
     this.dimensions = config.dimensions ?? MODEL_DIMENSIONS[this.model] ?? 1536;
 
@@ -44,7 +50,24 @@ export class OpenAIEmbedding implements EmbeddingProvider {
   private async withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await fn();
+        return await meteredOperation(
+          {
+            accounting: this.accounting,
+            context: {
+              providerId: "openai",
+              billingProviderId: "openai",
+              modelId: this.model,
+              api: "embeddings",
+              occurredAt: new Date().toISOString(),
+            },
+            attemptVisibility: "opaque",
+          },
+          async (capture) => {
+            const result = await fn();
+            capture(normalizeOperationUsage("openai", "embeddings", result));
+            return result;
+          },
+        );
       } catch (err: any) {
         const status = err?.status ?? err?.statusCode;
         const isRetryable = status === 429 || status === 500 || status === 502 || status === 503;

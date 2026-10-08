@@ -6,6 +6,7 @@ import {
   type TranscriptEvent,
   validateAudioFrame,
 } from "../speech-types.js";
+import { beginSpeechAccounting } from "./speech-accounting.js";
 import { defaultSpeechSocketFactory, SpeechWire, type SpeechWireOptions, speechKey } from "./speech-socket.js";
 export class ElevenLabsRecognizer implements SpeechRecognizer {
   readonly capabilities = {
@@ -26,11 +27,21 @@ export class ElevenLabsRecognizer implements SpeechRecognizer {
       commit_strategy: "manual",
       ...(config.language ? { language_code: config.language } : {}),
     });
+    const accounting = await beginSpeechAccounting(
+      this.options,
+      "elevenlabs",
+      "scribe_v2_realtime",
+      "speech.transcription",
+      signal,
+    );
     const socket = await (this.options.socketFactory ?? defaultSpeechSocketFactory)(
       `wss://api.elevenlabs.io/v1/speech-to-text/realtime?${query}`,
       { "xi-api-key": speechKey(this.options, "ELEVENLABS_API_KEY") },
       signal,
-    );
+    ).catch(async (error) => {
+      await accounting.fail();
+      throw error;
+    });
     let segment = 0;
     let lastSequence = -1;
     const wire = new SpeechWire<TranscriptEvent>(
@@ -75,7 +86,13 @@ export class ElevenLabsRecognizer implements SpeechRecognizer {
           sample_rate: config.format.sampleRateHz,
           commit: true,
         }),
-      close: async () => wire.close(),
+      close: async () => {
+        try {
+          wire.close();
+        } finally {
+          await accounting.close();
+        }
+      },
     };
   }
 }

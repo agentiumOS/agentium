@@ -1,15 +1,9 @@
 import { createRequire } from "node:module";
+import { captureRetryFailure } from "../../cost/context.js";
 import type { ModelProvider } from "../provider.js";
-import type {
-  ChatMessage,
-  ModelConfig,
-  ModelResponse,
-  StreamChunk,
-  TokenUsage,
-  ToolCall,
-  ToolDefinition,
-} from "../types.js";
+import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolCall, ToolDefinition } from "../types.js";
 import { getTextContent, isMultiModal } from "../types.js";
+import { providerTokenUsage, safeResponseContext } from "../usage-normalizers.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -52,6 +46,7 @@ export class OllamaProvider implements ModelProvider {
           err?.code === "ETIMEDOUT" ||
           err?.message?.includes("rate limit");
         if (!isRetryable || attempt === retries) throw err;
+        await captureRetryFailure(err);
         const delay = Math.min(1000 * 2 ** attempt + Math.random() * 500, 10000);
         await new Promise((r) => setTimeout(r, delay));
       }
@@ -148,19 +143,19 @@ export class OllamaProvider implements ModelProvider {
         yield {
           type: "finish",
           finishReason: hasToolCalls ? "tool_calls" : "stop",
-          usage: {
-            promptTokens: chunk.prompt_eval_count ?? 0,
-            completionTokens: chunk.eval_count ?? 0,
-            totalTokens: (chunk.prompt_eval_count ?? 0) + (chunk.eval_count ?? 0),
-            providerMetrics: {
+          usage: providerTokenUsage(
+            this.providerId,
+            "ollama-chat",
+            {
               prompt_eval_count: chunk.prompt_eval_count,
               eval_count: chunk.eval_count,
-              prompt_eval_duration: chunk.prompt_eval_duration,
-              eval_duration: chunk.eval_duration,
               total_duration: chunk.total_duration,
               load_duration: chunk.load_duration,
+              prompt_eval_duration: chunk.prompt_eval_duration,
+              eval_duration: chunk.eval_duration,
             },
-          },
+            { modelId: this.modelId },
+          ),
         };
       }
     }
@@ -231,25 +226,24 @@ export class OllamaProvider implements ModelProvider {
   }
 
   private normalizeResponse(response: any): ModelResponse {
+    const usage = providerTokenUsage(
+      this.providerId,
+      "ollama-chat",
+      {
+        prompt_eval_count: response.prompt_eval_count,
+        eval_count: response.eval_count,
+        total_duration: response.total_duration,
+        load_duration: response.load_duration,
+        prompt_eval_duration: response.prompt_eval_duration,
+        eval_duration: response.eval_duration,
+      },
+      { modelId: this.modelId, ...safeResponseContext(response) },
+    );
     const toolCalls: ToolCall[] = (response.message?.tool_calls ?? []).map((tc: any, i: number) => ({
       id: `ollama_tc_${i}`,
       name: tc.function?.name ?? "",
       arguments: tc.function?.arguments ?? {},
     }));
-
-    const usage: TokenUsage = {
-      promptTokens: response.prompt_eval_count ?? 0,
-      completionTokens: response.eval_count ?? 0,
-      totalTokens: (response.prompt_eval_count ?? 0) + (response.eval_count ?? 0),
-      providerMetrics: {
-        prompt_eval_count: response.prompt_eval_count,
-        eval_count: response.eval_count,
-        prompt_eval_duration: response.prompt_eval_duration,
-        eval_duration: response.eval_duration,
-        total_duration: response.total_duration,
-        load_duration: response.load_duration,
-      },
-    };
 
     const hasToolCalls = toolCalls.length > 0;
 

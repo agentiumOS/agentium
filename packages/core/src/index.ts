@@ -93,8 +93,46 @@ export {
   resolveContextProviders,
 } from "./context/context-providers.js";
 export { validateConversationTransform } from "./context/conversation-transform.js";
-export { CostTracker } from "./cost/cost-tracker.js";
+export type { MeteredOperationOptions } from "./cost/accounting.js";
+export {
+  AccountingBudgetError,
+  beginMeteredOperation,
+  createMeteredProvider,
+  getRunCostSnapshot,
+  meteredGenerate,
+  meteredGenerateFor,
+  meteredOperation,
+  meteredStream,
+  recordObservedUsage,
+  unknownUsage,
+} from "./cost/accounting.js";
+export type * from "./cost/accounting-types.js";
+export { BudgetExceededError } from "./cost/budget.js";
+export type { CalculateChargesInput } from "./cost/calculator.js";
+export { allocateGroupAmount, calculateCharges } from "./cost/calculator.js";
+export { resolvePriceRule, validateCatalog } from "./cost/catalog.js";
+export { REVIEWED_PRICING_CATALOG } from "./cost/catalog-data/reviewed.js";
+export type { AccountingContext } from "./cost/context.js";
+export { captureUsage, getAccountingContext, withAccountingContext, withAccountingStream } from "./cost/context.js";
+export { CostTracker, IncompleteCostError, LegacyUsageError } from "./cost/cost-tracker.js";
+export type { AccountingCapability } from "./cost/coverage.js";
+export { BUILTIN_ACCOUNTING_CAPABILITIES } from "./cost/coverage.js";
+export { TOKEN_METERS, tokenMeasurements } from "./cost/measurements.js";
+export { normalizeOperationUsage, normalizeSpeechUsage } from "./cost/operation-usage.js";
 export { DEFAULT_PRICING, lookupPricing } from "./cost/pricing.js";
+export type {
+  AccountingStore,
+  AssessmentSelection,
+  BudgetProjection,
+  BudgetStore,
+  CommitAssessmentInput,
+  StoreCapabilities,
+  UsageStore,
+} from "./cost/store.js";
+export { AccountingConflictError, AccountingPersistenceError } from "./cost/store.js";
+export { InMemoryUsageStore } from "./cost/stores/in-memory.js";
+export { PostgresUsageStore } from "./cost/stores/postgres.js";
+export { SqliteUsageStore } from "./cost/stores/sqlite.js";
 // Cost Tracking
 export type {
   CostBreakdown,
@@ -104,6 +142,7 @@ export type {
   CostTrackerConfig,
   ModelPricing,
 } from "./cost/types.js";
+export { retainRawUsage, unknownTokens, validateCanonicalTokens, validateNormalizedUsage } from "./cost/usage.js";
 export type { DependencyMap, DependencyValue } from "./dependencies/resolver.js";
 // Dependencies
 export { applyTemplates, resolveDependencies } from "./dependencies/resolver.js";
@@ -144,7 +183,6 @@ export { createCompleteTool, createHandoffTool } from "./handoff/handoff-tool.js
 // Handoff
 export type { HandoffConfig, HandoffResult, HandoffTarget } from "./handoff/types.js";
 export { HandoffSignal } from "./handoff/types.js";
-
 // Knowledge Base
 export type {
   HybridSearchConfig,
@@ -284,6 +322,7 @@ export type {
   ImagePart,
   MessageContent,
   MessageRole,
+  ModelBillingContext,
   ModelConfig,
   ModelResponse,
   ReasoningConfig,
@@ -295,6 +334,15 @@ export type {
   ToolDefinition,
 } from "./models/types.js";
 export { getTextContent, isMultiModal } from "./models/types.js";
+export type { ModelUsageCapability } from "./models/usage-capabilities.js";
+export { MODEL_USAGE_CAPABILITIES } from "./models/usage-capabilities.js";
+export {
+  ModelUsageError,
+  normalizeLegacyUsage,
+  normalizeProviderUsage,
+  projectTokenUsage,
+  providerTokenUsage,
+} from "./models/usage-normalizers.js";
 export type { CohereRerankerConfig } from "./rerank/providers/cohere.js";
 export { CohereReranker } from "./rerank/providers/cohere.js";
 export type { CrossEncoderRerankerConfig } from "./rerank/providers/cross-encoder-reranker.js";

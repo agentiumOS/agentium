@@ -118,7 +118,11 @@ export interface AgentConfig {
   skills?: Array<import("../skills/types.js").Skill | string>;
   /** Agent handoff — transfer conversations to specialist agents. */
   handoff?: import("../handoff/types.js").HandoffConfig;
-  /** Cost tracker — track token usage and enforce budgets. */
+  /** Enable owned cost accounting once; false/default still inherits a parent run's accounting. */
+  cost?: boolean | import("../cost/types.js").CostTrackerConfig;
+  /** Trusted billing metadata for this agent's main model calls; does not change provider service tier. */
+  billingContext?: import("../models/types.js").ModelBillingContext;
+  /** Borrowed cost tracker. Configure either cost or costTracker. */
   costTracker?: import("../cost/cost-tracker.js").CostTracker;
   /** Semantic cache — cache LLM responses by semantic similarity. */
   semanticCache?: import("../cache/types.js").SemanticCacheConfig;
@@ -246,6 +250,8 @@ export interface RunOutput {
   text: string;
   toolCalls: ToolCallResult[];
   usage: TokenUsage;
+  /** Cost snapshot as of run completion when accounting is enabled. */
+  costs?: import("../cost/accounting-types.js").RunCostSnapshot;
   /** Parsed structured output if structuredOutput schema is set. */
   structured?: unknown;
   /** Model's internal reasoning / thinking content (when reasoning is enabled). */

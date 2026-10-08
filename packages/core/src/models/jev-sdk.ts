@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { type ChatMessage, getTextContent, type TokenUsage, type ToolDefinition } from "./types.js";
+import { providerTokenUsage } from "./usage-normalizers.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -90,14 +91,7 @@ export function buildJevState(messages: ChatMessage[]): unknown {
 }
 
 export function mapJevUsage(usage: { input_tokens?: number; output_tokens?: number } | undefined): TokenUsage {
-  const promptTokens = usage?.input_tokens ?? 0;
-  const completionTokens = usage?.output_tokens ?? 0;
-  return {
-    promptTokens,
-    completionTokens,
-    totalTokens: promptTokens + completionTokens,
-    ...(usage ? { providerMetrics: usage as unknown as Record<string, unknown> } : {}),
-  };
+  return providerTokenUsage("jev", "jev", usage);
 }
 
 export function questionsFromTools(tools: ToolDefinition[]): JevQuestions {

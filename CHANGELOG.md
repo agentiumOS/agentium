@@ -1,5 +1,34 @@
 # Changelog
 
+## [4.5.0] - 2026-10-08
+
+Cost accounting remains in `@agentium/core`. This release changes token semantics, cost completeness, and the accounting read path. See [the 4.5 migration guide](https://docs.agentium.in/migration-v4-5).
+
+### Added
+- Set `cost: true` once on an Agent, Team, or Workflow and read `result.costs`. Terminal Agent stream chunks include the same snapshot. Accounting store failures preserve successful answers and expose an unavailable state.
+- Configure trusted model billing facts once with `billingContext`. Provider-returned facts take precedence, and billing metadata does not change the provider's requested execution tier.
+- Per-attempt usage evidence and versioned normalization, with separate ordinary input, cache read, cache write, cache lifetime, and output measurements. Reasoning stays inside inclusive output.
+- An exact decimal charge calculator and a versioned price catalog. Rules identify the billing provider, model, API, currency, effective period, service tier, region, context band, modality, and account terms.
+- Asynchronous `CostTracker` record, query, reprice, and flush APIs. Charges retain rate snapshots and missing-data reasons. Incomplete totals are `null`; known priced amounts remain available as `knownSubtotal`.
+- Separate views for provider-reported amounts and invoices, with evidence, group finalization, and exact allocation shares that do not add another copy of the group charge.
+- In-memory, SQLite, and PostgreSQL accounting stores with immutable observations and assessments, selected revisions, tenant-scoped pagination, idempotent replay, and atomic budget reservation and settlement.
+- Threshold and reservation budgets with explicit periods, zero limits, warning behavior, and conservative handling of uncertain requests.
+- Accounting context for auxiliary model calls and custom operations, plus usage capture in embedding, rerank, image, speech, realtime, vision, and browser paths. Adapter coverage states identify unsupported billing evidence.
+- Typed usage, assessment, budget, and accounting-failure events. Cache writes and pricing completeness are visible to observability consumers.
+
+### Changed
+- Canonical money values are decimal strings. Missing usage or prices no longer imply a free request.
+- Catalog rules replace model-only overrides for canonical accounting. Legacy `pricing` configuration applies only to the synchronous compatibility path.
+- Legacy synchronous summaries are bounded local projections. `getEntries()` and `getSummary()` throw `IncompleteCostError` after canonical accounting is used. Use asynchronous queries for Agent accounting, durable history, and incomplete costs.
+- Legacy `cost.tracked` events replace the run total; consumers must not sum successive replacement totals.
+- Usage survives output parsing, hook failures, and terminal stream metadata. Accounting persistence retries do not repeat a successful provider request.
+- Packages include separate CommonJS declarations and conditional type exports alongside ESM declarations.
+
+### Limits
+- Bundled prices are dated estimates with explicit coverage. Custom gateways, cloud deployments, account contracts, and unsupported meters need matching rules or remain incomplete.
+- Provider SDK retries can be opaque. Start intents expose requests with unknown outcomes; accounting cannot recover usage that a provider never supplies.
+- Local fixtures and disposable database checks do not establish live-provider availability or invoice equivalence.
+
 ## [4.1.0] - 2026-10-08
 
 ### Added

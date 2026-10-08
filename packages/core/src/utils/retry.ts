@@ -14,6 +14,7 @@ const DEFAULT_CONFIG: RetryConfig = {
 
 function isRetryableError(error: unknown): boolean {
   if (error && typeof error === "object") {
+    if ("retryable" in error && error.retryable === false) return false;
     const status = (error as any).status ?? (error as any).statusCode;
     if (status === 429 || (status >= 500 && status < 600)) return true;
 

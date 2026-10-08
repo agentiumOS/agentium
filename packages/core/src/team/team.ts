@@ -3,6 +3,9 @@ import type { A2ARemoteAgent } from "../a2a/a2a-remote-agent.js";
 import type { Agent } from "../agent/agent.js";
 import { RunContext } from "../agent/run-context.js";
 import type { RunOpts, RunOutput } from "../agent/types.js";
+import { createMeteredProvider, getRunCostSnapshot, meteredGenerateFor } from "../cost/accounting.js";
+import { getAccountingContext, withAccountingContext } from "../cost/context.js";
+import { CostTracker } from "../cost/cost-tracker.js";
 import { EventBus } from "../events/event-bus.js";
 import { HandoffSignal } from "../handoff/types.js";
 import { getTextContent, type StreamChunk, type TokenUsage } from "../models/types.js";
@@ -20,9 +23,17 @@ export class Team {
   readonly eventBus: EventBus;
 
   private config: TeamConfig;
+  private readonly ownsCostTracker: boolean;
 
   constructor(config: TeamConfig) {
-    this.config = config;
+    if (config.cost !== undefined && config.costTracker) throw new TypeError("Choose cost or costTracker, not both");
+    this.ownsCostTracker = !config.costTracker && Boolean(config.cost);
+    this.config = {
+      ...config,
+      costTracker:
+        config.costTracker ??
+        (config.cost ? new CostTracker(config.cost === true ? undefined : config.cost) : undefined),
+    };
     this.name = config.name;
     this.eventBus = config.eventBus ?? new EventBus();
 
@@ -32,6 +43,34 @@ export class Team {
   }
 
   async run(input: string, opts?: RunOpts): Promise<RunOutput> {
+    const parent = getAccountingContext();
+    const tracker = parent?.tracker ?? this.config.costTracker;
+    if (!tracker) return this.runAccounted(input, opts);
+    const runId = opts?.runId ?? uuidv4();
+    const sessionId = opts?.sessionId ?? uuidv4();
+    const scope = {
+      ...parent,
+      tracker,
+      runId,
+      sessionId,
+      rootRunId: parent?.rootRunId ?? parent?.runId ?? runId,
+      parentRunId: parent?.runId,
+      tenantId: opts?.tenantId ?? parent?.tenantId,
+      userId: opts?.userId ?? parent?.userId,
+      agentName: this.name,
+      eventBus: this.eventBus,
+      purpose: "team-orchestration",
+    };
+    const pendingId = `team-run:${runId}:${uuidv4()}`;
+    tracker.beginPendingAttempt(pendingId);
+    try {
+      return await withAccountingContext(scope, () => this.runAccounted(input, { ...opts, runId, sessionId }));
+    } finally {
+      tracker.endPendingAttempt(pendingId);
+    }
+  }
+
+  private async runAccounted(input: string, opts?: RunOpts): Promise<RunOutput> {
     const ctx = new RunContext({
       sessionId: opts?.sessionId ?? uuidv4(),
       userId: opts?.userId,
@@ -73,6 +112,8 @@ export class Team {
           break;
       }
 
+      const scope = getAccountingContext();
+      if (scope) output = { ...output, costs: await getRunCostSnapshot(scope) };
       this.eventBus.emit("run.complete", { runId: ctx.runId, output });
       return output;
     } catch (error) {
@@ -85,7 +126,11 @@ export class Team {
   async *stream(input: string, opts?: RunOpts): AsyncGenerator<StreamChunk> {
     const result = await this.run(input, opts);
     yield { type: "text", text: result.text };
-    yield { type: "finish", finishReason: "stop", usage: result.usage };
+    yield { type: "finish", finishReason: "stop", usage: result.usage, costs: result.costs };
+  }
+
+  async close(): Promise<void> {
+    if (this.ownsCostTracker) await this.config.costTracker?.close();
   }
 
   private async runCoordinateMode(input: string, ctx: RunContext): Promise<RunOutput> {
@@ -333,8 +378,13 @@ export class Team {
   private generate(ctx: RunContext, messages: import("../models/types.js").ChatMessage[]) {
     ctx.signal?.throwIfAborted();
     return ctx.executionServices
-      ? ctx.executionServices.model(this.config.model, messages, undefined, ctx)
-      : this.config.model.generate(messages);
+      ? ctx.executionServices.model(
+          createMeteredProvider(this.config.model, "team-orchestration"),
+          messages,
+          undefined,
+          ctx,
+        )
+      : meteredGenerateFor("team-orchestration", this.config.model, messages);
   }
 
   private buildMemberDescriptions(): string {
