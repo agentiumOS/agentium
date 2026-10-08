@@ -143,3 +143,25 @@ Run `npx vitest run packages/core/src/session/__tests__/incremental-session.test
 `defineTool`, `defineAsyncTool`, `ToolDef.parameters` and `AgentConfig.structuredOutput` accept standalone Zod 3, current Zod 4 Classic and Zod 4 Mini. Argument inference and runtime validation are preserved. Agentium uses Zod 4.6 internally with stable `zod/v3` imports for existing internal schemas; applications can keep their own Zod 3 dependency.
 
 Use `parseSchema(schema, value)`, `safeParseSchema(schema, value)` and `schemaShape(tool.parameters)` when inspecting arbitrary public schemas. The widened `ToolDef.parameters` union includes Mini's core contract, so consumers should replace direct `.parameters.safeParse()` or `.parameters.shape` access with these helpers. `convertJsonSchema` retains input-shape conversion and reports runtime-only transformations/refinements; JSON Schema cannot enforce executable validation functions. Package fixtures verify actual Zod 3.25.76 and 4.6.5 in ESM/CommonJS consumers.
+
+## OpenAI Decisions (4.1+)
+
+Install `openai@^7.30.0` and set `OPENAI_API_KEY`. Use `openaiDecisions()` for typed classification, condition probabilities, and rubric scores.
+
+```typescript
+import { Agent, openaiDecisions } from "@agentium/core";
+
+const agent = new Agent({ name: "triage", model: openaiDecisions() });
+try {
+  const result = await agent.run("I was charged twice.", {
+    questions: [{ type: "predicate", name: "billing", instructions: "Does this concern billing?" }],
+  });
+  console.log(result.decisions);
+} finally {
+  await agent.close();
+}
+```
+
+The default model is `gpt-6-luna`. A run question array replaces constructor defaults. Answers can include individual refusals; scores can be fractional. `stream()` emits completed JSON followed by a finish chunk containing `decisions`. Only text and inline base64 images are supported. Conversation roles become labeled text evidence in user messages; question instructions define the classification task. Tools, arbitrary output schemas, chat sampling options, and semantic caching are unsupported.
+
+Costs use the `openai-decisions/gpt-6-luna` pricing key with a base input rate of $0.10 per million tokens. Regional and long-context premiums require custom pricing. See the [Decisions guide](https://docs.agentium.in/models/openai-decisions).

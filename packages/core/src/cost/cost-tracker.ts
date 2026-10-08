@@ -246,7 +246,7 @@ export class CostTracker {
   }
 
   private calculateBreakdown(modelId: string, usage: TokenUsage): CostBreakdown {
-    const p = lookupPricing(modelId, this.pricing);
+    const p = lookupPricing(usage.pricingKey ?? modelId, this.pricing);
     if (!p) return emptyBreakdown();
 
     const cachedTokens = usage.cachedTokens ?? 0;
@@ -257,7 +257,7 @@ export class CostTracker {
     const output = (usage.completionTokens / 1000) * p.completionPer1k;
     const reasoning = usage.reasoningTokens && p.reasoningPer1k ? (usage.reasoningTokens / 1000) * p.reasoningPer1k : 0;
     const cached =
-      cachedTokens > 0 && p.cachedPromptPer1k
+      cachedTokens > 0 && p.cachedPromptPer1k !== undefined
         ? (cachedTokens / 1000) * p.cachedPromptPer1k
         : cachedTokens > 0
           ? (cachedTokens / 1000) * p.promptPer1k * 0.5 // default 50% discount if not specified

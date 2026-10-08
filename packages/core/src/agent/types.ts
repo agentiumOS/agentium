@@ -1,6 +1,7 @@
 import type { EventBus } from "../events/event-bus.js";
 import type { LogLevel } from "../logger/logger.js";
 import type { UnifiedMemoryConfig } from "../memory/memory-config.js";
+import type { DecisionAnswer, ModelQuestions } from "../models/decisions.js";
 import type { ModelProvider } from "../models/provider.js";
 import type {
   ChatMessage,
@@ -219,10 +220,10 @@ export interface RunOpts {
   /** Per-run dependency overrides (merged with agent-level dependencies). */
   dependencies?: Record<string, unknown | (() => unknown) | (() => Promise<unknown>)>;
   /**
-   * Jev questions for this run (`choice` / `noul` / `score`).
-   * Wins over `jev(model, { questions })`. Ignored by chat providers.
+   * Jev question map or native OpenAI Decisions question array for this run.
+   * Replaces provider defaults. Ignored by chat providers.
    */
-  questions?: Record<string, unknown>;
+  questions?: ModelQuestions;
 }
 
 export interface RunMetrics {
@@ -240,6 +241,8 @@ export interface RunMetrics {
 }
 
 export interface RunOutput {
+  /** Validated OpenAI Decisions answers, including per-question refusals. */
+  decisions?: DecisionAnswer[];
   text: string;
   toolCalls: ToolCallResult[];
   usage: TokenUsage;

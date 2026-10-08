@@ -2,6 +2,9 @@ import type { ModelPricing } from "./types.js";
 
 // Pricing per 1K tokens. Sources: openai.com/api/pricing, docs.anthropic.com/en/docs/about-claude/pricing, ai.google.dev/gemini-api/docs/pricing
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
+  // Decisions base rate: $0.10 / MTok input; cache and output are free.
+  // Regional and long-context adjustments require custom pricing.
+  "openai-decisions/gpt-6-luna": { promptPer1k: 0.0001, completionPer1k: 0, cachedPromptPer1k: 0 },
   // ── OpenAI: GPT ────────────────────────────────────────────────────────
   "gpt-4.1": { promptPer1k: 0.002, completionPer1k: 0.008, cachedPromptPer1k: 0.0005 },
   "gpt-4.1-mini": { promptPer1k: 0.0004, completionPer1k: 0.0016, cachedPromptPer1k: 0.0001 },

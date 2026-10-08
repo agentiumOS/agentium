@@ -603,7 +603,12 @@ export class Agent {
     }
 
     // Semantic cache check
-    if (this.semanticCache && !opts?.executionServices && !opts?.ephemeral) {
+    if (
+      this.semanticCache &&
+      this.config.model.providerId !== "openai-decisions" &&
+      !opts?.executionServices &&
+      !opts?.ephemeral
+    ) {
       const hit = await this.semanticCache.lookup(inputText, this.name, sessionId);
       if (hit) {
         this.eventBus.emit("cache.hit", {
@@ -935,7 +940,12 @@ export class Agent {
       });
 
       // Semantic cache store (fire-and-forget)
-      if (this.semanticCache && !opts?.executionServices && !opts?.ephemeral) {
+      if (
+        this.semanticCache &&
+        this.config.model.providerId !== "openai-decisions" &&
+        !opts?.executionServices &&
+        !opts?.ephemeral
+      ) {
         this.semanticCache
           .store(inputText, output, this.name, sessionId)
           .catch(
@@ -999,7 +1009,12 @@ export class Agent {
     await this.ensureSkillsLoaded();
 
     // Semantic cache check for streaming
-    if (this.semanticCache && !opts?.executionServices && !opts?.ephemeral) {
+    if (
+      this.semanticCache &&
+      this.config.model.providerId !== "openai-decisions" &&
+      !opts?.executionServices &&
+      !opts?.ephemeral
+    ) {
       const hit = await this.semanticCache.lookup(inputText, this.name, sessionId);
       if (hit) {
         this.eventBus.emit("cache.hit", {
@@ -1085,7 +1100,9 @@ export class Agent {
     let streamUsage: import("../models/types.js").TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let sourceUsage: typeof streamUsage | undefined;
     let costTracked = false;
+    let decisions: RunOutput["decisions"];
     const recordChunk = (chunk: StreamChunk) => {
+      if (chunk.type === "finish") decisions = chunk.decisions;
       if (chunk.type === "text") {
         timeToFirstTokenMs ??= Date.now() - streamStartTime;
         fullText += chunk.text;
@@ -1095,6 +1112,8 @@ export class Agent {
           promptTokens: previous.promptTokens + chunk.usage.promptTokens,
           completionTokens: previous.completionTokens + chunk.usage.completionTokens,
           totalTokens: previous.totalTokens + chunk.usage.totalTokens,
+          ...(chunk.usage.pricingKey ? { pricingKey: chunk.usage.pricingKey } : {}),
+          ...(chunk.usage.providerMetrics ? { providerMetrics: chunk.usage.providerMetrics } : {}),
         };
         for (const key of ["reasoningTokens", "cachedTokens", "audioInputTokens", "audioOutputTokens"] as const)
           if (previous[key] !== undefined || chunk.usage[key] !== undefined)
@@ -1208,6 +1227,7 @@ export class Agent {
       const additions = newMessages();
       const streamOutput: RunOutput = {
         text: fullText,
+        ...(decisions ? { decisions } : {}),
         toolCalls: streamToolCalls,
         usage: streamUsage,
         durationMs,
@@ -1250,7 +1270,12 @@ export class Agent {
       completed = true;
       terminalEmitted = true;
       this.eventBus.emit("run.complete", { runId: ctx.runId, output: streamOutput });
-      if (this.semanticCache && !opts?.executionServices && !opts?.ephemeral) {
+      if (
+        this.semanticCache &&
+        this.config.model.providerId !== "openai-decisions" &&
+        !opts?.executionServices &&
+        !opts?.ephemeral
+      ) {
         this.semanticCache.store(inputText, streamOutput, this.name, sessionId).catch((error: unknown) => {
           this.logger.warn(`Cache store failed: ${error instanceof Error ? error.message : "Unknown error"}`);
         });

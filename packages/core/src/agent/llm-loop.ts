@@ -300,7 +300,7 @@ export class LLMLoop {
       if (toolDefs.length > 0) modelConfig.tools = toolDefs;
       if (this.reasoning) modelConfig.reasoning = this.reasoning;
       if (this.providerOptions) modelConfig.providerOptions = this.providerOptions;
-      if (ctx.questions && Object.keys(ctx.questions).length > 0) modelConfig.questions = ctx.questions;
+      if (ctx.questions !== undefined) modelConfig.questions = ctx.questions;
 
       if (this.structuredOutput) {
         modelConfig.responseFormat = {
@@ -368,7 +368,8 @@ export class LLMLoop {
         const output: RunOutput = {
           text,
           toolCalls: allToolCalls,
-          usage,
+          ...(response.decisions ? { decisions: response.decisions } : {}),
+          usage: { ...usage, ...(response.usage.pricingKey ? { pricingKey: response.usage.pricingKey } : {}) },
           ...(timeToFirstTokenMs !== undefined ? { timeToFirstTokenMs } : {}),
           ...(responseId ? { responseId } : {}),
         };
@@ -581,7 +582,15 @@ export class LLMLoop {
       if (toolDefs.length > 0) modelConfig.tools = toolDefs;
       if (this.reasoning) modelConfig.reasoning = this.reasoning;
       if (this.providerOptions) modelConfig.providerOptions = this.providerOptions;
-      if (ctx.questions && Object.keys(ctx.questions).length > 0) modelConfig.questions = ctx.questions;
+      if (ctx.questions !== undefined) modelConfig.questions = ctx.questions;
+
+      if (this.structuredOutput) {
+        modelConfig.responseFormat = {
+          type: "json_schema",
+          schema: this.zodToJsonSchema(this.structuredOutput),
+          name: "structured_response",
+        };
+      }
 
       let fullText = "";
       const pendingToolCalls: Array<{

@@ -1,3 +1,4 @@
+import type { DecisionAnswer, ModelQuestions } from "./decisions.js";
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 // ── Multi-modal content parts ─────────────────────────────────────────────
@@ -88,6 +89,8 @@ export interface TokenUsage {
   audioOutputTokens?: number;
   /** Raw usage / metrics object returned by the underlying provider API (unmodified). */
   providerMetrics?: Record<string, unknown>;
+  /** Endpoint-specific pricing identity when a model has more than one tariff. */
+  pricingKey?: string;
 }
 
 // ── Model response ────────────────────────────────────────────────────────
@@ -97,6 +100,8 @@ export interface ModelResponse {
   usage: TokenUsage;
   finishReason: "stop" | "tool_calls" | "length" | "content_filter";
   raw: unknown;
+  /** Validated OpenAI Decisions answers. */
+  decisions?: DecisionAnswer[];
 }
 
 export type StreamChunk =
@@ -105,7 +110,13 @@ export type StreamChunk =
   | { type: "tool_call_start"; toolCall: { id: string; name: string } }
   | { type: "tool_call_delta"; toolCallId: string; argumentsDelta: string }
   | { type: "tool_call_end"; toolCallId: string }
-  | { type: "finish"; finishReason: string; usage?: TokenUsage; providerExtras?: Record<string, unknown> };
+  | {
+      type: "finish";
+      finishReason: string;
+      usage?: TokenUsage;
+      providerExtras?: Record<string, unknown>;
+      decisions?: DecisionAnswer[];
+    };
 
 // ── Model config ──────────────────────────────────────────────────────────
 
@@ -164,10 +175,10 @@ export interface ModelConfig {
   /** Provider-specific request options (cache, compaction, Gemini grounding). */
   providerOptions?: ProviderOptions;
   /**
-   * Jev questions for this call (`choice` / `noul` / `score`).
+   * Jev question map or native OpenAI Decisions question array for this call.
    * Ignored by chat providers.
    */
-  questions?: Record<string, unknown>;
+  questions?: ModelQuestions;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

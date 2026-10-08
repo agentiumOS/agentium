@@ -1,5 +1,6 @@
 import { randomUUID as uuidv4 } from "node:crypto";
 import type { EventBus } from "../events/event-bus.js";
+import type { ModelQuestions } from "../models/decisions.js";
 import type { ExecutionPolicy, RunMode } from "../tools/execution-policy.js";
 
 export class RunContext {
@@ -19,8 +20,8 @@ export class RunContext {
   readonly signal?: AbortSignal;
   /** Resolved runtime dependencies available to tools and hooks. */
   readonly dependencies: Record<string, string>;
-  /** Per-run Jev questions, when `agent.run(input, { questions })` is used. */
-  readonly questions?: Record<string, unknown>;
+  /** Per-run decision questions, when `agent.run(input, { questions })` is used. */
+  readonly questions?: ModelQuestions;
 
   constructor(opts: {
     sessionId: string;
@@ -37,7 +38,7 @@ export class RunContext {
     executionPolicy?: ExecutionPolicy;
     signal?: AbortSignal;
     dependencies?: Record<string, string>;
-    questions?: Record<string, unknown>;
+    questions?: ModelQuestions;
   }) {
     this.executionServices = opts.executionServices;
     this.externalHistory = opts.externalHistory;

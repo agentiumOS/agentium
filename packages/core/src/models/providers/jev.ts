@@ -66,6 +66,8 @@ export class JevProvider implements ModelProvider {
     questions: JevQuestions;
     plan?: SchemaQuestionPlan;
   } {
+    if (Array.isArray(options?.questions))
+      throw new Error("Jev requires a named question map, not OpenAI Decisions questions");
     if (options?.questions && Object.keys(options.questions).length > 0) {
       return { questions: options.questions };
     }

@@ -20,6 +20,7 @@ import { type MetaLlamaConfig, MetaLlamaProvider } from "./providers/meta-llama.
 import { type MistralConfig, MistralProvider } from "./providers/mistral.js";
 import { OllamaProvider } from "./providers/ollama.js";
 import { OpenAIProvider } from "./providers/openai.js";
+import { type OpenAIDecisionsConfig, OpenAIDecisionsProvider } from "./providers/openai-decisions.js";
 import { type PerplexityConfig, PerplexityProvider } from "./providers/perplexity.js";
 import { type VercelConfig, VercelProvider } from "./providers/vercel.js";
 import { VertexAIProvider } from "./providers/vertex.js";
@@ -62,6 +63,13 @@ modelRegistry.register("ollama", (modelId, config) => new OllamaProvider(modelId
 
 export function openai(modelId: string, config?: { apiKey?: string; baseURL?: string }): ModelProvider {
   return modelRegistry.resolve("openai", modelId, config);
+}
+
+modelRegistry.register("openai-decisions", (modelId, config) => new OpenAIDecisionsProvider(modelId, config));
+
+/** Evaluate typed questions with OpenAI Decisions. Requires openai >= 7.30.0. */
+export function openaiDecisions(modelId = "gpt-6-luna", config?: OpenAIDecisionsConfig): ModelProvider {
+  return modelRegistry.resolve("openai-decisions", modelId, config);
 }
 
 export function anthropic(modelId: string, config?: { apiKey?: string }): ModelProvider {

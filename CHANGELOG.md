@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.1.0] - 2026-10-08
+
+### Added
+- OpenAI Decisions through `openaiDecisions()` / `OpenAIDecisionsProvider`, with native predicate, choice, and score questions. Requires optional `openai >= 7.30.0`.
+- Typed `result.decisions` and terminal stream answers preserve probabilities, boolean choices, fractional scores, and per-question refusals. Supports text and inline images, per-run questions and credentials, cancellation, validated responses, and endpoint-specific cost estimates.
+- Decisions bypasses semantic caching because question sets are not part of its cache key. Tools, output schemas, chat sampling options, and unsupported media fail before request dispatch. Existing Jev question maps remain supported.
+
+### Maintenance
+- Updated locked MCP SDK, proxy-addr, and source-map-js dependencies to patched releases.
+
 ## [4.0.0] - 2026-10-04
 
 All ten packages, including the new `@agentium/harness`, share version 4.0.0. This major release includes intentional API removals; follow the package migration guides before upgrading from 3.x.
