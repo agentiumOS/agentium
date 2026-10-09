@@ -1,6 +1,6 @@
 {
   "name": "agentium",
-  "version": "4.8.1",
+  "version": "4.8.2",
   "description": "Production-ready AI agent framework with multi-model support, workflows, teams, and observability",
   "private": true,
   "keywords": [
