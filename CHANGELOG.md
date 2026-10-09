@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.0] - 2026-10-09
+
+### Added
+- `EmbeddingGemmaEmbedding` embeds text and code with local EmbeddingGemma 2 through Ollama or an OpenAI-compatible embeddings server. It does not call the Gemini API or load model weights in Node.
+- Document and query task prefixes are separate. Vector search calls optional `embedQuery()` when an embedder defines it. `OpenAIEmbedding`, `GoogleEmbedding`, and `HashEmbedding` still embed both sides with `embed()`.
+- Output length can be any integer from 128 through 768. A longer server vector is truncated and re-normalized. Images, audio, and video still use `GoogleEmbedding` with `gemini-embedding-2`.
+
 ## [4.6.0] - 2026-10-09
 
 ### Added
