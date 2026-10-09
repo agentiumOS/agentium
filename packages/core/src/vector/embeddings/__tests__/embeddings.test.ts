@@ -419,6 +419,9 @@ describe("existing embedders stay symmetric", () => {
     expect(openai.OpenAIEmbedding.prototype).not.toHaveProperty("embedQuery");
     expect(google.GoogleEmbedding.prototype).not.toHaveProperty("embedQuery");
     expect(hash.HashEmbedding.prototype).not.toHaveProperty("embedQuery");
+    expect(openai.OpenAIEmbedding.prototype).not.toHaveProperty("embedMultimodalQuery");
+    expect(google.GoogleEmbedding.prototype).not.toHaveProperty("embedMultimodalQuery");
+    expect(hash.HashEmbedding.prototype).not.toHaveProperty("embedMultimodalQuery");
   });
 });
 
@@ -446,7 +449,7 @@ describe("EmbeddingGemmaEmbedding", () => {
     it("defaults to the Ollama EmbeddingGemma tag at 768 dimensions", () => {
       const embedder = new EmbeddingGemmaEmbedding();
       expect(embedder.dimensions).toBe(768);
-      expect(embedder.supportsMultimodal).toBe(false);
+      expect(embedder.supportsMultimodal).toBe(true);
     });
 
     it("rejects dimensions outside 128 through 768", () => {
@@ -537,6 +540,73 @@ describe("EmbeddingGemmaEmbedding", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it("sends one image as base64 and prefixes the text for a document", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ embeddings: [vector(768)] }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding();
+
+      await embedder.embedMultimodal([
+        { type: "text", text: "a cat on a windowsill" },
+        { type: "image", data: "iVBORw0KGgo", mimeType: "image/png" },
+      ]);
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body).toEqual({
+        model: "embeddinggemma-2",
+        input: { text: "title: none | text: a cat on a windowsill", image: "iVBORw0KGgo" },
+      });
+    });
+
+    it("fetches an image URL and sends several images as an array", async () => {
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).startsWith("https://")) {
+          return new Response(Buffer.from("fetched-image"), {
+            status: 200,
+            headers: { "content-type": "image/png" },
+          });
+        }
+        return jsonResponse({ embeddings: [vector(768)] });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding();
+
+      await embedder.embedMultimodal([
+        { type: "image", data: "https://example.com/a.png" },
+        { type: "image", data: "SECOND" },
+        { type: "audio", data: "UklGRiQA", mimeType: "audio/wav" },
+      ]);
+
+      const body = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(body.input.image).toEqual([Buffer.from("fetched-image").toString("base64"), "SECOND"]);
+      expect(body.input.audio).toBe("UklGRiQA");
+      expect(body.input.text).toBeUndefined();
+    });
+
+    it("rejects video and pdf without calling the server", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding();
+      await expect(embedder.embedMultimodal([{ type: "file", data: "MP4", mimeType: "video/mp4" }])).rejects.toThrow(
+        /does not accept video/,
+      );
+      await expect(
+        embedder.embedMultimodal([{ type: "file", data: "PDF", mimeType: "application/pdf" }]),
+      ).rejects.toThrow(/Unsupported MIME type/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("keeps a text-only multimodal call on the text embed request", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ embeddings: [vector(768)] }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding();
+      await embedder.embedMultimodal("shipping delays");
+      await embedder.embedMultimodalQuery("why is the shipment late");
+      const documentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const queryBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(documentBody.input).toEqual(["title: none | text: shipping delays"]);
+      expect(queryBody.input).toEqual(["task: search result | query: why is the shipment late"]);
+    });
+
     it("does not retry a 400", async () => {
       const fetchMock = vi.fn(async () => new Response("bad", { status: 400 }));
       vi.stubGlobal("fetch", fetchMock);
@@ -592,6 +662,52 @@ describe("EmbeddingGemmaEmbedding", () => {
       expect(documentBody.input).toEqual(["task: classification | query: The battery died"]);
       expect(queryBody.input).toEqual(["task: classification | query: Negative"]);
       expect(documentBody.dimensions).toBeUndefined();
+    });
+
+    it("sends image, audio, and video as chat content and prefixes only the text", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ data: [{ embedding: vector(768), index: 0 }] }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding({ backend: "openai", apiKey: "local" });
+
+      await embedder.embedMultimodal([
+        { type: "text", text: "running shoes" },
+        { type: "image", data: "SHOES", mimeType: "image/jpeg" },
+        { type: "audio", data: "WAVDATA", mimeType: "audio/wav" },
+        { type: "file", data: "MP4DATA", mimeType: "video/mp4" },
+      ]);
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.messages).toEqual([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "title: none | text: running shoes" },
+            { type: "image_url", image_url: { url: "data:image/jpeg;base64,SHOES" } },
+            { type: "input_audio", input_audio: { data: "WAVDATA", format: "wav" } },
+            { type: "video_url", video_url: { url: "data:video/mp4;base64,MP4DATA" } },
+          ],
+        },
+      ]);
+      expect(body.input).toBeUndefined();
+      expect(fetchMock.mock.calls[0][1].headers.authorization).toBe("Bearer local");
+    });
+
+    it("uses the query prompt for a multimodal query and leaves a remote image URL in place", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ data: [{ embedding: vector(768), index: 0 }] }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding({ backend: "openai" });
+
+      await embedder.embedMultimodalQuery([
+        { type: "image", data: "https://example.com/cat.png", mimeType: "image/png" },
+        { type: "text", text: "task: search result | query: orange cat" },
+      ]);
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.messages[0].content).toEqual([
+        { type: "image_url", image_url: { url: "https://example.com/cat.png" } },
+        { type: "text", text: "task: search result | query: orange cat" },
+      ]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it("returns no vectors and makes no request for an empty batch", async () => {

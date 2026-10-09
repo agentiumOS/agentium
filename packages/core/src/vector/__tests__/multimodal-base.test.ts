@@ -107,6 +107,17 @@ describe("BaseVectorStore multimodal routing (via InMemoryVectorStore)", () => {
       expect(embedder.embed).not.toHaveBeenCalled();
     });
 
+    it("routes ContentPart[] queries through embedMultimodalQuery() when the embedder provides it", async () => {
+      const embedder = makeMultimodalEmbedder();
+      const embedMultimodalQuery = vi.fn(async (_input: unknown) => [0, 1, 0]);
+      const store = new InMemoryVectorStore({ ...embedder, embedMultimodalQuery });
+      await store.upsert("col", { id: "1", content: "a", embedding: [1, 0, 0] });
+      const query: ContentPart[] = [{ type: "image", data: "B64", mimeType: "image/png" }];
+      await store.search("col", query);
+      expect(embedMultimodalQuery).toHaveBeenCalledWith(query);
+      expect(embedder.embedMultimodal).not.toHaveBeenCalled();
+    });
+
     it("routes ContentPart[] queries through embedMultimodal()", async () => {
       const embedder = makeMultimodalEmbedder();
       const store = new InMemoryVectorStore(embedder);

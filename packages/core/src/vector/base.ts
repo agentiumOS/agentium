@@ -19,7 +19,7 @@ export abstract class BaseVectorStore implements VectorStore {
       if (!this.embedder.embedMultimodal) {
         throw new Error(
           `Document has multimodal parts but ${this.embedder.constructor.name} is text-only. ` +
-            'Use GoogleEmbedding with model "gemini-embedding-2" for multimodal support.',
+            'Use EmbeddingGemmaEmbedding, or GoogleEmbedding with model "gemini-embedding-2", for multimodal support.',
         );
       }
       return this.embedder.embedMultimodal(doc.parts);
@@ -42,7 +42,9 @@ export abstract class BaseVectorStore implements VectorStore {
           `${this.embedder.constructor.name} is text-only.`,
       );
     }
-    return this.embedder.embedMultimodal(query);
+    return this.embedder.embedMultimodalQuery
+      ? this.embedder.embedMultimodalQuery(query)
+      : this.embedder.embedMultimodal(query);
   }
 
   /**

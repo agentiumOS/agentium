@@ -58,6 +58,12 @@ export interface EmbeddingProvider {
    * does not support multimodal input.
    */
   embedMultimodal?(input: EmbeddingInput): Promise<number[]>;
+  /**
+   * Optional query-side multimodal embedding. Vector search uses this for `ContentPart[]`
+   * queries when present, so models with different query and document prompts stay asymmetric.
+   * Providers that omit it keep using `embedMultimodal` for both sides.
+   */
+  embedMultimodalQuery?(input: EmbeddingInput): Promise<number[]>;
   /** Whether this provider/model supports `embedMultimodal`. */
   readonly supportsMultimodal?: boolean;
 }

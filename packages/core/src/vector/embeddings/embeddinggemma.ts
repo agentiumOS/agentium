@@ -1,7 +1,9 @@
 import { meteredOperation } from "../../cost/accounting.js";
 import type { AccountingContext } from "../../cost/context.js";
 import { normalizeOperationUsage } from "../../cost/operation-usage.js";
-import type { EmbeddingProvider } from "../types.js";
+import type { ContentPart } from "../../models/types.js";
+import type { EmbeddingInput, EmbeddingProvider } from "../types.js";
+import { fetchAsBase64 } from "./multimodal-utils.js";
 
 /** Asymmetric retrieval tasks use a different prefix for queries and documents. */
 export type EmbeddingGemmaTask =
@@ -42,6 +44,12 @@ export interface EmbeddingGemmaEmbeddingConfig {
 
 const NATIVE_DIMENSIONS = 768;
 
+type OpenAIMediaPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "input_audio"; input_audio: { data: string; format: string } }
+  | { type: "video_url"; video_url: { url: string } };
+
 const TASKS: Record<EmbeddingGemmaTask, { query: string; document: string }> = {
   retrieval: { query: "task: search result | query: ", document: "title: none | text: " },
   code: { query: "task: code retrieval | query: ", document: "title: none | text: " },
@@ -53,13 +61,14 @@ const TASKS: Record<EmbeddingGemmaTask, { query: string; document: string }> = {
 };
 
 /**
- * Local EmbeddingGemma 2 embeddings. Text and code only.
+ * Local EmbeddingGemma 2 embeddings for text, code, images, audio, and video.
  * The model runs in Ollama or an OpenAI-compatible server (vLLM, llama.cpp, LM Studio).
  * This class does not call the Gemini API and does not load weights in-process.
+ * Ollama's embed API accepts text, images, and audio. Video requires the OpenAI-compatible backend.
  */
 export class EmbeddingGemmaEmbedding implements EmbeddingProvider {
   readonly dimensions: number;
-  readonly supportsMultimodal = false;
+  readonly supportsMultimodal = true;
   private backend: "ollama" | "openai";
   private model: string;
   private endpoint: string;
@@ -106,6 +115,84 @@ export class EmbeddingGemmaEmbedding implements EmbeddingProvider {
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     return this.embedPrefixed(texts.map((text) => `${this.documentPrompt}${text}`));
+  }
+
+  async embedMultimodal(input: EmbeddingInput): Promise<number[]> {
+    return this.embedMixed(input, this.documentPrompt);
+  }
+
+  async embedMultimodalQuery(input: EmbeddingInput): Promise<number[]> {
+    return this.embedMixed(input, this.queryPrompt);
+  }
+
+  private async embedMixed(input: EmbeddingInput, prompt: string): Promise<number[]> {
+    const parts = normalizeParts(input);
+    if (parts.length === 0) throw new Error("EmbeddingGemma input is empty");
+    if (parts.every((part) => part.type === "text")) {
+      const text = parts.map((part) => (part.type === "text" ? part.text : "")).join(" ");
+      const [vector] = await this.embedPrefixed([applyPrompt(text, prompt)]);
+      return vector!;
+    }
+    if (this.backend === "ollama") return this.embedOllamaMedia(parts, prompt);
+    return this.embedOpenAIMedia(parts, prompt);
+  }
+
+  private async embedOllamaMedia(parts: ContentPart[], prompt: string): Promise<number[]> {
+    if (parts.some((part) => modalityOf(part) === "video")) {
+      throw new Error(
+        'Ollama /api/embed accepts text, images, and audio. It does not accept video. Use backend: "openai" for video.',
+      );
+    }
+    const text = applyPrompt(joinText(parts), prompt);
+    const images = await mediaBytes(parts, "image");
+    const audio = await mediaBytes(parts, "audio");
+    const input: { text?: string; image?: string | string[]; audio?: string | string[] } = {};
+    if (text) input.text = text;
+    const image = oneOrMany(images);
+    const sound = oneOrMany(audio);
+    if (image) input.image = image;
+    if (sound) input.audio = sound;
+    return this.postOne({ model: this.model, input });
+  }
+
+  private async embedOpenAIMedia(parts: ContentPart[], prompt: string): Promise<number[]> {
+    let prefixed = false;
+    const content: OpenAIMediaPart[] = [];
+    for (const part of parts) {
+      const kind = modalityOf(part);
+      if (kind === "text" && part.type === "text") {
+        if (!part.text) continue;
+        const text = prefixed ? part.text : applyPrompt(part.text, prompt);
+        prefixed = true;
+        content.push({ type: "text" as const, text });
+        continue;
+      }
+      const mime = mimeOf(part);
+      const data = part.type === "text" ? "" : part.data;
+      if (kind === "image") {
+        content.push({ type: "image_url" as const, image_url: { url: await mediaUrl(data, mime) } });
+      } else if (kind === "audio") {
+        content.push({
+          type: "input_audio" as const,
+          input_audio: { data: await rawBytes(data), format: audioFormat(mime) },
+        });
+      } else {
+        content.push({ type: "video_url" as const, video_url: { url: await mediaUrl(data, mime) } });
+      }
+    }
+    return this.postOne({
+      model: this.model,
+      messages: [{ role: "user", content }],
+      ...(this.dimensions !== NATIVE_DIMENSIONS ? { dimensions: this.dimensions } : {}),
+    });
+  }
+
+  private async postOne(body: unknown): Promise<number[]> {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    const raw = await this.withRetry(() => postJson(this.endpoint, body, headers));
+    const vectors = this.backend === "ollama" ? ollamaVectors(raw, 1) : openaiVectors(raw, 1);
+    return fitDimensions(vectors[0]!, this.dimensions);
   }
 
   private async embedPrefixed(inputs: string[]): Promise<number[][]> {
@@ -226,6 +313,80 @@ function statusOf(err: unknown): number | undefined {
   const status =
     (err as { status?: unknown; statusCode?: unknown }).status ?? (err as { statusCode?: unknown }).statusCode;
   return typeof status === "number" ? status : undefined;
+}
+
+function normalizeParts(input: EmbeddingInput): ContentPart[] {
+  if (typeof input === "string") return [{ type: "text", text: input }];
+  if (Array.isArray(input)) return input;
+  return [input];
+}
+
+function applyPrompt(text: string, prompt: string): string {
+  if (!text) return "";
+  if (text.startsWith("task:") || text.startsWith("title:")) return text;
+  return `${prompt}${text}`;
+}
+
+function joinText(parts: ContentPart[]): string {
+  return parts
+    .filter((part) => part.type === "text" && part.text)
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join(" ");
+}
+
+function modalityOf(part: ContentPart): "text" | "image" | "audio" | "video" {
+  if (part.type === "text") return "text";
+  if (part.type === "image") return "image";
+  if (part.type === "audio") return "audio";
+  if (part.mimeType.startsWith("image/")) return "image";
+  if (part.mimeType.startsWith("audio/")) return "audio";
+  if (part.mimeType.startsWith("video/")) return "video";
+  throw new Error(
+    `Unsupported MIME type for EmbeddingGemma: "${part.mimeType}". Supported: image/*, audio/*, and video/*.`,
+  );
+}
+
+function mimeOf(part: ContentPart): string {
+  if (part.type === "image") return part.mimeType ?? "image/png";
+  if (part.type === "audio") return part.mimeType ?? "audio/wav";
+  if (part.type === "file") return part.mimeType;
+  return "application/octet-stream";
+}
+
+function oneOrMany(values: string[]): string | string[] | undefined {
+  if (values.length === 0) return undefined;
+  if (values.length === 1) return values[0];
+  return values;
+}
+
+async function mediaBytes(parts: ContentPart[], kind: "image" | "audio"): Promise<string[]> {
+  const selected = parts.filter((part) => modalityOf(part) === kind);
+  return Promise.all(selected.map((part) => rawBytes(part.type === "text" ? "" : part.data)));
+}
+
+async function rawBytes(data: string): Promise<string> {
+  if (isUrl(data)) return (await fetchAsBase64(data)).data;
+  const marker = ";base64,";
+  const markerAt = data.indexOf(marker);
+  if (data.startsWith("data:") && markerAt !== -1) return data.slice(markerAt + marker.length);
+  return data;
+}
+
+async function mediaUrl(data: string, mime: string): Promise<string> {
+  if (isUrl(data) || data.startsWith("data:")) return data;
+  return `data:${mime};base64,${data}`;
+}
+
+function audioFormat(mime: string): string {
+  if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
+  if (mime.includes("ogg")) return "ogg";
+  if (mime.includes("webm")) return "webm";
+  if (mime.includes("mp4") || mime.includes("m4a")) return "mp4";
+  return "wav";
+}
+
+function isUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
 }
 
 async function postJson(url: string, body: unknown, headers: Record<string, string>): Promise<unknown> {

@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.8.0] - 2026-10-09
+
+### Added
+- `EmbeddingGemmaEmbedding` embeds images and audio through Ollama, and images, audio, and video through an OpenAI-compatible embeddings server. Task prefixes stay on text. Ollama's embed API does not accept video. Vector search calls optional `embedMultimodalQuery()` when an embedder defines it.
+
 ## [4.7.0] - 2026-10-09
 
 ### Added
