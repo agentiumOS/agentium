@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.8.2] - 2026-10-10
+
+### Fixed
+- `providerOptions.serviceTier` accepts any string, so new OpenAI tiers work without an Agentium update. The documented tiers still autocomplete.
+
 ## [4.8.1] - 2026-10-10
 
 ### Fixed

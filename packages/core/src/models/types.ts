@@ -167,7 +167,7 @@ export interface ProviderOptions {
    * OpenAI `service_tier` on Responses and Chat Completions. Omitted unless set.
    * The returned tier still drives cost accounting.
    */
-  serviceTier?: "auto" | "default" | "flex" | "priority" | "scale";
+  serviceTier?: "auto" | "default" | "flex" | "priority" | "scale" | (string & {});
   /**
    * Anthropic server compaction once input exceeds this many tokens.
    * Values under 50000 are raised to 50000. Requires the compaction beta.
