@@ -6,7 +6,7 @@
 - `EmbeddingGemmaEmbedding` embeds text and code with local EmbeddingGemma 2 through Ollama or an OpenAI-compatible embeddings server. It does not call the Gemini API or load model weights in Node.
 - Document and query task prefixes are separate. Vector search calls optional `embedQuery()` when an embedder defines it. `OpenAIEmbedding`, `GoogleEmbedding`, and `HashEmbedding` still embed both sides with `embed()`.
 - Output length can be any integer from 128 through 768. A longer server vector is truncated and re-normalized. Images, audio, and video still use `GoogleEmbedding` with `gemini-embedding-2`.
-- SQLite accounting sets its busy timeout before switching the database to WAL, so a second process can wait instead of failing while the first connection still holds the file.
+- SQLite accounting retries the switch to WAL when the file is locked. SQLite does not apply the busy timeout to that change, so a second process was failing immediately while the first connection still held the file.
 
 ## [4.6.0] - 2026-10-09
 

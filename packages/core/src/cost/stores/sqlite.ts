@@ -6,6 +6,20 @@ import { ACCOUNTING_SCHEMA_VERSION, documentColumns, documentValues, schemaSql, 
 
 const requireOptional = createRequire(import.meta.url);
 const queues = new Map<string, Promise<unknown>>();
+
+function enableWal(database: { pragma: (source: string) => unknown }): void {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      database.pragma("journal_mode = WAL");
+      return;
+    } catch (error) {
+      const busy = typeof error === "object" && error !== null && "code" in error && error.code === "SQLITE_BUSY";
+      if (!busy || Date.now() >= deadline) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
+}
 class SqliteAccountingBackend implements AccountingBackend {
   readonly capabilities = { durable: true, atomicSettlement: true, sharedReservations: true, cursorPagination: true };
   private readonly database: any;
@@ -20,7 +34,7 @@ class SqliteAccountingBackend implements AccountingBackend {
     this.database = new Database(path, { timeout: 10000 });
     this.lockKey = path === ":memory:" ? crypto.randomUUID() : resolve(path);
     this.database.pragma("busy_timeout = 10000");
-    this.database.pragma("journal_mode = WAL");
+    enableWal(this.database);
     this.database.exec("BEGIN IMMEDIATE");
     try {
       this.database.exec(schemaSql);
