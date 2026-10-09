@@ -88,13 +88,23 @@ describe("BaseVectorStore multimodal routing (via InMemoryVectorStore)", () => {
       expect(embedder.embedMultimodal).not.toHaveBeenCalled();
     });
 
-    it("routes string queries through embed()", async () => {
+    it("routes string queries through embed() when the embedder has no embedQuery", async () => {
       const embedder = makeMultimodalEmbedder();
       const store = new InMemoryVectorStore(embedder);
       await store.upsert("col", { id: "1", content: "a", embedding: [1, 0, 0] });
       await store.search("col", "find me");
       expect(embedder.embed).toHaveBeenCalledWith("find me");
       expect(embedder.embedMultimodal).not.toHaveBeenCalled();
+    });
+
+    it("routes string queries through embedQuery() when the embedder provides it", async () => {
+      const embedder = makeTextEmbedder();
+      const embedQuery = vi.fn(async (_t: string) => [0, 1, 0]);
+      const store = new InMemoryVectorStore({ ...embedder, embedQuery });
+      await store.upsert("col", { id: "1", content: "a", embedding: [1, 0, 0] });
+      await store.search("col", "find me");
+      expect(embedQuery).toHaveBeenCalledWith("find me");
+      expect(embedder.embed).not.toHaveBeenCalled();
     });
 
     it("routes ContentPart[] queries through embedMultimodal()", async () => {

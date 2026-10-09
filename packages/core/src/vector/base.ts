@@ -33,7 +33,7 @@ export abstract class BaseVectorStore implements VectorStore {
       throw new Error("Non-vector query requires an EmbeddingProvider to be configured");
     }
     if (typeof query === "string") {
-      return this.embedder.embed(query);
+      return this.embedder.embedQuery ? this.embedder.embedQuery(query) : this.embedder.embed(query);
     }
     // ContentPart[] query
     if (!this.embedder.embedMultimodal) {

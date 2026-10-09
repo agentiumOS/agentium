@@ -47,6 +47,12 @@ export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
   embedBatch(texts: string[]): Promise<number[][]>;
   /**
+   * Optional query-side embedding. Vector search uses this when present so models
+   * with different query and document prompts (EmbeddingGemma) stay asymmetric.
+   * Providers that omit it keep using `embed` for both sides.
+   */
+  embedQuery?(text: string): Promise<number[]>;
+  /**
    * Optional: embed a single multimodal input (text + images + audio + video + PDFs).
    * Returns ONE aggregated vector. Implementations should throw if the configured model
    * does not support multimodal input.

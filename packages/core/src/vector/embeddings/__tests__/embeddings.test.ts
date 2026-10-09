@@ -410,3 +410,196 @@ describe("GoogleEmbedding", () => {
     });
   });
 });
+
+describe("existing embedders stay symmetric", () => {
+  it("does not add embedQuery to OpenAI, Google, or hash embedders", async () => {
+    const openai = await import("../openai.js");
+    const google = await import("../google.js");
+    const hash = await import("../hash.js");
+    expect(openai.OpenAIEmbedding.prototype).not.toHaveProperty("embedQuery");
+    expect(google.GoogleEmbedding.prototype).not.toHaveProperty("embedQuery");
+    expect(hash.HashEmbedding.prototype).not.toHaveProperty("embedQuery");
+  });
+});
+
+describe("EmbeddingGemmaEmbedding", () => {
+  let EmbeddingGemmaEmbedding: typeof import("../embeddinggemma.js").EmbeddingGemmaEmbedding;
+
+  beforeEach(async () => {
+    ({ EmbeddingGemmaEmbedding } = await import("../embeddinggemma.js"));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function vector(length: number, fill = 1): number[] {
+    return new Array(length).fill(fill);
+  }
+
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  }
+
+  describe("constructor", () => {
+    it("defaults to the Ollama EmbeddingGemma tag at 768 dimensions", () => {
+      const embedder = new EmbeddingGemmaEmbedding();
+      expect(embedder.dimensions).toBe(768);
+      expect(embedder.supportsMultimodal).toBe(false);
+    });
+
+    it("rejects dimensions outside 128 through 768", () => {
+      expect(() => new EmbeddingGemmaEmbedding({ dimensions: 64 })).toThrow(/128 to 768/);
+      expect(() => new EmbeddingGemmaEmbedding({ dimensions: 1024 })).toThrow(/128 to 768/);
+      expect(() => new EmbeddingGemmaEmbedding({ dimensions: 256.5 })).toThrow(/128 to 768/);
+    });
+
+    it("rejects an unknown task", () => {
+      expect(() => new EmbeddingGemmaEmbedding({ task: "translate" as "retrieval" })).toThrow(
+        /Unknown EmbeddingGemma task/,
+      );
+    });
+  });
+
+  describe("ollama text embeddings", () => {
+    it("prefixes documents and queries differently for retrieval", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ embeddings: [vector(768)] }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding();
+
+      await embedder.embed("shipping delays");
+      await embedder.embedQuery("why is the shipment late");
+
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1,
+        "http://127.0.0.1:11434/api/embed",
+        expect.objectContaining({ method: "POST" }),
+      );
+      const documentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const queryBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(documentBody).toEqual({
+        model: "embeddinggemma-2",
+        input: ["title: none | text: shipping delays"],
+      });
+      expect(queryBody.input).toEqual(["task: search result | query: why is the shipment late"]);
+    });
+
+    it("uses the code prompt and a caller-supplied document title", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ embeddings: [vector(768)], prompt_eval_count: 12 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding({
+        task: "code",
+        documentPrompt: "title: src/store.ts | text: ",
+      });
+
+      await embedder.embed("export const store = 1;");
+      await embedder.embedQuery("where is the store created");
+
+      const documentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const queryBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(documentBody.input).toEqual(["title: src/store.ts | text: export const store = 1;"]);
+      expect(queryBody.input).toEqual(["task: code retrieval | query: where is the store created"]);
+    });
+
+    it("truncates a 768-vector to 128 and re-normalizes", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => jsonResponse({ embeddings: [vector(768)] })),
+      );
+      const embedder = new EmbeddingGemmaEmbedding({ dimensions: 128 });
+      const result = await embedder.embed("hello");
+      expect(result).toHaveLength(128);
+      const norm = Math.hypot(...result);
+      expect(norm).toBeCloseTo(1);
+    });
+
+    it("keeps a vector that is already the requested length", async () => {
+      const returned = vector(256, 0);
+      returned[0] = 1;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => jsonResponse({ embeddings: [returned] })),
+      );
+      const embedder = new EmbeddingGemmaEmbedding({ dimensions: 256 });
+      await expect(embedder.embed("hello")).resolves.toEqual(returned);
+    });
+
+    it("retries a 429 and then reads the vector", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("busy", { status: 429 }))
+        .mockResolvedValueOnce(jsonResponse({ embeddings: [vector(768, 0.5)] }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding();
+      const result = await embedder.embed("retry");
+      expect(result).toHaveLength(768);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry a 400", async () => {
+      const fetchMock = vi.fn(async () => new Response("bad", { status: 400 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding();
+      await expect(embedder.embed("bad")).rejects.toThrow(/400/);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("openai-compatible server", () => {
+    it("posts to /embeddings, sorts by index, and asks for a shorter dimension", async () => {
+      const fetchMock = vi.fn(async () =>
+        jsonResponse({
+          data: [
+            { embedding: vector(256, 2), index: 1 },
+            { embedding: vector(256, 3), index: 0 },
+          ],
+          usage: { prompt_tokens: 9, total_tokens: 9 },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding({
+        backend: "openai",
+        baseURL: "http://localhost:8000/v1/",
+        apiKey: "local",
+        dimensions: 256,
+        model: "google/embeddinggemma-2",
+      });
+
+      const results = await embedder.embedBatch(["alpha", "beta"]);
+      expect(results).toHaveLength(2);
+      expect(results[0]![0]).toBe(3);
+      expect(results[1]![0]).toBe(2);
+
+      expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8000/v1/embeddings");
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body).toEqual({
+        model: "google/embeddinggemma-2",
+        input: ["title: none | text: alpha", "title: none | text: beta"],
+        dimensions: 256,
+      });
+      expect(fetchMock.mock.calls[0][1].headers.authorization).toBe("Bearer local");
+    });
+
+    it("uses one prefix for classification on both sides", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ data: [{ embedding: vector(768), index: 0 }] }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding({ backend: "openai", task: "classification" });
+      await embedder.embed("The battery died");
+      await embedder.embedQuery("Negative");
+      const documentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const queryBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(documentBody.input).toEqual(["task: classification | query: The battery died"]);
+      expect(queryBody.input).toEqual(["task: classification | query: Negative"]);
+      expect(documentBody.dimensions).toBeUndefined();
+    });
+
+    it("returns no vectors and makes no request for an empty batch", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding({ backend: "openai" });
+      await expect(embedder.embedBatch([])).resolves.toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+});

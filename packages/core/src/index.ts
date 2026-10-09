@@ -436,6 +436,8 @@ export { countMessagesTokens, countMessageTokens, countTokens, hasExactTokenizer
 export { BaseVectorStore } from "./vector/base.js";
 export type { BM25Document, BM25Result } from "./vector/bm25.js";
 export { BM25Index } from "./vector/bm25.js";
+export type { EmbeddingGemmaEmbeddingConfig, EmbeddingGemmaTask } from "./vector/embeddings/embeddinggemma.js";
+export { EmbeddingGemmaEmbedding } from "./vector/embeddings/embeddinggemma.js";
 export type { GoogleEmbeddingConfig } from "./vector/embeddings/google.js";
 export { GoogleEmbedding } from "./vector/embeddings/google.js";
 export { HashEmbedding } from "./vector/embeddings/hash.js";
