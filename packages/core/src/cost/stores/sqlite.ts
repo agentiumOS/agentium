@@ -17,10 +17,10 @@ class SqliteAccountingBackend implements AccountingBackend {
     } catch (error) {
       throw new Error("Install better-sqlite3 to use SqliteUsageStore", { cause: error });
     }
-    this.database = new Database(path);
+    this.database = new Database(path, { timeout: 10000 });
     this.lockKey = path === ":memory:" ? crypto.randomUUID() : resolve(path);
-    this.database.pragma("journal_mode = WAL");
     this.database.pragma("busy_timeout = 10000");
+    this.database.pragma("journal_mode = WAL");
     this.database.exec("BEGIN IMMEDIATE");
     try {
       this.database.exec(schemaSql);
