@@ -571,6 +571,7 @@ export function createMeteredProvider(provider: ModelProvider, purpose?: string)
     providerId: provider.providerId,
     modelId: provider.modelId,
     accountingRole: "composite",
+    communicationCapabilities: provider.communicationCapabilities,
     generate: (messages, options) =>
       meteredGenerate(provider, messages, options, purpose, getAccountingContext()?.operationId),
     stream: (messages, options) => meteredStream(provider, messages, options, purpose),

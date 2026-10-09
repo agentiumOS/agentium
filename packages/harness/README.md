@@ -271,11 +271,19 @@ events; reconnect with `events({ after: cursor })`. Older cursors receive
 `HarnessEventGapError`. Large terminal outputs become scoped artifact references;
 retrieve them with `runtime.getArtifact(identity, sessionId, artifactId)`.
 
-Built-in drivers support queued `follow_up` input. Custom drivers may declare
-`steer` and consume it at boundaries with `services.takeInput()`. Unsupported
-controls throw `HarnessUnsupportedError`. Interrupt-and-replace, pause/resume,
-remote policy coverage, and durable recovery are rejected by this local runtime.
-In-memory events, artifacts, and sessions are explicitly non-durable.
+Built-in drivers support queued `follow_up` input. The built-in Agent driver also
+supports `steer` at complete tool-roundtrip boundaries. Custom drivers may declare
+`steer` and consume it with `services.takeInput()`. For live questions, use
+`requestInputTool()` or `await services.requestInput()`, then answer with
+`handle.reply(requestId, input)`. `handle.state === "awaiting_input"` is nonterminal;
+`result()` stays pending and budgets are preserved. Returning the old terminal
+`awaiting_input` status is a legacy hand-back, not live suspension.
+
+See [conversational runs](./CONVERSATIONAL-RUNS.md) for clocks, input events,
+public messages, provider capabilities, streaming compatibility and compaction.
+Unsupported controls throw `HarnessUnsupportedError`. Interrupt-and-replace,
+remote policy coverage, and durable recovery remain unsupported. In-memory
+events, artifacts, sessions and pending questions are explicitly non-durable.
 
 Host grants are upper bounds. Controllers select only approved tools/model roles;
 omitting required tools or selecting unsupported model options fails closed.

@@ -1,4 +1,5 @@
 import type { ModelProvider } from "../models/provider.js";
+import type { PublicMessageEvent } from "../models/public-messages.js";
 import type {
   ChatMessage,
   ModelConfig,
@@ -10,12 +11,20 @@ import type {
 import type { ApprovalManager } from "../tools/approval.js";
 import type { ExecutionPolicy } from "../tools/execution-policy.js";
 import type { ToolCallResult, ToolDef } from "../tools/types.js";
+import type { InputReply, InputRequestOptions, RunInput } from "./conversation-input.js";
 import type { RunContext } from "./run-context.js";
 
 /** Host-supplied execution boundary. Core consumes these operations; it does not
  * construct or own the host's orchestration, configuration, or resource lifecycle.
  */
 export interface ExecutionServices {
+  /** Suspend a live tool or driver until a correlated user reply arrives. */
+  requestInput?(request: InputRequestOptions): Promise<InputReply>;
+  /** Consume steering only at a complete conversation boundary. */
+  takeInput?(context?: RunContext): RunInput | undefined;
+  publishMessage?(event: PublicMessageEvent): void;
+  /** Close steering atomically when the root conversation loop finishes. */
+  finishInput?(context: RunContext): void;
   readonly ctx: RunContext;
   readonly signal: AbortSignal;
   readonly tools: readonly ToolDef[];

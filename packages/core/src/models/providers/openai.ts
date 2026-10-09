@@ -14,6 +14,7 @@ interface OpenAIConfig {
 export class OpenAIProvider implements ModelProvider {
   readonly providerId = "openai";
   readonly modelId: string;
+  readonly communicationCapabilities = { messagePhases: "conditional", reasoningSummaries: "conditional" } as const;
   private client: any;
   private OpenAICtor: any;
   private baseURL?: string;

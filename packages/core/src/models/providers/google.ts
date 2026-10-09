@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { captureRetryFailure } from "../../cost/context.js";
 import type { ModelProvider } from "../provider.js";
@@ -43,6 +44,7 @@ interface GoogleConfig {
 export class GoogleProvider implements ModelProvider {
   readonly providerId = "google";
   readonly modelId: string;
+  readonly communicationCapabilities = { messagePhases: "inferred", reasoningSummaries: "conditional" } as const;
   private ai: any;
   private GoogleGenAICtor: any;
   private clientCache = new Map<string, any>();
@@ -238,6 +240,7 @@ export class GoogleProvider implements ModelProvider {
       for (const part of candidate.content.parts) {
         if (part.thought) {
           yield { type: "thinking", text: part.text ?? "" };
+          if (part.text) yield { type: "reasoning_summary", text: part.text };
         } else if (part.text) {
           yield { type: "text", text: part.text };
         }
@@ -477,6 +480,18 @@ export class GoogleProvider implements ModelProvider {
 
     if (thinkingContent) {
       result.thinking = thinkingContent;
+      result.publicMessages = [
+        { id: randomUUID(), phase: "reasoning_summary", text: thinkingContent },
+        ...(textContent
+          ? [
+              {
+                id: randomUUID(),
+                phase: toolCalls.length ? ("commentary" as const) : ("final" as const),
+                text: textContent,
+              },
+            ]
+          : []),
+      ];
     }
 
     return result;

@@ -5,10 +5,14 @@ import type {
   ChatMessage,
   ExecutionPolicy,
   ExecutionServices,
+  InputReply,
+  InputRequest,
+  InputRequestOptions,
   MessageContent,
   ModelConfig,
   ModelProvider,
   ModelResponse,
+  PublicMessage,
   RunMode,
   StreamChunk,
   TokenUsage,
@@ -29,6 +33,7 @@ import {
   type HarnessStatus,
   InMemoryHarnessEventStore,
 } from "./events.js";
+import { HarnessInputError, LiveInput, validateRunInput, validateTimeout } from "./input.js";
 import { runAfterModel, runAfterTool, runBeforeModel, validateHarnessMessages } from "./middleware.js";
 import { bindHarness, createHarnessDefinition, resolveHarness } from "./resolve.js";
 import { resolveHarnessRuntime } from "./runtime-registry.js";
@@ -118,13 +123,19 @@ export interface HarnessExecutionServices extends ExecutionServices {
   ): Promise<ModelResponse>;
   append(messages: readonly ChatMessage[]): void;
   emit(payload: Exclude<HarnessEventPayload, { type: "run.terminal" | "run.started" }>): void;
-  takeInput(): { input: MessageContent; mode: HarnessSendMode } | undefined;
+  requestInput(request: InputRequestOptions): Promise<InputReply>;
+  takeInput(context?: RunContext): { id: string; input: MessageContent; mode: HarnessSendMode } | undefined;
   resource<T>(id: string, scope: "host" | "session" | "run", initialize: () => Promise<ScopedResource<T>>): Promise<T>;
   putArtifact(value: unknown): string;
   getArtifact(id: string): unknown;
 }
+export type HarnessRunState = "running" | "awaiting_input" | "cancelling" | "finished";
 export interface RunHandle {
   readonly runId: string;
+  /** Live state; waiting never resolves result(). */
+  readonly state: HarnessRunState;
+  readonly pendingInput: InputRequest | undefined;
+  reply(requestId: string, input: MessageContent): Promise<void>;
   events(options?: { after?: number }): AsyncGenerator<HarnessEvent>;
   result(): Promise<HarnessResult>;
   cancel(reason?: string): void;
@@ -152,6 +163,10 @@ export interface HarnessRuntimeConfig {
   sessionStore?: HarnessSessionStore;
   resources?: HarnessResourcePool;
   eventCapacity?: number;
+  /** Active wall time, excluding a pending user question. */
+  activeTimeoutMs?: number;
+  /** Maximum wait per question. Omit to wait until reply, cancellation or deadline. */
+  inputTimeoutMs?: number;
 }
 export interface HarnessStartOptions {
   identity: HarnessIdentity;
@@ -218,6 +233,7 @@ export class HarnessRuntime {
         config.contextPolicy &&
         Object.freeze({
           id: config.contextPolicy.id,
+          grouping: config.contextPolicy.grouping,
           project: config.contextPolicy.project.bind(config.contextPolicy),
         }),
       completionPolicy:
@@ -277,6 +293,8 @@ export class HarnessRuntime {
       throw new Error("Required tool omitted by grants");
     if (options.deadline !== undefined && !Number.isFinite(options.deadline))
       throw new Error("Deadline must be finite");
+    validateTimeout(config.activeTimeoutMs);
+    validateTimeout(config.inputTimeoutMs);
     const controller = new AbortController();
     const runId = randomUUID();
     const request: HarnessRunRequest = Object.freeze({
@@ -357,6 +375,7 @@ export class HarnessRuntime {
     const generateObserved = async (provider: ModelProvider, messages: ChatMessage[], supplied: ModelConfig) => {
       const end = observeModel(provider);
       try {
+        liveInput.assertNotWaiting();
         const response = await provider.generate(messages, supplied);
         end(!controller.signal.aborted, response.usage);
         return response;
@@ -366,13 +385,26 @@ export class HarnessRuntime {
       }
     };
     let terminal = false;
-    const inbox: Array<{ input: MessageContent; mode: HarnessSendMode }> = [];
+    let acceptingInput = true;
+    let acceptingSteering = true;
+    let cancellationCode = "cancelled";
+    const inbox: Array<{ id: string; input: MessageContent; mode: HarnessSendMode }> = [];
     const cancel = (reason = "Run cancelled") => {
       if (!terminal && !controller.signal.aborted) {
         events.append({ type: "control", operation: "cancel", reason });
         controller.abort(new Error(reason));
       }
     };
+    const liveInput = new LiveInput(
+      runId,
+      controller.signal,
+      config,
+      (event) => events.append(event),
+      (code) => {
+        cancellationCode = code;
+        cancel(code === "input_timeout" ? "User input timeout exceeded" : "Active execution timeout exceeded");
+      },
+    );
     const onAbort = () => cancel("Caller cancelled the run");
     const callerSignal = options.signal;
     callerSignal?.addEventListener("abort", onAbort, { once: true });
@@ -381,8 +413,10 @@ export class HarnessRuntime {
     const scheduleDeadline = () => {
       if (request.deadline === undefined || controller.signal.aborted) return;
       const remaining = request.deadline - Date.now();
-      if (remaining <= 0) cancel("Run deadline exceeded");
-      else timer = setTimeout(scheduleDeadline, Math.min(remaining, 2_147_483_647));
+      if (remaining <= 0) {
+        cancellationCode = "deadline_exceeded";
+        cancel("Run deadline exceeded");
+      } else timer = setTimeout(scheduleDeadline, Math.min(remaining, 2_147_483_647));
     };
     scheduleDeadline();
     const result = Promise.resolve().then(async (): Promise<HarnessResult> => {
@@ -415,7 +449,10 @@ export class HarnessRuntime {
         return operation;
       };
       const ensureActive = () => {
-        if (request.deadline !== undefined && Date.now() >= request.deadline) cancel("Run deadline exceeded");
+        if (request.deadline !== undefined && Date.now() >= request.deadline) {
+          cancellationCode = "deadline_exceeded";
+          cancel("Run deadline exceeded");
+        }
         controller.signal.throwIfAborted();
         if (!acceptingOperations) throw new Error("Run has finished accepting operations");
       };
@@ -505,6 +542,7 @@ export class HarnessRuntime {
           callCtx = ctx,
         ) => {
           ensureActive();
+          liveInput.assertNotWaiting();
           if (
             modelCalls >= (config.budgets?.maxModelCalls ?? Infinity) ||
             usage.totalTokens >= (config.budgets?.maxTokens ?? Infinity)
@@ -621,6 +659,7 @@ export class HarnessRuntime {
             track(
               (async () => {
                 ensureActive();
+                liveInput.assertNotWaiting();
                 if (!request.grants.modelRoles.includes(role)) throw new Error("Ungranted control model role");
                 const binding = config.models?.[role];
                 if (!binding) throw new Error("Control model requires an explicit host binding");
@@ -708,9 +747,12 @@ export class HarnessRuntime {
               let amount = zero();
               let reason = "stop";
               let extras: Record<string, unknown> | undefined;
+              let publicMessages: PublicMessage[] | undefined;
+              let phase: "commentary" | "final" | undefined;
               const calls: Array<{ id: string; name: string; args: string }> = [];
               try {
                 ensureActive();
+                liveInput.assertNotWaiting();
                 stream = call.provider.stream(call.messages, call.options);
                 while (true) {
                   const next = await stream.next();
@@ -719,6 +761,8 @@ export class HarnessRuntime {
                     finished = true;
                     reason = next.value.finishReason;
                     extras = next.value.providerExtras;
+                    publicMessages = next.value.publicMessages;
+                    phase = next.value.phase;
                     amount = next.value.usage ?? zero();
                     account(call.provider, amount);
                   }
@@ -738,6 +782,7 @@ export class HarnessRuntime {
                   message: {
                     role: "assistant",
                     content: text || null,
+                    ...(phase ? { phase } : {}),
                     ...(calls.length
                       ? {
                           toolCalls: calls.map((item) => ({
@@ -753,6 +798,7 @@ export class HarnessRuntime {
                   finishReason:
                     reason === "tool_calls" || reason === "length" || reason === "content_filter" ? reason : "stop",
                   raw: { streamed: true },
+                  ...(publicMessages ? { publicMessages } : {}),
                 };
                 await runAfterModel(middleware, response, callCtx ?? ctx);
                 succeeded = true;
@@ -866,15 +912,35 @@ export class HarnessRuntime {
             canonical.push(...structuredClone(messages));
           },
           emit: (payload) => {
-            ensureActive();
+            if (payload.type !== "compaction.failed" || terminal) ensureActive();
             const bytes = Buffer.byteLength(JSON.stringify(payload));
             if (bytes > 65536) throw new Error("Generic event exceeds 64KB; store an artifact reference instead");
             events.append(payload);
           },
-          takeInput: () => {
+          finishInput: (context) => {
+            if (context.runId === request.runId) acceptingSteering = false;
+          },
+          publishMessage: (event) => {
+            // Failure events must remain observable during cooperative cancellation.
+            if (terminal) return;
+            if (event.type === "message.completed" && Buffer.byteLength(JSON.stringify(event)) > 60000) {
+              const artifactId = randomUUID();
+              this.artifacts.set(artifactId, { owner: services.sessionKey, value: structuredClone(event.message) });
+              events.append({ ...event, message: { ...event.message, text: "" }, artifactId });
+            } else events.append(event);
+          },
+          requestInput: (question) => {
             ensureActive();
+            return track(liveInput.requestInput(question));
+          },
+          takeInput: (context) => {
+            ensureActive();
+            if (context && context.runId !== request.runId) return undefined;
             const index = inbox.findIndex((item) => item.mode === "steer");
-            return index < 0 ? undefined : inbox.splice(index, 1)[0];
+            if (index < 0) return undefined;
+            const item = inbox.splice(index, 1)[0];
+            events.append({ type: "input.applied", inputId: item.id, mode: "steer" });
+            return item;
           },
           resource: (id, scope, initialize) =>
             track(
@@ -906,7 +972,9 @@ export class HarnessRuntime {
         let current = request;
         while (true) {
           ensureActive();
+          acceptingSteering = true;
           final = await config.driver.start(current, services);
+          acceptingSteering = false;
           if (streams.size) throw new Error("Driver returned with an unfinished model stream");
           ensureActive();
           if (
@@ -957,8 +1025,11 @@ export class HarnessRuntime {
           }
           const followUp = inbox.findIndex((item) => item.mode === "follow_up");
           if (followUp < 0) break;
-          current = { ...request, input: inbox.splice(followUp, 1)[0].input };
+          const item = inbox.splice(followUp, 1)[0];
+          events.append({ type: "input.applied", inputId: item.id, mode: "follow_up" });
+          current = { ...request, input: item.input };
         }
+        acceptingInput = false;
         const operations = await Promise.allSettled([...owned]);
         const rejected = operations.find((entry) => entry.status === "rejected");
         if (rejected?.status === "rejected") throw rejected.reason;
@@ -983,6 +1054,8 @@ export class HarnessRuntime {
           },
         };
       } finally {
+        acceptingInput = false;
+        liveInput.close();
         acceptingOperations = false;
         await Promise.allSettled([...streams].map((stream) => stream.return(undefined)));
         await Promise.allSettled([...owned]);
@@ -1015,7 +1088,17 @@ export class HarnessRuntime {
         callerSignal?.removeEventListener("abort", onAbort);
       }
       if (controller.signal.aborted)
-        final = { ...final, status: "cancelled", reason: { code: "cancelled", message: "Cancellation acknowledged" } };
+        final = {
+          ...final,
+          status: "cancelled",
+          reason: {
+            code: cancellationCode,
+            message:
+              controller.signal.reason instanceof Error
+                ? controller.signal.reason.message
+                : "Cancellation acknowledged",
+          },
+        };
       const terminalResult: HarnessResult = {
         status: final.status ?? "completed",
         text: final.text,
@@ -1068,16 +1151,41 @@ export class HarnessRuntime {
     });
     return {
       runId,
+      get state() {
+        return terminal
+          ? "finished"
+          : controller.signal.aborted
+            ? "cancelling"
+            : liveInput.request
+              ? "awaiting_input"
+              : "running";
+      },
+      get pendingInput() {
+        return liveInput.request;
+      },
+      reply: async (requestId, input) => {
+        if (!acceptingInput) throw new HarnessInputError("run_finished", "Run is no longer active");
+        liveInput.reply(requestId, input);
+      },
       events: (options) => events.events(options),
       result: () => result.then((value) => structuredClone(value)),
       cancel,
       send: async (input, options) => {
-        if (terminal || controller.signal.aborted) throw new Error("Run is no longer active");
+        if (
+          !acceptingInput ||
+          (options.mode === "steer" && !acceptingSteering) ||
+          terminal ||
+          controller.signal.aborted
+        )
+          throw new HarnessInputError("run_finished", "Run is no longer active");
         if (!config.driver.capabilities.controls.includes(options.mode))
           throw new HarnessUnsupportedError(options.mode);
         if (inbox.length >= 32) throw new Error("Run input queue is full");
-        inbox.push({ input: structuredClone(input), mode: options.mode });
+        if (options.mode === "replace") throw new HarnessUnsupportedError(options.mode);
+        const item = { id: randomUUID(), input: validateRunInput(input), mode: options.mode };
+        inbox.push(item);
         events.append({ type: "control", operation: options.mode });
+        events.append({ type: "input.received", inputId: item.id, mode: options.mode });
       },
     };
   }

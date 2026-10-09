@@ -257,3 +257,19 @@ Use `meteredOperation` for custom paid tools or adapters. Supply a `BillingConte
 ### Migration from the old tracker
 
 Use `recordUsage`, `queryUsage`, `queryCosts`, and `flush` for canonical accounting. `track()` and `getSummary()` remain synchronous compatibility APIs. They are not durable ledger queries. Legacy flat token data needs an explicit inclusive usage contract; incomplete legacy pricing raises a typed error. Configure `legacyUsageSemantics: "inclusive"` only when the input/cache/output definitions are known. Remove assumptions that missing prices mean zero or that reasoning must be added to output.
+
+## Public communication (4.6)
+
+`RunOutput.publicMessages` separates `commentary`, `final`, and
+`reasoning_summary` items with stable IDs. The `run.message` EventBus payload
+contains `{ runId, messageEvent }`; its events are `message.started`,
+`message.delta`, `message.completed`, and `message.failed`. Pending streaming
+items are not final answers. For lifecycle chunks inside `Agent.stream()`, opt
+in with `{ publicMessageEvents: true }`. The final finish chunk keeps usage and
+cost accounting. Existing text and thinking channels remain compatible.
+
+Use `getCommunicationCapabilities(provider)` to inspect native/inferred phases
+and supported/unsupported/conditional summary support. Public summaries only use
+documented provider summary fields; raw thinking and opaque providerExtras are
+not display summaries. See the [conversational runs guide](../harness/CONVERSATIONAL-RUNS.md)
+for live questions, steering, and completed-tool-round compaction through the harness.

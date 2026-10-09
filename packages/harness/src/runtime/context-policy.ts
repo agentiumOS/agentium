@@ -8,6 +8,7 @@ export interface ContextProjection {
 }
 export interface ContextPolicy {
   id: string;
+  grouping?: import("@agentium/core").ConversationGrouping;
   project: (
     input: { history: readonly ChatMessage[]; entries: readonly HarnessContextEntry[] },
     ctx: RunContext,
@@ -23,7 +24,7 @@ export async function projectHarnessContext(
   const original = structuredClone(history) as ChatMessage[];
   if (!policy) return { messages: original, provenance: [] };
   const result = await policy.project({ history: structuredClone(original), entries: structuredClone(entries) }, ctx);
-  validateHarnessMessages(original, result.messages);
+  validateHarnessMessages(original, result.messages, policy.grouping);
   if (
     !Array.isArray(result.provenance) ||
     result.provenance.some(

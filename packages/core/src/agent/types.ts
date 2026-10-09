@@ -197,6 +197,8 @@ export interface ToolResultLimitConfig {
 }
 
 export interface RunOpts {
+  /** Include normalized public-message lifecycle chunks in stream(). Events and result items are always available. */
+  publicMessageEvents?: boolean;
   /** Runtime-owned execution services; trusted hosts only. */
   executionServices?: import("./execution-services.js").ExecutionServices;
   /** Additional mandatory host policy for delegated runs; cannot relax Agent policy. */
@@ -245,6 +247,8 @@ export interface RunMetrics {
 }
 
 export interface RunOutput {
+  /** Public display items; never raw thinking or opaque replay. */
+  publicMessages?: import("../models/public-messages.js").PublicMessage[];
   /** Validated OpenAI Decisions answers, including per-question refusals. */
   decisions?: DecisionAnswer[];
   text: string;

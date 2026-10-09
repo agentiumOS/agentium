@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.6.0] - 2026-10-09
+
+### Added
+- Live `requestInput()` suspension, `requestInputTool()`, correlated `RunHandle.reply()`, pending-question inspection and nonterminal waiting state. Questions preserve the running Agent, observations, tool results, provider replay data and remaining budgets. Independent active-execution and user-wait timeouts support cancellation without model polling.
+- Built-in Agent steering in streaming and nonstreaming modes, ordered received/applied events, complete tool-group boundaries, and explicit rejection after the conversation loop closes.
+- Normalized public commentary, final-answer and reasoning-summary items with stable IDs and lifecycle events. OpenAI native phases survive replay; documented OpenAI, Anthropic/AWS Claude and Google/Vertex summaries remain separate from opaque or raw reasoning. Capability queries report conditional and unsupported adapters.
+- Optional public lifecycle chunks for direct Agent streams; default streams preserve compatibility and terminal usage/cost accounting. Large harness items use scoped artifacts.
+- Existing summary policy now supports completed tool-roundtrip grouping within one task, with correlated compaction started/completed/failed events and the same runtime budgets.
+
+### Compatibility
+- No forced progress frequency or progress tool. No durable restart recovery or automatic tool replay.
+- Existing terminal `awaiting_input` driver outputs and completion-policy hand-backs remain compatible. Use `await services.requestInput()` for the new live, nonterminal wait.
+- See [conversational runs](packages/harness/CONVERSATIONAL-RUNS.md) for usage and migration.
+
 ## [4.5.0] - 2026-10-08
 
 Cost accounting remains in `@agentium/core`. This release changes token semantics, cost completeness, and the accounting read path. See [the 4.5 migration guide](https://docs.agentium.in/migration-v4-5).

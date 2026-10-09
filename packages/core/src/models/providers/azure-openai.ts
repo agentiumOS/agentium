@@ -25,6 +25,7 @@ export interface AzureOpenAIConfig {
 export class AzureOpenAIProvider implements ModelProvider {
   readonly providerId = "azure-openai";
   readonly modelId: string;
+  readonly communicationCapabilities = { messagePhases: "conditional", reasoningSummaries: "conditional" } as const;
   private client: any;
   private billingContext: Partial<BillingContext> = {};
   private AzureOpenAICtor: any;

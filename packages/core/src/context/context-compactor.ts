@@ -29,7 +29,11 @@ export function countConversationTokens(messages: ChatMessage[]): number {
 }
 
 /** A user turn, all its tool rounds and the concluding assistant form one atomic group. */
-export function groupConversationTurns(messages: ChatMessage[]): ChatMessage[][] {
+export type ConversationGrouping = "turn" | "tool_roundtrip";
+export function groupConversationTurns(
+  messages: ChatMessage[],
+  grouping: ConversationGrouping = "turn",
+): ChatMessage[][] {
   const result: ChatMessage[][] = [];
   const pending = new Set<string>();
   let current: ChatMessage[] = [];
@@ -52,6 +56,10 @@ export function groupConversationTurns(messages: ChatMessage[]): ChatMessage[][]
       throw new Error("Cannot compact a continuation before all tool results arrive");
     }
     current.push(message);
+    if (grouping === "tool_roundtrip" && message.role === "tool" && pending.size === 0) {
+      result.push(current);
+      current = [];
+    }
   }
   if (current.length) result.push(current);
   return result;

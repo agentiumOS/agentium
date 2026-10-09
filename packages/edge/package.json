@@ -1,6 +1,6 @@
 {
   "name": "@agentium/edge",
-  "version": "4.5.0",
+  "version": "4.6.0",
   "description": "Edge deployment for Agentium — IoT toolkits (GPIO, sensors, camera, BLE), edge runtime, and Ollama helpers for Raspberry Pi",
   "license": "MIT",
   "publishConfig": {
@@ -52,7 +52,7 @@
     "tsdown": "0.23.0"
   },
   "peerDependencies": {
-    "@agentium/core": "^4.5.0",
+    "@agentium/core": "^4.6.0",
     "node-libgpiod": ">=0.4.0",
     "i2c-bus": ">=5.0.0",
     "@stoprocent/noble": ">=2.0.0"

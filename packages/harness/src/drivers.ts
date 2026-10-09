@@ -36,7 +36,8 @@ function options(request: HarnessRunRequest, services: HarnessExecutionServices)
 }
 function output(result: RunOutput, history?: readonly ChatMessage[]): HarnessDriverOutput {
   return {
-    text: result.text,
+    text:
+      [...(result.publicMessages ?? [])].reverse().find((message) => message.phase === "final")?.text ?? result.text,
     structured: result.structured,
     usage: result.usage,
     status: result.status === "error" ? "failed" : (result.status ?? "completed"),
@@ -54,7 +55,7 @@ export function agentDriver(agent: Agent | AgentConfig, config: { stream?: boole
   return {
     id: `agent:${agent.name}`,
     version: 1,
-    capabilities,
+    capabilities: { ...capabilities, controls: ["follow_up", "steer"] },
     async start(request, services) {
       const owned = !(agent instanceof Agent);
       if (

@@ -1,4 +1,5 @@
 import type { RunOutput } from "../agent/types.js";
+import type { PublicMessageEvent } from "../models/public-messages.js";
 import type { TokenUsage } from "../models/types.js";
 
 /**
@@ -12,6 +13,7 @@ export const LIFECYCLE_EVENTS = [
   "run.error",
   "run.cancelled",
   "run.stream.chunk",
+  "run.message",
   "model.start",
   "model.result",
   "model.error",
@@ -38,6 +40,7 @@ export const LIFECYCLE_EVENTS = [
 export type LifecycleEvent = (typeof LIFECYCLE_EVENTS)[number];
 
 export type AgentEventMap = {
+  "run.message": { runId: string; messageEvent: PublicMessageEvent };
   "controller.start": { runId: string; controllerCallId: string; operation: string };
   "controller.result": {
     runId: string;

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { captureRetryFailure } from "../../cost/context.js";
 import type { ModelProvider } from "../provider.js";
@@ -40,6 +41,7 @@ export interface VertexAIConfig {
 export class VertexAIProvider implements ModelProvider {
   readonly providerId = "vertex";
   readonly modelId: string;
+  readonly communicationCapabilities = { messagePhases: "inferred", reasoningSummaries: "conditional" } as const;
   private ai: any = null;
   private GoogleGenAICtor: any;
   private project: string;
@@ -219,6 +221,7 @@ export class VertexAIProvider implements ModelProvider {
       for (const part of candidate.content.parts) {
         if (part.thought) {
           yield { type: "thinking", text: part.text ?? "" };
+          if (part.text) yield { type: "reasoning_summary", text: part.text };
         } else if (part.text) {
           yield { type: "text", text: part.text };
         }
@@ -452,6 +455,18 @@ export class VertexAIProvider implements ModelProvider {
 
     if (thinkingContent) {
       result.thinking = thinkingContent;
+      result.publicMessages = [
+        { id: randomUUID(), phase: "reasoning_summary", text: thinkingContent },
+        ...(textContent
+          ? [
+              {
+                id: randomUUID(),
+                phase: toolCalls.length ? ("commentary" as const) : ("final" as const),
+                text: textContent,
+              },
+            ]
+          : []),
+      ];
     }
 
     return result;

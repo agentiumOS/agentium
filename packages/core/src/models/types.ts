@@ -1,5 +1,6 @@
 import type { NormalizedUsage } from "../cost/accounting-types.js";
 import type { DecisionAnswer, ModelQuestions } from "./decisions.js";
+import type { PublicMessage, PublicMessageEvent, PublicMessagePhase } from "./public-messages.js";
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 // ── Multi-modal content parts ─────────────────────────────────────────────
@@ -50,6 +51,8 @@ export interface ResponsesReplayEnvelope {
 
 export interface ChatMessage {
   role: MessageRole;
+  /** Public assistant phase; opaque provider replay remains in providerExtras. */
+  phase?: "commentary" | "final";
   content: MessageContent | null;
   toolCalls?: ToolCall[];
   toolCallId?: string;
@@ -102,6 +105,7 @@ export interface TokenUsage {
 // ── Model response ────────────────────────────────────────────────────────
 
 export interface ModelResponse {
+  publicMessages?: PublicMessage[];
   message: ChatMessage;
   usage: TokenUsage;
   finishReason: "stop" | "tool_calls" | "length" | "content_filter";
@@ -111,7 +115,9 @@ export interface ModelResponse {
 }
 
 export type StreamChunk =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; itemId?: string; phase?: PublicMessagePhase }
+  | { type: "reasoning_summary"; text: string; itemId?: string }
+  | { type: "public_message"; event: PublicMessageEvent }
   | { type: "thinking"; text: string }
   | { type: "tool_call_start"; toolCall: { id: string; name: string } }
   | { type: "tool_call_delta"; toolCallId: string; argumentsDelta: string }
@@ -121,6 +127,8 @@ export type StreamChunk =
       /** Present on an Agent terminal finish when cost accounting is enabled. */
       costs?: import("../cost/accounting-types.js").RunCostSnapshot;
       finishReason: string;
+      phase?: "commentary" | "final";
+      publicMessages?: PublicMessage[];
       usage?: TokenUsage;
       /** Usage defaults to a cumulative snapshot. Deltas require a stable event identity. */
       usageObservation?: { kind: "snapshot" | "delta"; id: string; sequence: number };

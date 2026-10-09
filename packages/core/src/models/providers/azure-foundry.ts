@@ -26,6 +26,7 @@ export interface AzureFoundryConfig {
 export class AzureFoundryProvider implements ModelProvider {
   readonly providerId = "azure-foundry";
   readonly modelId: string;
+  readonly communicationCapabilities = { messagePhases: "conditional", reasoningSummaries: "conditional" } as const;
   private client: any;
   private billingContext: Partial<BillingContext> = {};
   private OpenAICtor: any;

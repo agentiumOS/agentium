@@ -514,6 +514,7 @@ export class Agent {
     const provider = ctx?.executionServices
       ? {
           accountingRole: "composite" as const,
+          communicationCapabilities: this.config.model.communicationCapabilities,
           providerId: this.config.model.providerId,
           modelId: this.config.model.modelId,
           generate: (
@@ -1240,7 +1241,10 @@ export class Agent {
     let streamMessages: ChatMessage[] = [];
     let delegated: HandoffResult | undefined;
     const streamToolCalls: import("../tools/types.js").ToolCallResult[] = [];
-    const streamOutcome: { status: "completed" | "stopped" } = { status: "completed" };
+    const streamOutcome: {
+      status: "completed" | "stopped";
+      publicMessages?: import("../models/public-messages.js").PublicMessage[];
+    } = { status: "completed" };
     let streamUsage: import("../models/types.js").TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let decisions: RunOutput["decisions"];
     const recordChunk = (chunk: StreamChunk) => {
@@ -1310,6 +1314,7 @@ export class Agent {
         transcript,
         streamToolCalls,
         streamOutcome,
+        opts?.publicMessageEvents ?? false,
       )) {
         recordChunk(chunk);
         yield chunk;
@@ -1354,6 +1359,7 @@ export class Agent {
       const additions = newMessages();
       const streamOutput: RunOutput = {
         text: fullText,
+        publicMessages: [...(streamOutcome.publicMessages ?? []), ...(delegated?.publicMessages ?? [])],
         ...(decisions ? { decisions } : {}),
         toolCalls: streamToolCalls,
         usage: streamUsage,

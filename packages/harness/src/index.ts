@@ -9,6 +9,7 @@ export {
   loadManifest,
 } from "./definition.js";
 export { agentDriver, teamDriver, workflowDriver } from "./drivers.js";
+export { requestInputTool } from "./input-tool.js";
 export type { MCPResourceClient, MCPResourceGrant, MCPResourcesOptions } from "./mcp-resources.js";
 export { mcpResources } from "./mcp-resources.js";
 export type { ReflectionPolicyOptions, SummaryContextPolicyOptions } from "./policies.js";
@@ -53,6 +54,7 @@ export type {
   HarnessRegistryReference,
   HarnessResult,
   HarnessRunRequest,
+  HarnessRunState,
   HarnessRuntimeBindings,
   HarnessRuntimeConfig,
   HarnessRuntimeReferences,
@@ -86,6 +88,8 @@ export {
   InMemoryHarnessSessionStore,
   resolveHarnessRuntime,
 } from "./runtime/index.js";
+export type { HarnessInputErrorCode } from "./runtime/input.js";
+export { HarnessInputError } from "./runtime/input.js";
 export { defineWatch, describeWatch } from "./watch/definition.js";
 export { type GmailWatchClient, type GmailWatchOptions, gmailWatchSource } from "./watch/gmail.js";
 export { DurableWatch } from "./watch/runtime.js";

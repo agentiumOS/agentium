@@ -77,6 +77,7 @@ export { CompressionManager } from "./compression/compression-manager.js";
 export {
   ContextCompactionError,
   ContextCompactor,
+  type ConversationGrouping,
   countConversationTokens,
   groupConversationTurns,
 } from "./context/context-compactor.js";
@@ -544,6 +545,7 @@ export { Workflow } from "./workflow/workflow.js";
 
 // ── Production Features ──────────────────────────────────────────────
 
+export type { InputReply, InputRequest, InputRequestOptions, RunInput } from "./agent/conversation-input.js";
 // Progress Protocol
 export type { ProgressEvent } from "./agent/progress-protocol.js";
 export { estimateProgress, toolResultPreview } from "./agent/progress-protocol.js";
@@ -558,6 +560,13 @@ export type { FallbackProviderConfig } from "./models/fallback-provider.js";
 export { FallbackProvider, withFallback } from "./models/fallback-provider.js";
 export type { ModelRouterConfig, ModelTier, RoutingRule } from "./models/model-router.js";
 export { classifyComplexity, ModelRouter } from "./models/model-router.js";
+export type {
+  CommunicationCapabilities,
+  PublicMessage,
+  PublicMessageEvent,
+  PublicMessagePhase,
+} from "./models/public-messages.js";
+export { getCommunicationCapabilities } from "./models/public-messages.js";
 export { ConcurrencyLimiter } from "./rate-limit/concurrency-limiter.js";
 // Rate Limiting
 export { TokenRateLimiter } from "./rate-limit/token-rate-limiter.js";

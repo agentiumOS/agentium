@@ -1,7 +1,9 @@
+import type { CommunicationCapabilities } from "./public-messages.js";
 import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefinition } from "./types.js";
 
 export interface ModelProvider {
   readonly providerId: string;
+  readonly communicationCapabilities?: CommunicationCapabilities;
   readonly modelId: string;
   /** Composite adapters delegate metering to their leaf providers. */
   readonly accountingRole?: "leaf" | "composite";

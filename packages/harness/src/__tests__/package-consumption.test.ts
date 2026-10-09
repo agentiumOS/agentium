@@ -88,6 +88,7 @@ it.skipIf(!enabled)(
       for (const name of ["createTwilioCallProvider", "createTelnyxCallProvider", "createExotelCallProvider", "createSignalWireCallProvider", "createVonageCallProvider", "createLiveKitSipCallProvider", "OutboundCallService"]) {
         if (typeof telephony[name] !== "function") throw new Error("Missing telephony export: " + name);
       }
+      if(typeof harness.requestInputTool !== "function" || typeof harness.HarnessInputError !== "function" || typeof core.getCommunicationCapabilities !== "function") throw new Error("Missing conversational exports");
       if(typeof harness.mcpResources !== "function") throw new Error("Missing MCP resource ability");
       for (const schema of [z3.object({name:z3.string()}), z4.object({name:z4.string()}), mini.object({name:mini.string()})]) {
         const tool = core.defineTool({name:"echo",description:"echo",parameters:schema,execute:async(args)=>args.name});
@@ -120,7 +121,7 @@ it.skipIf(!enabled)(
       await writeFile(
         join(fixture, "consumer.ts"),
         `
-      import { Agent, defineTool, type ModelProvider } from "@agentium/core";
+      import { Agent, defineTool, getCommunicationCapabilities, type PublicMessageEvent, type InputRequest, type ModelProvider } from "@agentium/core";
       import * as z3 from "zod-v3";
       import * as z4 from "zod";
       import * as mini from "zod/mini";
@@ -131,13 +132,19 @@ it.skipIf(!enabled)(
       const providers: OutboundCallProvider[] = [];
       const zod3Output = z3.object({ok:z3.boolean()});
       const zod4Output = z4.object({ok:z4.boolean()});
-      import { defineAbility, defineHarness, textContext, agentDriver, HarnessRuntime, type HarnessDefinition } from "@agentium/harness";
+      import { defineAbility, defineHarness, textContext, agentDriver, HarnessRuntime, requestInputTool, type RunHandle, type HarnessRunState, type HarnessDefinition } from "@agentium/harness";
       const callback = defineAbility({type:"consumer/callback", validate:(options:{ callback:()=>string })=>options,
         describe:()=>({toolNames:[],requirements:[]}), bind:async(options)=>({tools:[],promptFragments:[{id:"hint",text:options.callback()}]})});
       const service = defineAbility({type:"consumer/service", validate:(options:{ service:{read():Promise<string>} })=>options,
         describe:()=>({toolNames:[],requirements:[]}), bind:async()=>({tools:[]})});
       const harness: HarnessDefinition = defineHarness({abilities:[callback({callback:()=>"hello"}), service({service:{read:async()=>"value"}}), textContext({id:"notes",entries:[]})]});
       declare const model: ModelProvider;
+      declare const liveRun: RunHandle;
+      const state: HarnessRunState = liveRun.state;
+      const pending: InputRequest | undefined = liveRun.pendingInput;
+      const response: Promise<void> = liveRun.reply(pending?.id ?? "request", "answer");
+      const capability = getCommunicationCapabilities(model);
+      requestInputTool();
       new Agent({name:"zod3",model,structuredOutput:zod3Output});
       new Agent({name:"zod4",model,structuredOutput:zod4Output});
       new HarnessRuntime({definition: harness, driver: agentDriver(new Agent({name:"consumer",model})), grants:{toolIds:[],modelRoles:["main"]}});

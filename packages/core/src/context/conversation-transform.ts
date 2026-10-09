@@ -1,5 +1,5 @@
 import type { ChatMessage } from "../models/types.js";
-import { groupConversationTurns } from "./context-compactor.js";
+import { type ConversationGrouping, groupConversationTurns } from "./context-compactor.js";
 
 function signature(message: ChatMessage): string {
   return JSON.stringify(message);
@@ -16,7 +16,11 @@ function isProtected(message: ChatMessage): boolean {
  * Host messages are immutable. Closed historical tool/replay groups may be removed
  * atomically; a retained or current group must keep every opaque/call/result item.
  */
-export function validateConversationTransform(before: readonly ChatMessage[], after: readonly ChatMessage[]): void {
+export function validateConversationTransform(
+  before: readonly ChatMessage[],
+  after: readonly ChatMessage[],
+  grouping: ConversationGrouping = "turn",
+): void {
   if (
     !Array.isArray(after) ||
     after.some((message) => !message || !["system", "user", "assistant", "tool"].includes(message.role))
@@ -27,8 +31,14 @@ export function validateConversationTransform(before: readonly ChatMessage[], af
   if (JSON.stringify(systems(before)) !== JSON.stringify(systems(after))) {
     throw new Error("Conversation transform cannot remove, add, or alter host instructions");
   }
-  const originalTurns = groupConversationTurns(before.filter((m) => m.role !== "system"));
-  groupConversationTurns(after.filter((m) => m.role !== "system"));
+  const originalTurns = groupConversationTurns(
+    before.filter((m) => m.role !== "system"),
+    grouping,
+  );
+  groupConversationTurns(
+    after.filter((m) => m.role !== "system"),
+    grouping,
+  );
   const retained = after.filter(isProtected).map(signature);
   const available = new Map<string, number>();
   for (const message of before.filter(isProtected))

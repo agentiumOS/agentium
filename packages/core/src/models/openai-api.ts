@@ -1,4 +1,5 @@
 import type { BillingContext } from "../cost/accounting-types.js";
+import { responsesPublicMessages } from "./responses-public-messages.js";
 import {
   type ChatMessage,
   type ContentPart,
@@ -551,7 +552,12 @@ export function toResponsesInput(
 
     if (msg.role === "assistant" && msg.toolCalls?.length) {
       const text = getTextContent(msg.content);
-      if (text) input.push({ role: "assistant", content: text });
+      if (text)
+        input.push({
+          role: "assistant",
+          content: text,
+          ...(msg.phase ? { phase: msg.phase === "final" ? "final_answer" : "commentary" } : {}),
+        });
       for (const tc of msg.toolCalls) {
         input.push({
           type: "function_call",
@@ -580,7 +586,13 @@ export function toResponsesInput(
       continue;
     }
 
-    input.push({ role: msg.role, content: msg.content ?? "" });
+    input.push({
+      role: msg.role,
+      content: msg.content ?? "",
+      ...(msg.role === "assistant" && msg.phase
+        ? { phase: msg.phase === "final" ? "final_answer" : "commentary" }
+        : {}),
+    });
   }
 
   return { instructions, input };
@@ -710,6 +722,8 @@ function normalizeResponsesOutput(
     throw new Error(`Responses request ${response.status}`);
   }
   const { text, toolCalls, thinking } = extractResponsesOutput(response);
+  const publicMessages = responsesPublicMessages(response);
+  const phase = publicMessages.filter((message) => message.phase !== "reasoning_summary").at(-1)?.phase;
   if (toolCalls.length && response.status && response.status !== "completed") {
     throw new Error("Incomplete Responses tool turn; no tools executed");
   }
@@ -718,11 +732,13 @@ function normalizeResponsesOutput(
     message: {
       role: "assistant",
       content: text.length > 0 ? text : response.output_text || null,
+      ...(phase === "commentary" || phase === "final" ? { phase } : {}),
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       providerExtras: responsesExtras(response, owner, model),
     },
     usage,
     finishReason: toolCalls.length > 0 ? "tool_calls" : responsesStatusToFinish(response?.status),
+    ...(publicMessages.length ? { publicMessages } : {}),
     raw: response,
   };
   if (thinking) result.thinking = thinking;
@@ -914,6 +930,7 @@ export async function* iterResponsesStream(
   billingContext: Partial<BillingContext> = {},
 ): AsyncGenerator<StreamChunk> {
   const itemToCall = new Map<string, { callId: string; name: string; args: string }>();
+  const itemPhases = new Map<string, "commentary" | "final">();
   let emittedFinish = false;
   let streamContext: Partial<BillingContext> = { ...billingContext, modelId: model };
 
@@ -922,13 +939,23 @@ export async function* iterResponsesStream(
     const type = event?.type as string | undefined;
     if (!type) continue;
 
+    if (type === "response.output_item.added" && event.item?.type === "message") {
+      if (event.item.phase === "commentary" || event.item.phase === "final_answer")
+        itemPhases.set(event.item.id, event.item.phase === "commentary" ? "commentary" : "final");
+    }
     if (type === "response.output_text.delta" && event.delta) {
-      yield { type: "text", text: event.delta };
+      yield {
+        type: "text",
+        text: event.delta,
+        ...(event.item_id ? { itemId: event.item_id, phase: itemPhases.get(event.item_id) } : {}),
+      };
       continue;
     }
 
     if ((type === "response.reasoning_summary_text.delta" || type === "response.reasoning_text.delta") && event.delta) {
       yield { type: "thinking", text: event.delta };
+      if (type === "response.reasoning_summary_text.delta")
+        yield { type: "reasoning_summary", text: event.delta, itemId: `${event.item_id ?? "text"}:summary` };
       continue;
     }
 
@@ -985,8 +1012,12 @@ export async function* iterResponsesStream(
       } catch (cause) {
         throw new ModelUsageError("Invalid Responses tool output", usage, cause);
       }
+      const publicMessages = responsesPublicMessages(response);
+      const phase = publicMessages.filter((message) => message.phase !== "reasoning_summary").at(-1)?.phase;
       yield {
         type: "finish",
+        ...(phase === "commentary" || phase === "final" ? { phase } : {}),
+        ...(publicMessages.length ? { publicMessages } : {}),
         finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
         usage,
         providerExtras: responsesExtras(response, owner, model),

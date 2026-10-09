@@ -8,6 +8,12 @@ import type { HandoffSignal } from "../handoff/types.js";
 import type { Logger } from "../logger/logger.js";
 import type { ModelProvider } from "../models/provider.js";
 import {
+  type PublicMessage,
+  type PublicMessageEvent,
+  PublicMessageStream,
+  publicMessagesFromResponse,
+} from "../models/public-messages.js";
+import {
   type ChatMessage,
   getTextContent,
   type ModelConfig,
@@ -243,6 +249,21 @@ export class LLMLoop {
     }
   }
 
+  private publish(ctx: RunContext, event: PublicMessageEvent): void {
+    ctx.eventBus.emit("run.message", { runId: ctx.runId, messageEvent: event });
+    ctx.executionServices?.publishMessage?.(event);
+  }
+
+  private applySteering(ctx: RunContext, append: (message: ChatMessage) => void): boolean {
+    if (!ctx.executionServices?.takeInput || ctx.runId !== ctx.executionServices.ctx.runId) return false;
+    let applied = false;
+    for (let input = ctx.executionServices.takeInput(ctx); input; input = ctx.executionServices.takeInput(ctx)) {
+      append({ role: "user", content: input.input });
+      applied = true;
+    }
+    return applied;
+  }
+
   private claimControlledToolRoundtrip(): void {
     if (!this.controlledExecution) return;
     if (this.controlledToolRoundtrips >= this.maxToolRoundtrips) {
@@ -289,6 +310,7 @@ export class LLMLoop {
 
   async run(messages: ChatMessage[], ctx: RunContext, apiKey?: string, transcript?: ChatMessage[]): Promise<RunOutput> {
     const allToolCalls: ToolCallResult[] = [];
+    const publicMessages: PublicMessage[] = [];
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
     let totalReasoningTokens = 0;
@@ -317,6 +339,7 @@ export class LLMLoop {
     for (let roundtrip = 0; roundtrip <= this.maxToolRoundtrips; roundtrip++) {
       if (ctx.signal?.aborted) throw new RunCancelledError();
 
+      this.applySteering(ctx, append);
       const mandatoryMessages = !this.controlledExecution ? undefined : structuredClone(currentMessages);
       // Hook: beforeLLMCall — allows message modification (e.g. context compaction, PII scrubbing)
       if (this.loopHooks?.beforeLLMCall) {
@@ -385,8 +408,16 @@ export class LLMLoop {
       }
       if (response.message.toolCalls?.length) this.claimControlledToolRoundtrip();
       append(response.message);
+      for (const message of publicMessagesFromResponse(response)) {
+        publicMessages.push(message);
+        this.publish(ctx, { type: "message.started", id: message.id, phase: message.phase });
+        for (let offset = 0; offset < message.text.length; offset += 8192)
+          this.publish(ctx, { type: "message.delta", id: message.id, text: message.text.slice(offset, offset + 8192) });
+        this.publish(ctx, { type: "message.completed", message });
+      }
 
       if (response.finishReason !== "tool_calls" || !response.message.toolCalls?.length || !this.toolExecutor) {
+        if (this.applySteering(ctx, append) || response.message.phase === "commentary") continue;
         const text = getTextContent(response.message.content);
 
         const usage = {
@@ -403,6 +434,7 @@ export class LLMLoop {
 
         const output: RunOutput = {
           text,
+          publicMessages,
           toolCalls: allToolCalls,
           ...(response.decisions ? { decisions: response.decisions } : {}),
           usage: { ...usage, ...(response.usage.pricingKey ? { pricingKey: response.usage.pricingKey } : {}) },
@@ -423,6 +455,7 @@ export class LLMLoop {
           }
         }
 
+        ctx.executionServices?.finishInput?.(ctx);
         return output;
       }
 
@@ -549,6 +582,7 @@ export class LLMLoop {
 
     const output: RunOutput = {
       text,
+      publicMessages,
       toolCalls: allToolCalls,
       status: handoff ? "completed" : "stopped",
       usage: {
@@ -576,7 +610,8 @@ export class LLMLoop {
     apiKey?: string,
     transcript?: ChatMessage[],
     collectedTools?: ToolCallResult[],
-    outcome?: { status: "completed" | "stopped" },
+    outcome?: { status: "completed" | "stopped"; publicMessages?: PublicMessage[] },
+    publicMessageEvents = false,
   ): AsyncGenerator<StreamChunk> {
     const currentMessages = !this.controlledExecution ? [...messages] : structuredClone(messages);
     // Canonical newly produced exchanges survive request-only compaction/hooks.
@@ -602,6 +637,7 @@ export class LLMLoop {
     for (let roundtrip = 0; roundtrip <= this.maxToolRoundtrips; roundtrip++) {
       if (ctx.signal?.aborted) throw new RunCancelledError();
 
+      this.applySteering(ctx, append);
       const mandatoryMessages = !this.controlledExecution ? undefined : structuredClone(currentMessages);
       // Hook: beforeLLMCall
       if (this.loopHooks?.beforeLLMCall) {
@@ -643,36 +679,53 @@ export class LLMLoop {
       let chunkUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
       let providerExtras: Record<string, unknown> | undefined;
 
+      const publicStream = new PublicMessageStream();
+      let phase: "commentary" | "final" | undefined;
       const streamGen = this.streamObserved(currentMessages, { ...modelConfig, signal: ctx.signal }, ctx);
 
-      for await (const chunk of streamGen) {
-        yield chunk;
-
-        if (chunk.type === "text") {
-          fullText += chunk.text;
-          ctx.eventBus.emit("run.stream.chunk", {
-            runId: ctx.runId,
-            chunk: chunk.text,
-          });
-        } else if (chunk.type === "tool_call_start") {
-          pendingToolCalls.push({
-            id: chunk.toolCall.id,
-            name: chunk.toolCall.name,
-            args: "",
-          });
-        } else if (chunk.type === "tool_call_delta") {
-          const tc = pendingToolCalls.find((t) => t.id === chunk.toolCallId);
-          if (tc) {
-            tc.args += chunk.argumentsDelta;
+      try {
+        for await (const chunk of streamGen) {
+          for (const event of publicStream.consume(chunk)) {
+            this.publish(ctx, event);
+            if (event.type === "message.completed" && outcome) (outcome.publicMessages ??= []).push(event.message);
+            if (publicMessageEvents) yield { type: "public_message", event };
           }
-        } else if (chunk.type === "finish") {
-          finished = true;
-          finishReason = chunk.finishReason;
-          if (chunk.usage) chunkUsage = chunk.usage;
-          if (chunk.providerExtras) providerExtras = chunk.providerExtras;
-        }
-      }
+          if (chunk.type !== "reasoning_summary") yield chunk;
 
+          if (chunk.type === "text") {
+            fullText += chunk.text;
+            ctx.eventBus.emit("run.stream.chunk", {
+              runId: ctx.runId,
+              chunk: chunk.text,
+            });
+          } else if (chunk.type === "tool_call_start") {
+            pendingToolCalls.push({
+              id: chunk.toolCall.id,
+              name: chunk.toolCall.name,
+              args: "",
+            });
+          } else if (chunk.type === "tool_call_delta") {
+            const tc = pendingToolCalls.find((t) => t.id === chunk.toolCallId);
+            if (tc) {
+              tc.args += chunk.argumentsDelta;
+            }
+          } else if (chunk.type === "finish") {
+            finished = true;
+            finishReason = chunk.finishReason;
+            phase = chunk.phase;
+            if (chunk.usage) chunkUsage = chunk.usage;
+            if (chunk.providerExtras) providerExtras = chunk.providerExtras;
+          }
+        }
+      } catch (error) {
+        for (const event of publicStream.fail(Boolean(ctx.signal?.aborted))) {
+          this.publish(ctx, event);
+          if (publicMessageEvents) yield { type: "public_message", event };
+        }
+        throw error;
+      } finally {
+        for (const event of publicStream.fail(Boolean(ctx.signal?.aborted))) this.publish(ctx, event);
+      }
       if (!finished && pendingToolCalls.length)
         throw new Error("Stream ended before tool calls completed; no tools executed");
       totalPromptTokens += chunkUsage.promptTokens;
@@ -690,6 +743,7 @@ export class LLMLoop {
       const assistantMsg: ChatMessage = {
         role: "assistant",
         content: fullText || null,
+        ...(phase ? { phase } : {}),
         toolCalls: pendingToolCalls.map((tc) => {
           let parsed: Record<string, unknown> = {};
           try {
@@ -711,7 +765,11 @@ export class LLMLoop {
         await this.loopHooks.afterLLMCall({ finishReason, usage: chunkUsage }, roundtrip);
       }
       append(assistantMsg);
-      if (finishReason !== "tool_calls" || pendingToolCalls.length === 0 || !this.toolExecutor) return;
+      if (finishReason !== "tool_calls" || pendingToolCalls.length === 0 || !this.toolExecutor) {
+        if (this.applySteering(ctx, append) || phase === "commentary") continue;
+        ctx.executionServices?.finishInput?.(ctx);
+        return;
+      }
       if (ctx.signal?.aborted) throw new RunCancelledError();
 
       // Hook: beforeToolExec

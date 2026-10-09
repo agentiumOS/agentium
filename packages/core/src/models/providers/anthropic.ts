@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import type { BillingContext } from "../../cost/accounting-types.js";
 import { captureRetryFailure } from "../../cost/context.js";
@@ -45,6 +46,7 @@ function isAnthropicReasoningOnlyTempModel(modelId: string): boolean {
 export class AnthropicProvider implements ModelProvider {
   readonly providerId = "anthropic";
   readonly modelId: string;
+  readonly communicationCapabilities = { messagePhases: "inferred", reasoningSummaries: "conditional" } as const;
   private client: any;
   private AnthropicCtor: any;
   private clientCache = new Map<string, any>();
@@ -152,7 +154,7 @@ export class AnthropicProvider implements ModelProvider {
           : undefined,
       ),
     );
-    return this.normalizeResponse(response);
+    return this.normalizeResponse(response, options?.reasoning?.enabled === true);
   }
 
   async *stream(
@@ -234,6 +236,8 @@ export class AnthropicProvider implements ModelProvider {
               currentBlock.thinking = `${currentBlock.thinking ?? ""}${event.delta.thinking ?? ""}`;
             }
             yield { type: "thinking", text: event.delta.thinking };
+            // This adapter explicitly requests display: summarized when reasoning is enabled.
+            if (options?.reasoning?.enabled) yield { type: "reasoning_summary", text: event.delta.thinking };
           } else if (event.delta?.type === "signature_delta") {
             if (currentBlock?.type === "thinking") {
               currentBlock.signature = `${currentBlock.signature ?? ""}${event.delta.signature ?? ""}`;
@@ -416,7 +420,7 @@ export class AnthropicProvider implements ModelProvider {
     }));
   }
 
-  private normalizeResponse(response: any): ModelResponse & { thinking?: string } {
+  private normalizeResponse(response: any, summarized = false): ModelResponse & { thinking?: string } {
     const usage = providerTokenUsage(this.providerId, "messages", response.usage, {
       modelId: this.modelId,
       ...safeResponseContext(response),
@@ -460,6 +464,19 @@ export class AnthropicProvider implements ModelProvider {
       result.thinking = thinkingContent;
     }
 
+    if (summarized && thinkingContent)
+      result.publicMessages = [
+        { id: randomUUID(), phase: "reasoning_summary", text: thinkingContent },
+        ...(textContent
+          ? [
+              {
+                id: randomUUID(),
+                phase: toolCalls.length ? ("commentary" as const) : ("final" as const),
+                text: textContent,
+              },
+            ]
+          : []),
+      ];
     return result;
   }
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { TokenUsage } from "@agentium/core";
+import type { InputRequest, PublicMessageEvent, TokenUsage } from "@agentium/core";
 
+/** Terminal result status. awaiting_input is legacy-only; new live waits use RunHandle.state. */
 export type HarnessStatus = "completed" | "failed" | "cancelled" | "stopped" | "awaiting_input";
 export interface HarnessReason {
   code: string;
@@ -19,8 +20,17 @@ export interface HarnessResult {
   cleanupDiagnostics?: readonly string[];
 }
 export type HarnessEventPayload =
+  | PublicMessageEvent
+  | { type: "compaction.started"; compactionId: string; policyId: string; beforeTokens: number }
+  | { type: "compaction.completed"; compactionId: string; policyId: string; afterTokens: number }
+  | { type: "compaction.failed"; compactionId: string; policyId: string; reason: string }
   | { type: "run.started"; driverId: string }
   | { type: "text.delta"; text: string }
+  | { type: "input.requested"; request: InputRequest }
+  | { type: "input.resolved"; requestId: string }
+  | { type: "run.resumed"; requestId: string }
+  | { type: "input.received"; inputId: string; mode: "steer" | "follow_up" }
+  | { type: "input.applied"; inputId: string; mode: "steer" | "follow_up" }
   | { type: "model.complete"; providerId: string; modelId: string; usage: TokenUsage }
   | { type: "tool.complete"; toolName: string; toolCallId: string; denied: boolean }
   | { type: "control"; operation: "cancel" | "follow_up" | "steer" | "replace"; reason?: string }

@@ -28,6 +28,7 @@ interface ProviderDefaults {
 export class OpenAICompatibleProvider implements ModelProvider {
   readonly providerId: string;
   readonly modelId: string;
+  readonly communicationCapabilities = { messagePhases: "conditional", reasoningSummaries: "conditional" } as const;
   private client: any;
   private OpenAICtor: any;
   private baseURL: string;
