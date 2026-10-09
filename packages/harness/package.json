@@ -1,6 +1,6 @@
 {
   "name": "@agentium/harness",
-  "version": "4.8.0",
+  "version": "4.8.1",
   "description": "Composable harness developer kit for Agentium tools, context, middleware and presets",
   "license": "MIT",
   "publishConfig": {
@@ -58,7 +58,7 @@
     "test:package": "cd ../.. && AGENTIUM_TEST_PACKAGES=1 vitest run packages/harness/src/__tests__/package-consumption.test.ts"
   },
   "peerDependencies": {
-    "@agentium/core": "^4.8.0"
+    "@agentium/core": "^4.8.1"
   },
   "dependencies": {
     "zod": "^4.6.5"
