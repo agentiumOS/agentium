@@ -164,6 +164,11 @@ export interface ProviderOptions {
   /** OpenAI Responses `prompt_cache_retention`. */
   promptCacheRetention?: "in_memory" | "24h";
   /**
+   * OpenAI `service_tier` on Responses and Chat Completions. Omitted unless set.
+   * The returned tier still drives cost accounting.
+   */
+  serviceTier?: "auto" | "default" | "flex" | "priority" | "scale";
+  /**
    * Anthropic server compaction once input exceeds this many tokens.
    * Values under 50000 are raised to 50000. Requires the compaction beta.
    */

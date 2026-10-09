@@ -72,6 +72,14 @@ describe("Chat Completions params", () => {
     expect(params.temperature).toBeUndefined();
     expect((params.tools as any)[0].function.name).toBe("t");
   });
+
+  it("sends service_tier only when configured", () => {
+    const params: Record<string, unknown> = {};
+    applyChatCompletionsParams(params, "gpt-5.6-terra", {});
+    expect(params).not.toHaveProperty("service_tier");
+    applyChatCompletionsParams(params, "gpt-5.6-terra", { providerOptions: { serviceTier: "flex" } });
+    expect(params.service_tier).toBe("flex");
+  });
 });
 
 describe("Responses conversion", () => {
@@ -115,10 +123,11 @@ describe("Responses conversion", () => {
     const params = buildResponsesParams("gpt-5.6-terra", [{ role: "user", content: "hi" }], {
       tools: [{ name: "t", description: "t", parameters: { type: "object" } }],
       reasoning: { enabled: true, effort: "medium", mode: "pro" },
-      providerOptions: { promptCacheRetention: "24h" },
+      providerOptions: { promptCacheRetention: "24h", serviceTier: "priority" },
     });
     expect(params.reasoning).toEqual({ effort: "medium", summary: "detailed", mode: "pro" });
     expect(params.prompt_cache_retention).toBe("24h");
+    expect(params.service_tier).toBe("priority");
   });
 
   it("replays a Responses reasoning item ahead of the next tool call", () => {

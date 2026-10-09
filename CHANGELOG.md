@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.8.1] - 2026-10-10
+
+### Fixed
+- OpenAI requests can now set `service_tier`. Use `providerOptions.serviceTier` (`auto` | `default` | `flex` | `priority` | `scale`). It is sent on both Responses and Chat Completions and is omitted unless set. Cost accounting still prices the call at the tier OpenAI returns.
+
 ## [4.8.0] - 2026-10-09
 
 ### Added

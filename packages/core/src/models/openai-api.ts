@@ -152,6 +152,7 @@ export function applyChatCompletionsParams(
   }
 
   applyChatResponseFormat(params, options);
+  if (options?.providerOptions?.serviceTier) params.service_tier = options.providerOptions.serviceTier;
 
   if (options?.tools?.length) {
     params.tools = toChatCompletionsTools(options.tools);
@@ -211,6 +212,7 @@ export function buildResponsesParams(
   if (options?.providerOptions?.promptCacheRetention) {
     params.prompt_cache_retention = options.providerOptions.promptCacheRetention;
   }
+  if (options?.providerOptions?.serviceTier) params.service_tier = options.providerOptions.serviceTier;
 
   applyResponsesTextFormat(params, options);
 
