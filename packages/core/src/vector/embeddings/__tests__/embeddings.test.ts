@@ -582,13 +582,54 @@ describe("EmbeddingGemmaEmbedding", () => {
       expect(body.input.text).toBeUndefined();
     });
 
-    it("rejects video and pdf without calling the server", async () => {
+    it("sends native video bytes instead of sampled frames", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ embeddings: [vector(768)] }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding();
+
+      await embedder.embedMultimodal([
+        { type: "text", text: "a cat dozing" },
+        { type: "file", data: "MP4DATA", mimeType: "video/mp4" },
+      ]);
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body).toEqual({
+        model: "embeddinggemma-2",
+        input: { text: "title: none | text: a cat dozing", video: "MP4DATA" },
+      });
+    });
+
+    it("fetches a video URL and forwards processing_kwargs", async () => {
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).startsWith("https://")) {
+          return new Response(Buffer.from("fetched-clip"), {
+            status: 200,
+            headers: { "content-type": "video/mp4" },
+          });
+        }
+        return jsonResponse({ embeddings: [vector(768)] });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding({
+        video: { maxFrames: 16, fps: null, overflowStrategy: "uniform", addTimestamps: true },
+      });
+
+      await embedder.embedMultimodalQuery([
+        { type: "file", data: "https://example.com/cat.mp4", mimeType: "video/mp4" },
+        { type: "file", data: "SECOND", mimeType: "video/quicktime" },
+      ]);
+
+      const body = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(body.input.video).toEqual([Buffer.from("fetched-clip").toString("base64"), "SECOND"]);
+      expect(body.processing_kwargs).toEqual({
+        video: { max_frames: 16, fps: null, overflow_strategy: "uniform", add_timestamps: true },
+      });
+    });
+
+    it("rejects pdf without calling the server", async () => {
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
       const embedder = new EmbeddingGemmaEmbedding();
-      await expect(embedder.embedMultimodal([{ type: "file", data: "MP4", mimeType: "video/mp4" }])).rejects.toThrow(
-        /does not accept video/,
-      );
       await expect(
         embedder.embedMultimodal([{ type: "file", data: "PDF", mimeType: "application/pdf" }]),
       ).rejects.toThrow(/Unsupported MIME type/);
@@ -689,7 +730,22 @@ describe("EmbeddingGemmaEmbedding", () => {
         },
       ]);
       expect(body.input).toBeUndefined();
+      expect(body.processing_kwargs).toBeUndefined();
       expect(fetchMock.mock.calls[0][1].headers.authorization).toBe("Bearer local");
+    });
+
+    it("forwards video processing_kwargs on the openai backend", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ data: [{ embedding: vector(768), index: 0 }] }));
+      vi.stubGlobal("fetch", fetchMock);
+      const embedder = new EmbeddingGemmaEmbedding({
+        backend: "openai",
+        video: { maxFrames: 8, fps: 2 },
+      });
+
+      await embedder.embedMultimodal([{ type: "file", data: "MP4DATA", mimeType: "video/mp4" }]);
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.processing_kwargs).toEqual({ video: { max_frames: 8, fps: 2 } });
     });
 
     it("uses the query prompt for a multimodal query and leaves a remote image URL in place", async () => {
