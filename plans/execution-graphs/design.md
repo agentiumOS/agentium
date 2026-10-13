@@ -32,3 +32,7 @@ SDK owns contracts, validation, scheduling, patches, bounds and tests. Hosts own
 ## Integration finding
 
 Real harness fixtures exposed a pre-existing policy identity bug: root `dispatch`/`dispatchEffect` passed both the context's lazy policy wrapper and its underlying policy to ToolExecutor, so one operation could consume two tool admissions. The integration reuses the same context policy identity for these root executors. Separate local/host policy composition in ToolExecutor is preserved. Four direct regressions cover exact-one-admission execution and host denial; graph function effects can now use an exact requested tool budget. `workflow_iteration_limit` also propagates as an additive aggregate reason through the existing driver/evaluation adapter.
+
+## Review corrections
+
+Repeat bounds, predicate and the body list are captured before callbacks. An ordinary later predicate exception retains completed iteration state and child evidence; cancellation and structural failures still reject the boundary. Only the current graph scheduler scopes its synthesized blocked/error rows, so nested graph paths retain one prefix. Three independently reported defects were reproduced RED and corrected GREEN.

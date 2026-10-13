@@ -13,6 +13,73 @@ const workflow = (steps: StepDef<State>[]) =>
   new Workflow({ name: "execution-graphs", register: false, initialState, steps });
 
 describe("execution graph Workflow integration", () => {
+  it("captures a repeat's admission bound before a predicate can mutate its definition", async () => {
+    let effects = 0;
+    const repeat: RepeatStep<State> = {
+      name: "bounded",
+      maxIterations: 1,
+      repeat: [{ name: "effect", run: async () => ({ count: ++effects }) }],
+      while: (_state, iteration) => {
+        repeat.maxIterations = 3;
+        return iteration < 3;
+      },
+    };
+    const result = await workflow([repeat]).run();
+    expect(effects).toBe(1);
+    expect(result).toMatchObject({ status: "failed", reason: { code: "workflow_iteration_limit" } });
+  });
+
+  it("retains completed iteration state and evidence when the next predicate throws", async () => {
+    let effects = 0;
+    const result = await workflow([
+      {
+        name: "repair",
+        maxIterations: 2,
+        while: (_state, iteration) => {
+          if (iteration === 1) throw new Error("Guard unavailable");
+          return true;
+        },
+        repeat: [{ name: "effect", run: async () => ({ count: ++effects }) }],
+      },
+    ]).run();
+    expect(effects).toBe(1);
+    expect(result.state.count).toBe(1);
+    expect(result.status).toBe("failed");
+    expect(result.stepResults.map((row) => [row.stepName, row.status])).toEqual([
+      ["repair", "error"],
+      ["effect", "done"],
+    ]);
+    expect(result.stepResults[0].error).toContain("Guard unavailable");
+  });
+
+  it("scopes a nested blocked result once while preserving the missing-data failure", async () => {
+    const consumer = vi.fn(async () => ({}));
+    const result = await workflow([
+      {
+        name: "outer",
+        graph: [
+          {
+            id: "container",
+            step: {
+              name: "inner",
+              graph: [
+                { id: "optional", step: { name: "optional", condition: () => false, steps: [] } },
+                { id: "missing", inputsFrom: ["optional"], step: { name: "consumer", run: consumer } },
+              ],
+            },
+          },
+        ],
+      },
+    ]).run();
+    expect(result.status).toBe("failed");
+    expect(consumer).not.toHaveBeenCalled();
+    expect(result.stepResults.find((row) => row.stepName === "consumer")).toMatchObject({
+      status: "skipped",
+      executionPath: "outer/container/inner/missing/consumer",
+      reason: { code: "workflow_dependency_blocked" },
+    });
+  });
+
   it("exits a repeat without effects when its first guard is false", async () => {
     const effect = vi.fn(async () => ({ count: 1 }));
     const result = await workflow([

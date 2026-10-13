@@ -45,3 +45,5 @@ Only the focused scheduler test command was run. Full workflow/harness tests, Ty
 The scheduler validates static nesting through depth64 and defers nested factory materialization until entry. The coordinator owns the runtime depth cap across dynamically generated nested factories, root GraphStep results, root failure policy, execution paths/events, repeat loops, callback execution/retry ownership and checkpoint boundaries.
 
 Cancellation is cooperative: an uncooperative started callback delays rejection until it settles. Draining does not undo remote effects. There is no mid-episode durability, graph-level retry, streamed replanning, benchmark claim or recovery/idempotency guarantee.
+
+Coordinator integration correction: `executeWorkflowGraph` now accepts an optional internal fifth `executionScope` argument. It scopes only its own synthesized rows, retaining executed/nested child paths. Existing four-argument focused consumers still receive relative synthesized paths. Parent StepRunner no longer prefixes flattened nested rows indiscriminately. This change is covered by a nested blocked-result regression and final verification.

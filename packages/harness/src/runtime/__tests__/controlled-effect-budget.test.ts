@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod/v3";
-import { HarnessRuntime } from "../driver.js";
-import type { ExecutionDriver } from "../types.js";
+import { type ExecutionDriver, HarnessRuntime } from "../driver.js";
 
 const start = { identity: { tenantId: "fixture", userId: "fixture" }, sessionId: "effect-budget" };
 

@@ -290,13 +290,14 @@ export class StepRunner<TState extends Record<string, unknown>> {
     depth: number,
   ): Promise<StepExecution<TState>> {
     validateWorkflowSteps([step]);
-    const outcome = await executeWorkflowGraph(step, state, ctx.signal, (node, input) =>
-      this.executeStepWithPatch(node.step, input, ctx, opts, `${scope}/${encodeURIComponent(node.id)}`, depth + 1),
+    const outcome = await executeWorkflowGraph(
+      step,
+      state,
+      ctx.signal,
+      (node, input) =>
+        this.executeStepWithPatch(node.step, input, ctx, opts, `${scope}/${encodeURIComponent(node.id)}`, depth + 1),
+      scope,
     );
-    for (const result of outcome.results) {
-      if (result.reason?.code === "workflow_dependency_blocked" || result.reason?.code === "workflow_node_failed")
-        result.executionPath = `${scope}/${result.executionPath}`;
-    }
     const failed = outcome.results.some(
       (result) => result.status === "error" || result.reason?.code === "workflow_dependency_blocked",
     );
@@ -323,20 +324,34 @@ export class StepRunner<TState extends Record<string, unknown>> {
     )
       throw new WorkflowDefinitionError("Repeat requires a positive safe maxIterations, predicate and step array");
     validateWorkflowSteps([step]);
+    const maxIterations = step.maxIterations;
+    const predicate = step.while;
+    const body = [...step.repeat];
     let current = { ...state };
     const patch: Partial<TState> = {};
     const results: StepResult[] = [];
     let iteration = 0;
     while (true) {
       ctx.signal?.throwIfAborted();
-      const again = step.while(current, iteration);
+      let again: boolean;
+      try {
+        again = predicate(current, iteration);
+      } catch (error) {
+        ctx.signal?.throwIfAborted();
+        if (fatal(error)) throw error;
+        return {
+          state: current,
+          patch,
+          results: [{ stepName: step.name, status: "error", error: errorMessage(error), durationMs: 0 }, ...results],
+        };
+      }
       ctx.signal?.throwIfAborted();
       if (typeof again !== "boolean") throw new WorkflowDefinitionError("Repeat predicate must return a boolean");
       if (!again) break;
-      if (iteration >= step.maxIterations) {
+      if (iteration >= maxIterations) {
         const reason = {
           code: "workflow_iteration_limit",
-          message: `Workflow repeat ${step.name} exhausted ${step.maxIterations} iterations`,
+          message: `Workflow repeat ${step.name} exhausted ${maxIterations} iterations`,
         };
         return {
           state: current,
@@ -344,14 +359,7 @@ export class StepRunner<TState extends Record<string, unknown>> {
           results: [{ stepName: step.name, status: "error", error: reason.message, reason, durationMs: 0 }, ...results],
         };
       }
-      const outcome = await this.executeStepsWithPatch(
-        step.repeat,
-        current,
-        ctx,
-        opts,
-        `${scope}/${iteration}`,
-        depth + 1,
-      );
+      const outcome = await this.executeStepsWithPatch(body, current, ctx, opts, `${scope}/${iteration}`, depth + 1);
       current = outcome.state;
       Object.assign(patch, outcome.patch);
       results.push(...outcome.results);

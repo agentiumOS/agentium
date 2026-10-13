@@ -212,6 +212,7 @@ export async function executeWorkflowGraph<T extends Record<string, unknown>>(
   state: T,
   signal: AbortSignal | undefined,
   executeNode: (node: WorkflowGraphNode<T>, input: T) => Promise<{ patch: Partial<T>; results: StepResult[] }>,
+  executionScope?: string,
 ): Promise<{ patch: Partial<T>; results: StepResult[] }> {
   signal?.throwIfAborted();
   validateStep(step, 1, new Set());
@@ -258,6 +259,8 @@ export async function executeWorkflowGraph<T extends Record<string, unknown>>(
   }
 
   const running = new Set<Promise<void>>();
+  const nodePath = (node: WorkflowGraphNode<T>) =>
+    executionScope === undefined ? relativePath(node) : `${executionScope}/${relativePath(node)}`;
   const writers = new Map<string, NodeExecution<T>[]>();
   let stopped = false;
   let stoppedError: unknown;
@@ -318,7 +321,7 @@ export async function executeWorkflowGraph<T extends Record<string, unknown>>(
           status: "error",
           error: message,
           durationMs: 0,
-          executionPath: relativePath(execution.node),
+          executionPath: nodePath(execution.node),
           reason: { code: "workflow_node_failed", message },
         },
       ];
@@ -346,7 +349,7 @@ export async function executeWorkflowGraph<T extends Record<string, unknown>>(
               stepName: execution.node.step.name,
               status: "skipped",
               durationMs: 0,
-              executionPath: relativePath(execution.node),
+              executionPath: nodePath(execution.node),
               reason: {
                 code: "workflow_dependency_blocked",
                 message: `Graph node ${execution.node.id} has an unsatisfied dependency`,
