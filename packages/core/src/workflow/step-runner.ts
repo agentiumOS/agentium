@@ -96,6 +96,7 @@ export class StepRunner<TState extends Record<string, unknown>> {
     depth = 0,
   ): Promise<StepExecution<TState>> {
     ctx.signal?.throwIfAborted();
+    if ("graph" in step || "repeat" in step) validateWorkflowSteps([step]);
     const path =
       scope !== undefined
         ? `${scope}/${encodeURIComponent(step.name)}`
@@ -289,7 +290,6 @@ export class StepRunner<TState extends Record<string, unknown>> {
     scope: string,
     depth: number,
   ): Promise<StepExecution<TState>> {
-    validateWorkflowSteps([step]);
     const outcome = await executeWorkflowGraph(
       step,
       state,
@@ -323,7 +323,6 @@ export class StepRunner<TState extends Record<string, unknown>> {
       !Array.isArray(step.repeat)
     )
       throw new WorkflowDefinitionError("Repeat requires a positive safe maxIterations, predicate and step array");
-    validateWorkflowSteps([step]);
     const maxIterations = step.maxIterations;
     const predicate = step.while;
     const body = [...step.repeat];

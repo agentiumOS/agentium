@@ -28,6 +28,11 @@ function requireName(value: unknown, label: string): void {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new WorkflowDefinitionError(`${label} must be a nonempty string`);
   }
+  try {
+    encodeURIComponent(value);
+  } catch (cause) {
+    throw new WorkflowDefinitionError(`${label} must contain valid Unicode`, { cause });
+  }
 }
 
 function requireLimit(value: unknown, label: string): void {
@@ -102,6 +107,7 @@ function validateEpisode(value: unknown, maxNodes: number, depth: number, active
     if (typeof id !== "string" || id.trim().length === 0) {
       throw new WorkflowDefinitionError("Workflow graph node ID must be a nonempty string");
     }
+    requireName(id, "Workflow graph node ID");
     if (ids.has(id)) throw new WorkflowDefinitionError(`Workflow graph contains duplicate node ID ${id}`);
     ids.add(id);
     const control = readDependencies(node.dependsOn, `Graph node ${id} dependsOn`);

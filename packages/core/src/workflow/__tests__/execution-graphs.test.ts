@@ -13,6 +13,22 @@ const workflow = (steps: StepDef<State>[]) =>
   new Workflow({ name: "execution-graphs", register: false, initialState, steps });
 
 describe("execution graph Workflow integration", () => {
+  it("rejects nonencodable node identity before admitting otherwise valid siblings", async () => {
+    const effect = vi.fn(async () => ({}));
+    await expect(
+      workflow([
+        {
+          name: "episode",
+          graph: [
+            { id: "valid", step: { name: "valid", run: effect } },
+            { id: "\ud800", step: { name: "invalid", run: effect } },
+          ],
+        },
+      ]).run(),
+    ).rejects.toMatchObject({ code: "workflow_definition_invalid" });
+    expect(effect).not.toHaveBeenCalled();
+  });
+
   it("captures a repeat's admission bound before a predicate can mutate its definition", async () => {
     let effects = 0;
     const repeat: RepeatStep<State> = {

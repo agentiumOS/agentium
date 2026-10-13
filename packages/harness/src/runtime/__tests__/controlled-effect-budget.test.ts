@@ -21,6 +21,7 @@ describe.each(["dispatch", "dispatchEffect"] as const)("single admission through
           return { text: value };
         }
         const result = await services.dispatch({ id: "one", name: "apply", arguments: {} });
+        if (typeof result.result !== "string") throw new Error("Fixture must return text");
         return { text: result.result, status: result.error ? "failed" : "completed" };
       },
     };
@@ -61,6 +62,7 @@ describe.each(["dispatch", "dispatchEffect"] as const)("single admission through
           return { text: "unexpected" };
         }
         const result = await services.dispatch({ id: "one", name: "apply", arguments: {} });
+        if (typeof result.result !== "string") throw new Error("Fixture must return text");
         return { text: result.result, status: result.error ? "failed" : "completed" };
       },
     };
