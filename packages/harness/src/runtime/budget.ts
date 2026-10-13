@@ -6,6 +6,7 @@ import {
   type TokenUsage,
   type ToolDefinition,
 } from "@agentium/core";
+import { z } from "zod";
 
 export class HarnessBudgetError extends Error {
   readonly code = "budget_exhausted";
@@ -40,6 +41,45 @@ export interface HarnessBudgetSnapshot {
   toolCalls: HarnessResourceSnapshot;
   /** Calls charged at their projection because complete provider usage was unavailable. */
   unknownUsageCalls: number;
+}
+const counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const budgetStateSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    limits: z
+      .object({
+        maxModelCalls: counter.optional(),
+        maxToolCalls: counter.optional(),
+        maxTokens: counter.optional(),
+        maxRevisions: counter.optional(),
+        finishingTokens: counter.optional(),
+        finishingModelCalls: counter.optional(),
+      })
+      .strict(),
+    usedTokens: counter,
+    reservedTokens: counter,
+    usedCalls: counter,
+    reservedCalls: counter,
+    usedTools: counter,
+    activeCalls: counter,
+    finishingTokens: counter,
+    finishingCalls: counter,
+    pendingFinishingTokens: counter,
+    pendingFinishingCalls: counter,
+    unknownUsageCalls: counter,
+    toolAdmissionIds: z.array(z.string().min(1)).refine((ids) => new Set(ids).size === ids.length),
+  })
+  .strict();
+export type HarnessBudgetState = z.infer<typeof budgetStateSchema>;
+export function parseHarnessBudgetState(value: unknown): HarnessBudgetState {
+  return budgetStateSchema.parse(value);
+}
+function limitsKey(limits: HarnessBudgets): string {
+  return JSON.stringify(
+    Object.entries(limits)
+      .filter(([, value]) => value !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b)),
+  );
 }
 export type InputTokenEstimator = (input: {
   provider: ModelProvider;
@@ -90,8 +130,51 @@ export class HarnessBudgetLedger {
   private pendingFinishingTokens = 0;
   private pendingFinishingCalls = 0;
   private unknownUsageCalls = 0;
-  constructor(private limits: HarnessBudgets = {}) {
+  private activeCalls = 0;
+  private toolAdmissionIds = new Set<string>();
+  constructor(
+    private limits: HarnessBudgets = {},
+    restored?: HarnessBudgetState,
+  ) {
     validateHarnessBudgets(limits);
+    if (restored) {
+      const state = parseHarnessBudgetState(restored);
+      if (limitsKey(limits) !== limitsKey(state.limits)) throw new Error("Durable budget limits changed");
+      // An interrupted reservation may have been billed. Never replenish it on recovery.
+      this.usedTokens = state.usedTokens + state.reservedTokens;
+      this.usedCalls = state.usedCalls + state.reservedCalls;
+      this.usedTools = state.usedTools;
+      this.finishingTokens = state.finishingTokens + state.pendingFinishingTokens;
+      this.finishingCalls = state.finishingCalls + state.pendingFinishingCalls;
+      this.unknownUsageCalls = state.unknownUsageCalls + state.activeCalls + state.reservedCalls;
+      this.toolAdmissionIds = new Set(state.toolAdmissionIds);
+      for (const value of [
+        this.usedTokens,
+        this.usedCalls,
+        this.finishingTokens,
+        this.finishingCalls,
+        this.unknownUsageCalls,
+      ])
+        if (!Number.isSafeInteger(value)) throw new Error("Durable budget counter overflow");
+    }
+  }
+  exportState(): HarnessBudgetState {
+    return parseHarnessBudgetState({
+      schemaVersion: 1,
+      limits: this.limits,
+      usedTokens: this.usedTokens,
+      reservedTokens: this.reservedTokens,
+      usedCalls: this.usedCalls,
+      reservedCalls: this.reservedCalls,
+      usedTools: this.usedTools,
+      activeCalls: this.activeCalls,
+      finishingTokens: this.finishingTokens,
+      finishingCalls: this.finishingCalls,
+      pendingFinishingTokens: this.pendingFinishingTokens,
+      pendingFinishingCalls: this.pendingFinishingCalls,
+      unknownUsageCalls: this.unknownUsageCalls,
+      toolAdmissionIds: [...this.toolAdmissionIds],
+    });
   }
   snapshot(): HarnessBudgetSnapshot {
     return {
@@ -111,9 +194,11 @@ export class HarnessBudgetLedger {
       unknownUsageCalls: this.unknownUsageCalls,
     };
   }
-  admitTool(): boolean {
+  admitTool(logicalId?: string): boolean {
+    if (logicalId && this.toolAdmissionIds.has(logicalId)) return true;
     if (this.usedTools >= (this.limits.maxToolCalls ?? Infinity)) return false;
     this.usedTools++;
+    if (logicalId) this.toolAdmissionIds.add(logicalId);
     return true;
   }
   reserveCall(finishing = false) {
@@ -174,6 +259,7 @@ export class HarnessBudgetLedger {
       start: () => {
         if (started || settled) return;
         started = true;
+        this.activeCalls++;
         call.start();
       },
       settle: (usage?: TokenUsage) => {
@@ -191,6 +277,7 @@ export class HarnessBudgetLedger {
         call.release();
         if (finishing) this.pendingFinishingTokens -= projected;
         if (!started) return;
+        this.activeCalls--;
         // Normalized missing accounting counters must not masquerade as known zero usage.
         const known =
           usage &&

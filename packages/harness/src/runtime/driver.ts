@@ -13,6 +13,7 @@ import type {
   ModelProvider,
   ModelResponse,
   PublicMessage,
+  RootExecutionController,
   RunMode,
   StreamChunk,
   TokenUsage,
@@ -36,6 +37,7 @@ import {
   HarnessBudgetError,
   HarnessBudgetLedger,
   type HarnessBudgetSnapshot,
+  type HarnessBudgetState,
   type HarnessBudgets,
   type InputTokenEstimator,
   validateHarnessBudgets,
@@ -65,7 +67,13 @@ import {
   validateTaskSummaryRecord,
 } from "./task-summary.js";
 
-export type { HarnessBudgetSnapshot, HarnessBudgets, HarnessResourceSnapshot, InputTokenEstimator } from "./budget.js";
+export type {
+  HarnessBudgetSnapshot,
+  HarnessBudgetState,
+  HarnessBudgets,
+  HarnessResourceSnapshot,
+  InputTokenEstimator,
+} from "./budget.js";
 export { HarnessBudgetError } from "./budget.js";
 
 import { fetchHarnessContext } from "./context.js";
@@ -262,6 +270,14 @@ export interface HarnessRuntimeConfig {
   inputTimeoutMs?: number;
 }
 export interface HarnessStartOptions {
+  /** Borrowed root admission boundary, shared by nested controlled work. */
+  rootExecution?: RootExecutionController;
+  /** Trusted recovery adapter only. Restored limits must exactly match host budgets. */
+  recovery?: {
+    budgetState?: HarnessBudgetState;
+    persistBudget(state: HarnessBudgetState): Promise<void>;
+    invokeTool?: ExecutionServices["invokeTool"];
+  };
   identity: HarnessIdentity;
   sessionId: string;
   parentRunId?: string;
@@ -448,7 +464,15 @@ export class HarnessRuntime {
       ? recallScopeSchema.parse({ identity: options.identity, sessionId: options.sessionId, ...hostScope })
       : undefined;
     const attestLegacyMemoryScope = options.attestLegacyMemoryScope === true;
-    const budget = new HarnessBudgetLedger(config.budgets);
+    const budget = new HarnessBudgetLedger(config.budgets, options.recovery?.budgetState);
+    const rootExecution = options.rootExecution;
+    let budgetWrites = Promise.resolve();
+    const persistBudget = () => {
+      if (!options.recovery) return Promise.resolve();
+      const write = budgetWrites.then(() => options.recovery!.persistBudget(budget.exportState()));
+      budgetWrites = write.catch(() => {});
+      return write;
+    };
     if (options.runMode !== undefined && options.runMode !== "execute" && options.runMode !== "plan")
       throw new Error("Invalid run mode");
     const grants = options.grants
@@ -553,8 +577,14 @@ export class HarnessRuntime {
       try {
         liveInput.assertNotWaiting();
         supplied.signal?.throwIfAborted();
-        onStart();
-        const response = await provider.generate(messages, supplied);
+        const execute = async () => {
+          onStart();
+          await persistBudget();
+          return provider.generate(messages, supplied);
+        };
+        const response = rootExecution
+          ? await rootExecution.run("model", `${runId}/${randomUUID()}`, execute, supplied.signal)
+          : await execute();
         end(!controller.signal.aborted, response.usage);
         return response;
       } catch (error) {
@@ -787,6 +817,7 @@ export class HarnessRuntime {
           tenantId: request.identity.tenantId,
           runId,
           signal: controller.signal,
+          rootExecution,
           runMode: request.runMode,
           eventBus: new EventBus(),
           sessionState: state,
@@ -803,7 +834,10 @@ export class HarnessRuntime {
               return { action: "deny", reason: "Tool is outside the effective grants" };
             if (revision > 0 && !config.allowRevisionEffects)
               return { action: "deny", reason: "Completion revisions cannot execute effects without host opt-in" };
-            if (!budget.admitTool()) return { action: "deny", reason: "Aggregate tool budget exhausted" };
+            const logicalId = options.recovery
+              ? `${callCtx.metadata.executionGraphNodeId ?? callCtx.metadata.workflowExecutionPath ?? callCtx.runId}/${call.toolCallId}`
+              : undefined;
+            if (!budget.admitTool(logicalId)) return { action: "deny", reason: "Aggregate tool budget exhausted" };
             return evaluateExecutionPolicy(config.executionPolicy, call, callCtx);
           },
           resolveEffect: config.executionPolicy?.resolveEffect,
@@ -1321,6 +1355,7 @@ export class HarnessRuntime {
                   reservation.start,
                 );
                 reservation.settle(response.usage);
+                await persistBudget();
                 account(binding.provider, response.usage);
                 accounted = true;
                 ensureActive();
@@ -1337,6 +1372,7 @@ export class HarnessRuntime {
                 throw error;
               } finally {
                 reservation.settle();
+                await persistBudget();
               }
             })(),
           );
@@ -1351,6 +1387,13 @@ export class HarnessRuntime {
             projectRoot: config.projectRoot ?? process.cwd(),
           },
           executionPolicy: policy,
+          rootExecution,
+          invokeTool: async (tool, call, args, context, execute) => {
+            await persistBudget();
+            return options.recovery?.invokeTool
+              ? options.recovery.invokeTool(tool, call, args, context, execute)
+              : execute();
+          },
           approvalManager: config.approvalManager,
           state,
           sessionKey: harnessSessionKey(request.identity, request.sessionId),
@@ -1395,6 +1438,7 @@ export class HarnessRuntime {
                     call.reservation.start,
                   );
                   call.reservation.settle(response.usage);
+                  await persistBudget();
                   account(call.provider, response.usage);
                   accounted = true;
                   ensureActive();
@@ -1409,6 +1453,7 @@ export class HarnessRuntime {
                   throw error;
                 } finally {
                   call.reservation.settle();
+                  await persistBudget();
                 }
               })(),
             ),
@@ -1431,15 +1476,18 @@ export class HarnessRuntime {
               let extras: Record<string, unknown> | undefined;
               let publicMessages: PublicMessage[] | undefined;
               let phase: "commentary" | "final" | undefined;
+              let executionLease: Awaited<ReturnType<RootExecutionController["acquire"]>> | undefined;
               const calls: Array<{ id: string; name: string; args: string }> = [];
               try {
                 ensureActive();
                 liveInput.assertNotWaiting();
                 call.options.signal?.throwIfAborted();
+                executionLease = await rootExecution?.acquire("model", `${runId}/${randomUUID()}`, call.options.signal);
                 call.reservation.start();
+                await persistBudget();
                 stream = call.provider.stream(call.messages, call.options);
                 while (true) {
-                  const next = await stream.next();
+                  const next = await (executionLease ? executionLease.run(() => stream!.next()) : stream.next());
                   if (!next.done && next.value.type === "finish") {
                     if (finished) throw new Error("Provider emitted duplicate terminal usage");
                     finished = true;
@@ -1449,6 +1497,7 @@ export class HarnessRuntime {
                     phase = next.value.phase;
                     amount = next.value.usage ?? zero();
                     call.reservation.settle(next.value.usage);
+                    await persistBudget();
                     account(call.provider, amount);
                   }
                   ensureActive();
@@ -1497,7 +1546,15 @@ export class HarnessRuntime {
               } finally {
                 endObservation(succeeded, finished ? amount : undefined);
                 call.reservation.settle();
-                await stream?.return(undefined);
+                try {
+                  if (stream)
+                    await (executionLease
+                      ? executionLease.cleanup(() => stream!.return(undefined))
+                      : stream.return(undefined));
+                  await persistBudget();
+                } finally {
+                  await executionLease?.release();
+                }
               }
             })();
             const finish = () => {

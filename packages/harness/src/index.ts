@@ -35,7 +35,42 @@ export type {
   TextContextOptions,
 } from "./presets.js";
 export { base, fileContext, research, suppliedTools, textContext } from "./presets.js";
-export type { HarnessBudgetSnapshot, HarnessResourceSnapshot, InputTokenEstimator } from "./runtime/budget.js";
+export type {
+  HarnessBudgetSnapshot,
+  HarnessBudgetState,
+  HarnessResourceSnapshot,
+  InputTokenEstimator,
+} from "./runtime/budget.js";
+export type {
+  ExecutionGraphResult,
+  ExecutionGraphRuntimeOptions,
+  ExecutionGraphTaskOptions,
+} from "./runtime/execution-graph.js";
+export { ExecutionGraphRuntime } from "./runtime/execution-graph.js";
+export {
+  ExecutionPlanValidationError,
+  graphCatalogDescriptor,
+  graphCatalogDigest,
+  validateExecutionPlan,
+} from "./runtime/execution-proposal.js";
+export type {
+  ExecutionGraphLimits,
+  ExecutionGraphPlannerOptions,
+  ExecutionGraphProgram,
+  ExecutionPlan,
+  ExecutionPlanNode,
+  GraphAgentBinding,
+  GraphBinding,
+  GraphNestedBinding,
+  GraphRepeatBinding,
+  GraphToolBinding,
+  GraphValueSchema,
+  PlanCommitFrame,
+  PlanReferenceRequirement,
+  PlanStreamLimits,
+  PlanValidationLimits,
+  ValidatedExecutionPlan,
+} from "./runtime/graph-contracts.js";
 export type {
   HistoryArchive,
   HistoryArchiveReference,

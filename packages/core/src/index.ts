@@ -45,6 +45,16 @@ export { defineExternalAgent } from "./agent/external-agent.js";
 // Utils
 export { AgentFactory, type FactoryContext, TeamFactory, WorkflowFactory } from "./agent/factory.js";
 export { LLMLoop, ModelProtocolError } from "./agent/llm-loop.js";
+export type {
+  RootExecutionCounts,
+  RootExecutionEvent,
+  RootExecutionKind,
+  RootExecutionLease,
+  RootExecutionLimits,
+  RootExecutionPersistence,
+  RootExecutionSnapshot,
+} from "./agent/root-execution.js";
+export { RootExecutionController, RootExecutionError, validateRootExecutionCounts } from "./agent/root-execution.js";
 export { RunContext } from "./agent/run-context.js";
 export {
   SandboxAgent,
@@ -548,6 +558,17 @@ export {
   type WorkflowCheckpoint,
   type WorkflowCheckpointStore,
 } from "./workflow/checkpoints.js";
+export type {
+  DurableGraphBinding,
+  DurableGraphDefinition,
+  DurableGraphNodeRecord,
+  DurableGraphState,
+} from "./workflow/durable-graph.js";
+export {
+  DurableGraphJournal,
+  DurableGraphJournalError,
+  DurableGraphNodeFailureError,
+} from "./workflow/durable-graph.js";
 export {
   WorkflowCancellationError,
   WorkflowCheckpointError,

@@ -41,6 +41,7 @@ import type { WebhookManager } from "../webhooks/webhook-manager.js";
 import { AgentLifecycleError, MemoryDrainError, RunCancelledError } from "./errors.js";
 import { LLMLoop, LoopCancelledError, type LoopStreamOutcome, ModelProtocolError } from "./llm-loop.js";
 import { ReflectionManager } from "./reflection.js";
+import { withRootExecutionProvider } from "./root-execution.js";
 import { RunContext } from "./run-context.js";
 import {
   buildAgentConfigFromSerialized,
@@ -123,6 +124,58 @@ export class Agent {
   /** List the names of all currently registered tools. */
   listTools(): string[] {
     return [...new Set(this.collectTools(this.config).map((tool) => tool.name))];
+  }
+
+  /** Configuration-only recovery preflight. Hosts still pin executable versions
+   * and validate every approved tool binding; no credentials or config are returned. */
+  getRecoveryDescriptor(): { toolNames: readonly string[]; unsupported: readonly string[] } {
+    const unsupported: string[] = [];
+    const configured = (key: keyof AgentConfig) => {
+      const value = this.config[key];
+      if (value !== undefined && value !== false && (!Array.isArray(value) || value.length > 0)) unsupported.push(key);
+    };
+    for (const key of [
+      "toolResolver",
+      "memory",
+      "learning",
+      "fileMemory",
+      "filesystem",
+      "workspace",
+      "skills",
+      "skillDirs",
+      "contextFiles",
+      "subagents",
+      "handoff",
+      "reflection",
+      "hooks",
+      "loopHooks",
+      "guardrails",
+      "webhooks",
+      "semanticCache",
+      "toolRouter",
+      "checkpointing",
+      "contextCompactor",
+      "compressToolResults",
+      "compressionManager",
+      "artifacts",
+      "searchPastSessions",
+      "sessionId",
+      "userId",
+      "dependencies",
+      "cost",
+      "costTracker",
+    ] satisfies Array<keyof AgentConfig>)
+      configured(key);
+    if (typeof this.config.instructions === "function") unsupported.push("instructions_callback");
+    if (this.config.toolResultLimit?.strategy === "summarize") unsupported.push("toolResultLimit_summarize");
+    const tools = this.collectTools(this.config);
+    if (tools.some((tool) => tool.toModelOutput)) unsupported.push("tool_output_transform");
+    if (tools.some((tool) => tool.cache)) unsupported.push("tool_cache");
+    if (!Number.isSafeInteger(this.config.maxTokens) || (this.config.maxTokens ?? 0) <= 0)
+      unsupported.push("maxTokens_unbounded");
+    const roundtrips = this.config.maxToolRoundtrips ?? 10;
+    if (!Number.isSafeInteger(roundtrips) || roundtrips < 0) unsupported.push("maxToolRoundtrips_invalid");
+    return { toolNames: [...new Set(tools.map((tool) => tool.name))], unsupported };
   }
 
   private effectiveExecutionPolicy(
@@ -536,7 +589,9 @@ export class Agent {
             },
           ) => ctx.executionServices!.streamModel(createMeteredProvider(this.config.model), messages, options, ctx),
         }
-      : this.config.model;
+      : ctx?.rootExecution
+        ? withRootExecutionProvider(this.config.model, ctx.rootExecution, ctx.runId)
+        : this.config.model;
     return new LLMLoop(provider, executor, {
       maxToolRoundtrips: this.config.maxToolRoundtrips ?? 10,
       temperature: this.config.temperature,
@@ -844,6 +899,7 @@ export class Agent {
       runMode: opts?.runMode,
       executionPolicy: this.effectiveExecutionPolicy(opts?.executionServices?.executionPolicy, opts?.executionPolicy),
       executionServices: opts?.executionServices,
+      rootExecution: opts?.rootExecution,
       externalHistory: opts?.history,
       ephemeral,
       runId: opts?.runId,
@@ -1337,6 +1393,7 @@ export class Agent {
       runMode: opts?.runMode,
       executionPolicy: this.effectiveExecutionPolicy(opts?.executionServices?.executionPolicy, opts?.executionPolicy),
       executionServices: opts?.executionServices,
+      rootExecution: opts?.rootExecution,
       externalHistory: opts?.history,
       ephemeral,
       runId: opts?.runId,

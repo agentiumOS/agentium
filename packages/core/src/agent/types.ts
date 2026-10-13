@@ -198,6 +198,8 @@ export interface ToolResultLimitConfig {
 }
 
 export interface RunOpts {
+  /** Borrow one admission controller across every nested workflow, Agent and tool. */
+  rootExecution?: import("./root-execution.js").RootExecutionController;
   /** Include normalized public-message lifecycle chunks in stream(). Events and result items are always available. */
   publicMessageEvents?: boolean;
   /** Runtime-owned execution services; trusted hosts only. */

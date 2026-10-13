@@ -1,3 +1,5 @@
+import { RootExecutionError } from "../agent/root-execution.js";
+import { AwaitingDurableApproval, DurableConflictError, DurableRecoveryRequiredError } from "../durable/types.js";
 import { WorkflowCancellationError, WorkflowDefinitionError, WorkflowMergeConflict } from "./errors.js";
 import type { GraphStep, StepDef, StepResult, WorkflowGraphNode } from "./types.js";
 
@@ -203,6 +205,10 @@ function applyPatch<T>(target: T | Partial<T>, patch: Partial<T>): void {
 function fatal(error: unknown): boolean {
   return (
     error instanceof WorkflowCancellationError ||
+    error instanceof RootExecutionError ||
+    error instanceof DurableConflictError ||
+    error instanceof DurableRecoveryRequiredError ||
+    error instanceof AwaitingDurableApproval ||
     error instanceof WorkflowDefinitionError ||
     error instanceof WorkflowMergeConflict
   );

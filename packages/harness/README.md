@@ -6,6 +6,8 @@ Definitions can contribute tools, source context, prompt fragments and ordered m
 
 The [dependability guide](DEPENDABILITY.md) shows three complete paths: an ordinary Agent, the same configuration under harness grants/budgets, and optional evidence continuity with verified completion and evaluation. It also defines resource ownership, source trust, incomplete outcomes, storage migration and recovery limits.
 
+The [execution graph guide](EXECUTION-GRAPHS.md) covers fenced graph recovery, shared root admission, approved tool-DAG planning and pending-only streamed revisions.
+
 ## Build and use
 
 Install matching versions of `@agentium/core` and `@agentium/harness`, plus your chosen provider SDK. This package has no required browser, queue or provider SDK dependency. ESM and CommonJS exports expose the same API. In this workspace:

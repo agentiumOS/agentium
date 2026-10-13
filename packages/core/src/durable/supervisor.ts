@@ -24,6 +24,11 @@ export type DurableTaskHandler = (
   context: DurableExecutionContext,
   // biome-ignore lint/suspicious/noConfusingVoidType: host handlers may intentionally return no result.
 ) => Promise<{ state?: "completed" | "stopped"; resultRef?: string } | void>;
+export interface DurableTaskRunOptions {
+  /** Reconcile interrupted effects under the claimed lease before handler
+   * admission or cancellation acknowledgement. Never bypasses unknown outcomes. */
+  reconcile?: (context: DurableExecutionContext) => Promise<void>;
+}
 /** Leases fence local commits, not requests already sent to external connectors. */
 export class DurableTaskSupervisor {
   readonly leaseMs: number;
@@ -121,8 +126,13 @@ export class DurableTaskSupervisor {
       lease,
     );
   }
-  async run(key: DurableTaskKey, workerId: string, execute: DurableTaskHandler): Promise<DurableTaskRecord> {
-    const task = await this.claim(key, workerId);
+  async run(
+    key: DurableTaskKey,
+    workerId: string,
+    execute: DurableTaskHandler,
+    options: DurableTaskRunOptions = {},
+  ): Promise<DurableTaskRecord> {
+    let task = await this.claim(key, workerId);
     if (!task) {
       const current = await this.get(key);
       if (!current) throw new DurableConflictError("Task not found");
@@ -152,34 +162,62 @@ export class DurableTaskSupervisor {
           this.options.pollMs ?? Math.max(1, Math.floor(this.leaseMs / 3)),
         );
     };
-    try {
-      if (Object.values(task.actions).some((a) => a.state === "unknown")) throw new DurableRecoveryRequiredError();
-      if (task.state === "cancel_requested") return await this.acknowledgeCancellation(key, lease);
+    const context: DurableExecutionContext = {
+      task,
+      lease,
+      signal: controller.signal,
+      actions,
+      reserve: async (tokens, costMicros) => {
+        durableInteger(tokens);
+        durableInteger(costMicros);
+        await this.store.update(
+          key,
+          (draft) => {
+            if (draft.state !== "running") throw new DurableConflictError("Task is not running");
+            draft.reservedTokens += tokens;
+            draft.reservedCostMicros += costMicros;
+          },
+          lease,
+        );
+      },
+    };
+    const startPolling = () => {
       timer = setTimeout(
         () => {
           polling = poll();
         },
         this.options.pollMs ?? Math.max(1, Math.floor(this.leaseMs / 3)),
       );
-      const result = await execute({
-        task,
-        lease,
-        signal: controller.signal,
-        actions,
-        reserve: async (tokens, costMicros) => {
-          durableInteger(tokens);
-          durableInteger(costMicros);
-          await this.store.update(
-            key,
-            (draft) => {
-              if (draft.state !== "running") throw new DurableConflictError("Task is not running");
-              draft.reservedTokens += tokens;
-              draft.reservedCostMicros += costMicros;
-            },
-            lease,
-          );
-        },
-      });
+    };
+    try {
+      if (options.reconcile) {
+        startPolling();
+        await options.reconcile(context);
+        await actions.quiesce();
+        if (lostLease) throw new DurableLeaseError();
+        const current = await this.get(key);
+        if (!current) throw new DurableConflictError("Task not found after reconciliation");
+        task = current;
+        context.task = current;
+      }
+      if (Object.values(task.actions).some((a) => a.state === "unknown" || a.state === "executing"))
+        throw new DurableRecoveryRequiredError();
+      if (task.state === "cancel_requested") return await this.acknowledgeCancellation(key, lease);
+      // An exhausted claim is admitted only to reconcile uncertain effects.
+      // Resolving them cannot grant another unrecorded execution attempt.
+      if (task.attempts.length >= task.budget.maxAttempts && task.attempts.at(-1)?.fence !== lease.fence) {
+        return await this.store.update(
+          key,
+          (draft) => {
+            if (draft.state !== "running") throw new DurableConflictError("Task cannot stop from its current state");
+            draft.state = "stopped";
+            delete draft.lease;
+          },
+          lease,
+        );
+      }
+      if (!timer) startPolling();
+      const result = await execute(context);
       await actions.quiesce();
       if (lostLease) throw new DurableLeaseError();
       const current = await this.get(key);

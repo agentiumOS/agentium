@@ -1,5 +1,7 @@
+import { RootExecutionError } from "../agent/root-execution.js";
 import { RunContext } from "../agent/run-context.js";
 import type { RunOpts } from "../agent/types.js";
+import { AwaitingDurableApproval, DurableConflictError, DurableRecoveryRequiredError } from "../durable/types.js";
 import { abortable } from "../models/request-controls.js";
 import { WorkflowCancellationError, WorkflowDefinitionError, WorkflowMergeConflict } from "./errors.js";
 import { executeWorkflowGraph, validateWorkflowSteps } from "./graph-runner.js";
@@ -22,6 +24,10 @@ interface StepExecution<TState> {
 
 function fatal(error: unknown): boolean {
   return (
+    error instanceof RootExecutionError ||
+    error instanceof DurableConflictError ||
+    error instanceof DurableRecoveryRequiredError ||
+    error instanceof AwaitingDurableApproval ||
     error instanceof WorkflowMergeConflict ||
     error instanceof WorkflowCancellationError ||
     error instanceof WorkflowDefinitionError
@@ -57,18 +63,32 @@ export class StepRunner<TState extends Record<string, unknown>> {
     opts?: RunOpts,
     scope?: string,
     depth = 0,
+    expansionScope = `workflow:${typeof ctx.metadata.rootRunId === "string" ? ctx.metadata.rootRunId : ctx.runId}`,
   ): Promise<StepExecution<TState>> {
+    if (ctx.rootExecution) validateWorkflowSteps(steps);
+    const offset =
+      depth === 0 &&
+      Number.isSafeInteger(ctx.metadata.workflowStepOffset) &&
+      typeof ctx.metadata.workflowStepOffset === "number" &&
+      ctx.metadata.workflowStepOffset >= 0
+        ? ctx.metadata.workflowStepOffset
+        : 0;
+    const expansionIds = steps.map(
+      (step, index) =>
+        `${expansionScope}/steps/${index + offset}/${ctx.rootExecution ? encodeURIComponent(step.name) : step.name}`,
+    );
+    await ctx.rootExecution?.expand(expansionIds);
     let currentState = { ...state };
     const patch: Partial<TState> = {};
     const results: StepResult[] = [];
     let stopped = false;
-    for (const step of steps) {
+    for (const [index, step] of steps.entries()) {
       ctx.signal?.throwIfAborted();
       if (stopped) {
         results.push({ stepName: step.name, status: "skipped", durationMs: 0 });
         continue;
       }
-      const outcome = await this.executeStepWithPatch(step, currentState, ctx, opts, scope, depth);
+      const outcome = await this.executeStepWithPatch(step, currentState, ctx, opts, scope, depth, expansionIds[index]);
       currentState = outcome.state;
       Object.assign(patch, outcome.patch);
       results.push(...outcome.results);
@@ -94,6 +114,7 @@ export class StepRunner<TState extends Record<string, unknown>> {
     opts?: RunOpts,
     scope?: string,
     depth = 0,
+    expansionId?: string,
   ): Promise<StepExecution<TState>> {
     ctx.signal?.throwIfAborted();
     if ("graph" in step || "repeat" in step) validateWorkflowSteps([step]);
@@ -105,15 +126,20 @@ export class StepRunner<TState extends Record<string, unknown>> {
           : undefined;
     if (path !== undefined && depth >= 64)
       throw new WorkflowDefinitionError("Workflow graph/repeat composition exceeds depth 64");
+    const identity = expansionId ?? `workflow:${ctx.runId}/${path ?? step.name}`;
+    await ctx.rootExecution?.expand([identity]);
     const start = Date.now();
     this.emit(ctx, step.name, "start", path);
     try {
       let outcome: StepExecution<TState>;
-      if ("graph" in step) outcome = await this.executeGraphStep(step, state, ctx, opts, path ?? step.name, depth);
+      if ("graph" in step)
+        outcome = await this.executeGraphStep(step, state, ctx, opts, path ?? step.name, depth, identity);
       else if ("repeat" in step)
-        outcome = await this.executeRepeatStep(step, state, ctx, opts, path ?? step.name, depth);
-      else if ("condition" in step) outcome = await this.executeConditionStep(step, state, ctx, opts, path, depth);
-      else if ("parallel" in step) outcome = await this.executeParallelStep(step, state, ctx, opts, path, depth);
+        outcome = await this.executeRepeatStep(step, state, ctx, opts, path ?? step.name, depth, identity);
+      else if ("condition" in step)
+        outcome = await this.executeConditionStep(step, state, ctx, opts, path, depth, identity);
+      else if ("parallel" in step)
+        outcome = await this.executeParallelStep(step, state, ctx, opts, path, depth, identity);
       else if ("agent" in step)
         outcome = await this.withRetry(() => this.executeAgentStep(step, state, ctx, opts, path), ctx);
       else outcome = await this.withRetry(() => this.executeFunctionStep(step, state, ctx, path), ctx);
@@ -169,6 +195,7 @@ export class StepRunner<TState extends Record<string, unknown>> {
       signal: ctx.signal,
       runMode: ctx.runMode,
       executionServices: ctx.executionServices,
+      rootExecution: ctx.rootExecution,
       executionPolicy: opts?.executionPolicy,
       apiKey: opts?.apiKey,
       dependencies: opts?.dependencies,
@@ -213,7 +240,14 @@ export class StepRunner<TState extends Record<string, unknown>> {
       ? await ctx.executionServices.dispatchEffect(`workflow:${executionPath ?? step.name}`, { state }, async (args) =>
           step.run(args.state as TState, scopedContext),
         )
-      : await step.run(state, scopedContext);
+      : ctx.rootExecution
+        ? await ctx.rootExecution.run(
+            "function",
+            `workflow:${executionPath ?? step.name}`,
+            () => step.run(state, scopedContext),
+            ctx.signal,
+          )
+        : await step.run(state, scopedContext);
     ctx.signal?.throwIfAborted();
     const patch = this.ownedPatch(value);
     return { state: { ...state, ...patch }, patch, results: [{ stepName: step.name, status: "done", durationMs: 0 }] };
@@ -226,10 +260,11 @@ export class StepRunner<TState extends Record<string, unknown>> {
     opts?: RunOpts,
     scope?: string,
     depth = 0,
+    expansionScope?: string,
   ): Promise<StepExecution<TState>> {
     if (!step.condition(state))
       return { state, patch: {}, results: [{ stepName: step.name, status: "skipped", durationMs: 0 }] };
-    const outcome = await this.executeStepsWithPatch(step.steps, state, ctx, opts, scope, depth + 1);
+    const outcome = await this.executeStepsWithPatch(step.steps, state, ctx, opts, scope, depth + 1, expansionScope);
     const failed = outcome.results.some((result) => result.status === "error");
     return {
       ...outcome,
@@ -244,9 +279,17 @@ export class StepRunner<TState extends Record<string, unknown>> {
     opts?: RunOpts,
     scope?: string,
     depth = 0,
+    expansionScope?: string,
   ): Promise<StepExecution<TState>> {
+    const expansionIds = step.parallel.map(
+      (branch, index) =>
+        `${expansionScope}/parallel/${index}/${ctx.rootExecution ? encodeURIComponent(branch.name) : branch.name}`,
+    );
+    await ctx.rootExecution?.expand(expansionIds);
     const settled = await Promise.allSettled(
-      step.parallel.map((branch) => this.executeStepWithPatch(branch, { ...state }, ctx, opts, scope, depth + 1)),
+      step.parallel.map((branch, index) =>
+        this.executeStepWithPatch(branch, { ...state }, ctx, opts, scope, depth + 1, expansionIds[index]),
+      ),
     );
     ctx.signal?.throwIfAborted();
     for (const outcome of settled) {
@@ -289,13 +332,40 @@ export class StepRunner<TState extends Record<string, unknown>> {
     opts: RunOpts | undefined,
     scope: string,
     depth: number,
+    expansionScope: string,
   ): Promise<StepExecution<TState>> {
+    let materializedStep = step;
+    if (ctx.rootExecution) {
+      const declaration = { ...step };
+      let factoryInput: TState;
+      try {
+        factoryInput = structuredClone(state);
+      } catch (cause) {
+        throw new WorkflowDefinitionError("Workflow graph entry state must be structured-cloneable", { cause });
+      }
+      const nodes = typeof declaration.graph === "function" ? declaration.graph(factoryInput) : declaration.graph;
+      materializedStep = { ...declaration, graph: nodes };
+      validateWorkflowSteps([materializedStep]);
+      await ctx.rootExecution.expand(
+        nodes.map(
+          (node) => `${expansionScope}/node/${encodeURIComponent(node.id)}/${encodeURIComponent(node.step.name)}`,
+        ),
+      );
+    }
     const outcome = await executeWorkflowGraph(
-      step,
+      materializedStep,
       state,
       ctx.signal,
       (node, input) =>
-        this.executeStepWithPatch(node.step, input, ctx, opts, `${scope}/${encodeURIComponent(node.id)}`, depth + 1),
+        this.executeStepWithPatch(
+          node.step,
+          input,
+          ctx,
+          opts,
+          `${scope}/${encodeURIComponent(node.id)}`,
+          depth + 1,
+          `${expansionScope}/node/${encodeURIComponent(node.id)}/${encodeURIComponent(node.step.name)}`,
+        ),
       scope,
     );
     const failed = outcome.results.some(
@@ -315,6 +385,7 @@ export class StepRunner<TState extends Record<string, unknown>> {
     opts: RunOpts | undefined,
     scope: string,
     depth: number,
+    expansionScope: string,
   ): Promise<StepExecution<TState>> {
     if (
       !Number.isSafeInteger(step.maxIterations) ||
@@ -358,7 +429,15 @@ export class StepRunner<TState extends Record<string, unknown>> {
           results: [{ stepName: step.name, status: "error", error: reason.message, reason, durationMs: 0 }, ...results],
         };
       }
-      const outcome = await this.executeStepsWithPatch(body, current, ctx, opts, `${scope}/${iteration}`, depth + 1);
+      const outcome = await this.executeStepsWithPatch(
+        body,
+        current,
+        ctx,
+        opts,
+        `${scope}/${iteration}`,
+        depth + 1,
+        `${expansionScope}/iteration/${iteration}`,
+      );
       current = outcome.state;
       Object.assign(patch, outcome.patch);
       results.push(...outcome.results);

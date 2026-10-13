@@ -13,6 +13,6 @@ export {
   InMemoryDurableTaskStore,
   isDurableTerminal,
 } from "./store.js";
-export type { DurableExecutionContext, DurableTaskHandler } from "./supervisor.js";
+export type { DurableExecutionContext, DurableTaskHandler, DurableTaskRunOptions } from "./supervisor.js";
 export { DurableTaskSupervisor } from "./supervisor.js";
 export * from "./types.js";

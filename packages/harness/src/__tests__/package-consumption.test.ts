@@ -96,7 +96,10 @@ it.skipIf(!enabled).each([false, true])(
         ],
         { cwd: fixture, timeout: 60_000 },
       );
-      await assertGuideLinks(join(fixture, "node_modules/@agentium/harness"), "README.md", ["dependability guide"]);
+      await assertGuideLinks(join(fixture, "node_modules/@agentium/harness"), "README.md", [
+        "dependability guide",
+        "execution graph guide",
+      ]);
       await assertGuideLinks(join(fixture, "node_modules/@agentium/harness"), "DEPENDABILITY.md", [
         "indexed fixture",
         "runtime tests",
@@ -143,6 +146,12 @@ it.skipIf(!enabled).each([false, true])(
       }
       if(typeof harness.requestInputTool !== "function" || typeof harness.HarnessInputError !== "function" || typeof core.getCommunicationCapabilities !== "function") throw new Error("Missing conversational exports");
       if(typeof harness.mcpResources !== "function") throw new Error("Missing MCP resource ability");
+      for (const name of ["ExecutionGraphRuntime", "validateExecutionPlan", "graphCatalogDigest", "ExecutionPlanValidationError"]) {
+        if (typeof harness[name] !== "function" || name in core) throw new Error("Graph adapter ownership violation: " + name);
+      }
+      for (const name of ["DurableGraphJournal", "RootExecutionController", "validateRootExecutionCounts"]) {
+        if (typeof core[name] !== "function") throw new Error("Missing graph core boundary: " + name);
+      }
       for (const schema of [z3.object({name:z3.string()}), z4.object({name:z4.string()}), mini.object({name:mini.string()})]) {
         const tool = core.defineTool({name:"echo",description:"echo",parameters:schema,execute:async(args)=>args.name});
         if(core.parseSchema(tool.parameters,{name:"hello"}).name !== "hello") throw new Error("Invalid schema parsing");
@@ -172,6 +181,14 @@ it.skipIf(!enabled).each([false, true])(
       await exec(process.execPath, [join(fixture, "esm.mjs")], { cwd: fixture });
       await exec(process.execPath, [join(fixture, "common.cjs")], { cwd: fixture });
       const offline = `
+        const domain = z4.object({value:z4.string()});
+        const binding = {id:"echo",version:"1",kind:"tool",input:domain,output:z4.string(),recovery:"pure",
+          tool:{name:"echo",description:"echo",parameters:domain,execute:async(args)=>args.value}};
+        const controlled = new harness.ExecutionGraphRuntime({catalog:[binding],program:{id:"packed",version:"1",plan:{schemaVersion:1,revision:1,nodes:[{id:"answer",binding:"echo",version:"1",args:{value:"hello"}}]}},
+          limits:{maxConcurrentWork:1,maxExpandedNodes:1,maxWorkAttempts:1,maxPlanRevisions:1},harness:{grants:{toolIds:["echo"],modelRoles:[]},budgets:{maxToolCalls:1,maxModelCalls:0}}});
+        await controlled.create({id:"task",input:{},identity:{tenantId:"fixture",actorId:"fixture",sessionId:"packed",runId:"run",rootRunId:"run"}});
+        const recovered = await controlled.run({tenantId:"fixture",taskId:"task"},"worker");
+        if(controlled.capabilities.durable || recovered.task.state!=="completed" || recovered.output.answer!=="hello" || recovered.graph.budget.usedTools!==1 || recovered.graph.admission.workAttempts!==1) throw new Error("Packed controlled graph failed");
         const graphWorkflow = new core.Workflow({name:"packed-graph",register:false,initialState:{left:0,right:0,total:0,checked:false},steps:[{
           name:"repair",maxIterations:1,while:state=>!state.checked,repeat:[{
             name:"calculate",maxConcurrency:2,graph:()=>[
@@ -198,11 +215,11 @@ it.skipIf(!enabled).each([false, true])(
       `;
       await writeFile(
         join(fixture, "offline.mjs"),
-        `import * as core from "@agentium/core"; import * as harness from "@agentium/harness"; import * as testing from "@agentium/harness/testing"; ${withEval ? 'import * as evaluation from "@agentium/eval";' : ""} ${offline}`,
+        `import * as z4 from "zod"; import * as core from "@agentium/core"; import * as harness from "@agentium/harness"; import * as testing from "@agentium/harness/testing"; ${withEval ? 'import * as evaluation from "@agentium/eval";' : ""} ${offline}`,
       );
       await writeFile(
         join(fixture, "offline.cjs"),
-        `const core = require("@agentium/core"); const harness = require("@agentium/harness"); const testing = require("@agentium/harness/testing"); ${withEval ? 'const evaluation = require("@agentium/eval");' : ""} (async()=>{${offline}})().catch(error=>{console.error(error);process.exitCode=1;});`,
+        `const z4 = require("zod"); const core = require("@agentium/core"); const harness = require("@agentium/harness"); const testing = require("@agentium/harness/testing"); ${withEval ? 'const evaluation = require("@agentium/eval");' : ""} (async()=>{${offline}})().catch(error=>{console.error(error);process.exitCode=1;});`,
       );
       await exec(process.execPath, [join(fixture, "offline.mjs")], { cwd: fixture });
       await exec(process.execPath, [join(fixture, "offline.cjs")], { cwd: fixture });
@@ -218,6 +235,13 @@ it.skipIf(!enabled).each([false, true])(
 
       import { Workflow, WorkflowDefinitionError, type GraphStep, type WorkflowGraphNode, type RepeatStep, type StepDef, type StepResult } from "@agentium/core";
       import { workflowDriver } from "@agentium/harness";
+      import { ExecutionGraphRuntime, type ExecutionGraphProgram, type ExecutionGraphLimits, type GraphToolBinding, type PlanCommitFrame, type HarnessBudgetState } from "@agentium/harness";
+      import { RootExecutionController, type DurableGraphState, type RootExecutionLimits } from "@agentium/core";
+      const controlledLimits: ExecutionGraphLimits = {maxConcurrentWork:1,maxExpandedNodes:2,maxWorkAttempts:3,maxPlanRevisions:2};
+      const controller = new RootExecutionController(controlledLimits as RootExecutionLimits);
+      const program: ExecutionGraphProgram = {id:"public",version:"1",plan:{schemaVersion:1,revision:1,nodes:[]}};
+      const frame: PlanCommitFrame = {baseRevision:0,plan:program.plan!};
+      new ExecutionGraphRuntime({program,catalog:[],limits:controlledLimits,harness:{grants:{toolIds:[],modelRoles:[]}}});
       type GraphState = {count:number};
       const node: WorkflowGraphNode<GraphState> = {id:"a",step:{name:"produce",run:async state=>({count:state.count+1})}};
       const graph: GraphStep<GraphState> = {name:"episode",graph:()=>[node],maxConcurrency:2,merge:"error"};

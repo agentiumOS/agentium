@@ -168,6 +168,7 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
       userId: opts?.userId,
       tenantId: opts?.tenantId,
       signal: opts?.signal,
+      rootExecution: opts?.rootExecution ?? opts?.executionServices?.rootExecution,
       runMode: opts?.runMode,
       executionPolicy: opts?.executionPolicy ?? opts?.executionServices?.executionPolicy,
       executionServices: opts?.executionServices,
@@ -287,7 +288,12 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
         continue;
       }
       const outcome = await this.runInAccountingScope(ctx, () =>
-        this.stepRunner.executeSteps([step], state, ctx, opts),
+        this.stepRunner.executeSteps(
+          [step],
+          state,
+          ctx.rootExecution ? new RunContext({ ...ctx, metadata: { ...ctx.metadata, workflowStepOffset: i } }) : ctx,
+          opts,
+        ),
       );
       ctx.signal?.throwIfAborted();
       state = outcome.state;

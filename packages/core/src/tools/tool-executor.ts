@@ -1,5 +1,7 @@
 import { serialize } from "node:v8";
+import { RootExecutionError } from "../agent/root-execution.js";
 import type { RunContext } from "../agent/run-context.js";
+import { AwaitingDurableApproval, DurableConflictError, DurableRecoveryRequiredError } from "../durable/types.js";
 import { clearHandoffControl, getHandoffControl, setHandoffControl } from "../handoff/control.js";
 import { HandoffSignal } from "../handoff/types.js";
 import type { ToolCall } from "../models/types.js";
@@ -188,7 +190,13 @@ export class ToolExecutor {
           results.push(settled.value);
         } else {
           // Bubble fatal "stop the run" errors up to the agent loop.
-          if (settled.reason instanceof ToolLoopError) {
+          if (
+            settled.reason instanceof ToolLoopError ||
+            settled.reason instanceof RootExecutionError ||
+            settled.reason instanceof DurableConflictError ||
+            settled.reason instanceof DurableRecoveryRequiredError ||
+            settled.reason instanceof AwaitingDurableApproval
+          ) {
             throw settled.reason;
           }
           results.push({
@@ -355,12 +363,20 @@ export class ToolExecutor {
     let rawResult: string | ToolResult;
 
     try {
-      if (sandboxConfig) {
-        const sandbox = new Sandbox(sandboxConfig);
-        rawResult = await sandbox.execute(tool.execute, parsed.data, ctx);
-      } else {
-        rawResult = await tool.execute(parsed.data, ctx);
-      }
+      const execute = async () => {
+        if (sandboxConfig) {
+          const sandbox = new Sandbox(sandboxConfig);
+          return sandbox.execute(tool.execute, parsed.data, ctx);
+        }
+        return tool.execute(parsed.data, ctx);
+      };
+      const dispatch = () =>
+        ctx.rootExecution
+          ? ctx.rootExecution.run("tool", `${ctx.runId}/tool/${toolCall.id}`, execute, ctx.signal)
+          : execute();
+      rawResult = ctx.executionServices?.invokeTool
+        ? await ctx.executionServices.invokeTool(tool, toolCall, args, ctx, dispatch)
+        : await dispatch();
     } catch (error) {
       if (!(error instanceof HandoffSignal)) throw error;
       if (ctx.signal?.aborted) return reject("Run cancelled", "cancelled");
