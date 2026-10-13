@@ -16,6 +16,10 @@ The CI workflow can also be dispatched with an immutable candidate commit and ar
 
 Before uploading any package, reconcile all requested registry versions. A version is missing only after a registry 404. Skip an existing version only when its registry evidence and served bytes match the retained artifact. Stop on differing bytes or unknown network outcomes. After an upload succeeds, fails or times out, reconcile the registry again before proceeding. Retain per-package outcomes; do not create a replacement version to hide an uncertain upload.
 
+An accepted upload can precede registry visibility. Publication tooling waits up to three minutes on a monotonic deadline after the single upload, polling only missing registry reads. Metadata and tarball reads use the remaining deadline. Mismatches and unknown registry responses stop immediately; visibility expiry retains the unresolved outcome. This wait never repeats an upload.
+
+Manual recovery can execute the trusted workflow revision's publication tooling against a separate checkout of the immutable release tag. The full verification matrix and retained artifacts still identify that release source, and the tooling tests run before publication. This permits a publication-tool correction without moving an existing tag or rebuilding already verified package bytes.
+
 Publication and channel/release creation are separate steps. A manual workflow retry must use the same release identity. The current candidate has no production launch or live-model quality claim. The application still owns destination reconciliation, authenticated scope, host executable versions, persistent-store operation and cooperative cancellation.
 
 For a failed publication, rerun the full workflow so the verification jobs retain artifacts for the new run attempt. Retrying only the failed publish job cannot use an earlier attempt's artifact and stops without uploading. If rebuilding produces different bytes for any already published package, registry reconciliation stops the release; investigate the mismatch instead of bypassing it.

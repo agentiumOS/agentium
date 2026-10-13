@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { arch, platform } from "node:os";
 import { basename, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -355,8 +357,8 @@ function npmErrorCode(error) {
   return undefined;
 }
 
-async function downloadTarball(url, size) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(30_000), redirect: "error" });
+async function downloadTarball(url, size, timeoutMs = 30_000) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(Math.ceil(timeoutMs)), redirect: "error" });
   assert.ok(response.ok && response.body, "Registry tarball retrieval failed");
   const reader = response.body.getReader();
   const chunks = [];
@@ -376,22 +378,26 @@ async function downloadTarball(url, size) {
   }
 }
 
-async function registryState(root, execute, entry, download) {
+async function registryState(root, execute, entry, download, remainingMs = () => Infinity) {
   try {
-    const output = await run(execute, root, "npm", [
-      "view",
-      `${entry.name}@${entry.version}`,
-      "dist",
-      "--json",
-      `--registry=${registry}`,
-    ]);
+    const lookupTimeoutMs = Math.ceil(Math.min(60_000, remainingMs()));
+    if (lookupTimeoutMs <= 0) return { status: "unknown", reason: "registry_unavailable" };
+    const output = await run(
+      execute,
+      root,
+      "npm",
+      ["view", `${entry.name}@${entry.version}`, "dist", "--json", `--registry=${registry}`],
+      lookupTimeoutMs,
+    );
     const dist = JSON.parse(output.stdout);
     if (typeof dist?.integrity !== "string") return { status: "unknown", reason: "registry_integrity_unavailable" };
     if (dist.integrity !== entry.integrity) return { status: "failed", reason: "integrity_mismatch" };
     const url = new URL(dist.tarball);
     if (url.origin !== registry || url.username || url.password)
       return { status: "unknown", reason: "registry_tarball_unavailable" };
-    const bytes = await download(url.href, entry.size);
+    const downloadTimeoutMs = Math.ceil(Math.min(30_000, remainingMs()));
+    if (downloadTimeoutMs <= 0) return { status: "unknown", reason: "registry_unavailable" };
+    const bytes = await download(url.href, entry.size, downloadTimeoutMs);
     return bytes.length === entry.size &&
       hash(bytes) === entry.sha256 &&
       `sha512-${hash(bytes, "sha512", "base64")}` === entry.integrity
@@ -406,7 +412,20 @@ async function registryState(root, execute, entry, download) {
 }
 
 export async function publishRelease(options) {
-  const { root = process.cwd(), execute = exec, download = downloadTarball } = options;
+  const {
+    root = process.cwd(),
+    execute = exec,
+    download = downloadTarball,
+    reconciliationTimeoutMs = 180_000,
+    reconciliationIntervalMs = 2_000,
+    now = () => performance.now(),
+    wait = delay,
+  } = options;
+  assert.ok(Number.isFinite(reconciliationTimeoutMs) && reconciliationTimeoutMs >= 0, "Invalid reconciliation timeout");
+  assert.ok(
+    Number.isFinite(reconciliationIntervalMs) && reconciliationIntervalMs > 0,
+    "Invalid reconciliation interval",
+  );
   assert.ok(options.ref && options.manifestSha256, "Publication requires the source ref and verified CI manifest hash");
   const { manifest, manifestSha256 } = await verifyRelease(options);
   const directory = resolve(options.directory);
@@ -467,7 +486,27 @@ export async function publishRelease(options) {
     } catch {
       uploadFailed = true;
     }
-    const state = await registryState(root, execute, entry, download);
+    const deadline = now() + reconciliationTimeoutMs;
+    const remainingMs = () => Math.max(0, deadline - now());
+    let state = await registryState(
+      root,
+      execute,
+      entry,
+      download,
+      reconciliationTimeoutMs === 0 ? undefined : remainingMs,
+    );
+    // An accepted upload may precede registry visibility. Poll reads only; never retry the upload here.
+    while (state.status === "missing" && remainingMs() > 0) {
+      outcomes.packages[index] = {
+        ...outcomes.packages[index],
+        status: "unknown",
+        reason: "registry_visibility_pending",
+      };
+      await persist();
+      await wait(Math.min(reconciliationIntervalMs, remainingMs()));
+      if (remainingMs() <= 0) break;
+      state = await registryState(root, execute, entry, download, remainingMs);
+    }
     outcomes.packages[index] = {
       ...outcomes.packages[index],
       ...state,

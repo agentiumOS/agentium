@@ -365,9 +365,194 @@ test("an unconfirmed upload stops with a persisted unknown outcome", async (t) =
       throw new Error("Upload timed out");
     },
   );
-  await assert.rejects(publishRelease({ ...options, manifestSha256, execute }), /unconfirmed/i);
+  await assert.rejects(
+    publishRelease({ ...options, manifestSha256, execute, reconciliationTimeoutMs: 0 }),
+    /unconfirmed/i,
+  );
   assert.equal(uploads, 1);
   const outcomes = JSON.parse(await readFile(join(options.directory, "outcomes.json"), "utf8"));
   assert.equal(outcomes.packages[0].status, "unknown");
   assert.equal(outcomes.packages[0].reason, "publish_unconfirmed");
+});
+
+function reconciliationClock() {
+  let elapsed = 0;
+  const waits = [];
+  return {
+    now: () => elapsed,
+    advance: (duration) => {
+      elapsed += duration;
+    },
+    waits,
+    wait: async (duration) => {
+      waits.push(duration);
+      elapsed += duration;
+    },
+  };
+}
+
+for (const uploadFails of [false, true]) {
+  test(`a ${uploadFails ? "timed-out" : "successful"} upload waits for registry visibility without uploading again`, async (t) => {
+    const { options, manifest, manifestSha256 } = await packedFixture(t);
+    const clock = reconciliationClock();
+    let uploads = 0;
+    let readsAfterUpload = 0;
+    const execute = registryExecutor(
+      options,
+      async (name) => {
+        if (name.startsWith("@agentium/harness@")) return manifest.packages[1].integrity;
+        if (!uploads || ++readsAfterUpload < 3) throw missingVersion();
+        return manifest.packages[0].integrity;
+      },
+      async () => {
+        uploads++;
+        if (uploadFails) throw new Error("Upload response timed out after acceptance");
+        return { stdout: "accepted" };
+      },
+    );
+    const outcomes = await publishRelease({ ...options, manifestSha256, execute, ...clock });
+    assert.equal(uploads, 1);
+    assert.equal(readsAfterUpload, 3);
+    assert.equal(clock.waits.length, 2);
+    assert.ok(outcomes.packages.every((entry) => entry.status === "verified_published"));
+    assert.equal(outcomes.packages[0].action, uploadFails ? "reconciled_after_error" : "published");
+    assert.equal(outcomes.packages[1].action, "already_present");
+    assert.deepEqual(JSON.parse(await readFile(join(options.directory, "outcomes.json"), "utf8")), outcomes);
+  });
+}
+
+test("registry visibility reconciliation expires at its default monotonic deadline without another upload", async (t) => {
+  const { options, manifestSha256 } = await packedFixture(t);
+  const clock = reconciliationClock();
+  let uploads = 0;
+  const execute = registryExecutor(
+    options,
+    async () => {
+      throw missingVersion();
+    },
+    async () => {
+      uploads++;
+      return { stdout: "accepted" };
+    },
+  );
+  await assert.rejects(
+    publishRelease({ ...options, manifestSha256, execute, ...clock, reconciliationIntervalMs: 70_000 }),
+    /publication_missing/i,
+  );
+  assert.equal(uploads, 1);
+  assert.deepEqual(clock.waits, [70_000, 70_000, 40_000]);
+  assert.equal(clock.now(), 180_000);
+  const outcomes = JSON.parse(await readFile(join(options.directory, "outcomes.json"), "utf8"));
+  assert.equal(outcomes.packages[0].status, "failed");
+  assert.equal(outcomes.packages[0].reason, "publication_missing");
+  assert.equal(outcomes.packages[1].status, "missing");
+});
+
+test("an upload with an uncertain response remains unknown when visibility reconciliation expires", async (t) => {
+  const { options, manifestSha256 } = await packedFixture(t);
+  const clock = reconciliationClock();
+  let uploads = 0;
+  const execute = registryExecutor(
+    options,
+    async () => {
+      throw missingVersion();
+    },
+    async () => {
+      uploads++;
+      throw new Error("Upload response timed out");
+    },
+  );
+  await assert.rejects(
+    publishRelease({
+      ...options,
+      manifestSha256,
+      execute,
+      ...clock,
+      reconciliationTimeoutMs: 5,
+      reconciliationIntervalMs: 3,
+    }),
+    /publish_unconfirmed/i,
+  );
+  assert.equal(uploads, 1);
+  assert.deepEqual(clock.waits, [3, 2]);
+  const outcomes = JSON.parse(await readFile(join(options.directory, "outcomes.json"), "utf8"));
+  assert.equal(outcomes.packages[0].status, "unknown");
+  assert.equal(outcomes.packages[0].reason, "publish_unconfirmed");
+});
+
+for (const registryFailure of ["mismatch", "unknown"]) {
+  test(`registry visibility polling halts on ${registryFailure} without retrying upload`, async (t) => {
+    const { options, manifestSha256 } = await packedFixture(t);
+    const clock = reconciliationClock();
+    let uploads = 0;
+    let readsAfterUpload = 0;
+    const execute = registryExecutor(
+      options,
+      async () => {
+        if (!uploads || ++readsAfterUpload < 2) throw missingVersion();
+        if (registryFailure === "unknown") throw new Error("Registry request failed");
+        return "sha512-different";
+      },
+      async () => {
+        uploads++;
+        return { stdout: "accepted" };
+      },
+    );
+    await assert.rejects(
+      publishRelease({ ...options, manifestSha256, execute, ...clock }),
+      registryFailure === "mismatch" ? /integrity_mismatch/i : /registry_unavailable/i,
+    );
+    assert.equal(uploads, 1);
+    assert.equal(readsAfterUpload, 2);
+    assert.equal(clock.waits.length, 1);
+    const outcomes = JSON.parse(await readFile(join(options.directory, "outcomes.json"), "utf8"));
+    assert.equal(outcomes.packages[0].status, registryFailure === "mismatch" ? "failed" : "unknown");
+    assert.equal(outcomes.packages[1].status, "missing");
+  });
+}
+
+test("registry reads use the remaining reconciliation budget instead of extending the deadline", async (t) => {
+  const { options, manifest, manifestSha256 } = await packedFixture(t);
+  const clock = reconciliationClock();
+  let uploads = 0;
+  let readsAfterUpload = 0;
+  const readTimeouts = [];
+  const downloadTimeouts = [];
+  const registryExecute = registryExecutor(
+    options,
+    async (name) => {
+      if (name.startsWith("@agentium/core@")) return manifest.packages[0].integrity;
+      if (!uploads) throw missingVersion();
+      if (++readsAfterUpload === 1) {
+        clock.advance(300);
+        throw missingVersion();
+      }
+      return manifest.packages[1].integrity;
+    },
+    async () => {
+      uploads++;
+      return { stdout: "accepted" };
+    },
+  );
+  const execute = async (command, args, executionOptions) => {
+    if (command === "npm" && args[0] === "view" && uploads) readTimeouts.push(executionOptions.timeout);
+    return registryExecute(command, args, executionOptions);
+  };
+  const outcomes = await publishRelease({
+    ...options,
+    manifestSha256,
+    execute,
+    ...clock,
+    reconciliationTimeoutMs: 1_000,
+    reconciliationIntervalMs: 500,
+    download: async (url, _size, timeoutMs) => {
+      if (uploads) downloadTimeouts.push(timeoutMs);
+      return options.download(url);
+    },
+  });
+  assert.equal(uploads, 1);
+  assert.deepEqual(clock.waits, [500]);
+  assert.deepEqual(readTimeouts, [1_000, 200]);
+  assert.deepEqual(downloadTimeouts, [200]);
+  assert.ok(outcomes.packages.every((entry) => entry.status === "verified_published"));
 });

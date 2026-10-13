@@ -56,16 +56,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.preflight.outputs.sha }}
+          path: release-source
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: publication-tools
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: Test the publication tooling selected by this workflow revision
+        run: node --test "$GITHUB_WORKSPACE/publication-tools/scripts/release-artifacts.test.mjs"
       - uses: actions/download-artifact@v4
         with:
           name: agentium-release-${{ needs.preflight.outputs.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/agentium-release
       - name: Verify and reconcile publication of the exact retained tarballs
-        run: node scripts/release-artifacts.mjs publish --directory "$RUNNER_TEMP/agentium-release" --ref "$RELEASE_REF" --version "$RELEASE_VERSION" --manifest-sha256 "$MANIFEST_SHA256"
+        working-directory: release-source
+        run: node "$GITHUB_WORKSPACE/publication-tools/scripts/release-artifacts.mjs" publish --directory "$RUNNER_TEMP/agentium-release" --ref "$RELEASE_REF" --version "$RELEASE_VERSION" --manifest-sha256 "$MANIFEST_SHA256"
         env:
           RELEASE_REF: ${{ needs.preflight.outputs.sha }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
