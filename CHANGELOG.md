@@ -1,5 +1,10 @@
 # Changelog
 
+## [4.8.3] - 2026-10-12
+
+### Added
+- `EmbeddingGemmaEmbedding` sends native video on Ollama `/api/embed` (`input.video`) instead of rejecting it. Optional `video` processing (`maxFrames`, `fps`, `overflowStrategy`, `addTimestamps`) is forwarded as `processing_kwargs`. Do not pre-sample frames into images.
+
 ## [4.8.2] - 2026-10-10
 
 ### Fixed

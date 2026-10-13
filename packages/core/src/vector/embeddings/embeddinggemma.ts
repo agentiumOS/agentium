@@ -40,6 +40,22 @@ export interface EmbeddingGemmaEmbeddingConfig {
   queryPrompt?: string;
   /** Inputs per HTTP request. Default 32. */
   batchSize?: number;
+  /**
+   * Passed through when a request includes video. The model decodes the video
+   * itself. Omit this to use the server defaults (often 1 FPS through the vision encoder).
+   */
+  video?: EmbeddingGemmaVideoProcessing;
+}
+
+/** Frame sampling for native video. Matches EmbeddingGemma 2 `processing_kwargs.video`. */
+export interface EmbeddingGemmaVideoProcessing {
+  /** Maximum frames to keep. Server default is often 32. */
+  maxFrames?: number;
+  /** Frames per second. `null` keeps all frames up to `maxFrames`. */
+  fps?: number | null;
+  overflowStrategy?: "uniform" | "truncate";
+  /** Insert frame timestamps into the multimodal sequence. */
+  addTimestamps?: boolean;
 }
 
 const NATIVE_DIMENSIONS = 768;
@@ -64,7 +80,7 @@ const TASKS: Record<EmbeddingGemmaTask, { query: string; document: string }> = {
  * Local EmbeddingGemma 2 embeddings for text, code, images, audio, and video.
  * The model runs in Ollama or an OpenAI-compatible server (vLLM, llama.cpp, LM Studio).
  * This class does not call the Gemini API and does not load weights in-process.
- * Ollama's embed API accepts text, images, and audio. Video requires the OpenAI-compatible backend.
+ * Ollama `/api/embed` accepts a native video payload (`input.video`). Do not pre-sample frames.
  */
 export class EmbeddingGemmaEmbedding implements EmbeddingProvider {
   readonly dimensions: number;
@@ -76,6 +92,7 @@ export class EmbeddingGemmaEmbedding implements EmbeddingProvider {
   private documentPrompt: string;
   private queryPrompt: string;
   private batchSize: number;
+  private videoProcessing?: EmbeddingGemmaVideoProcessing;
   private accounting?: AccountingContext;
 
   constructor(config: EmbeddingGemmaEmbeddingConfig = {}) {
@@ -96,6 +113,7 @@ export class EmbeddingGemmaEmbedding implements EmbeddingProvider {
     if (!Number.isInteger(this.batchSize) || this.batchSize < 1) {
       throw new Error("EmbeddingGemma batchSize must be a positive integer");
     }
+    this.videoProcessing = config.video;
     this.apiKey = config.apiKey;
     this.endpoint =
       this.backend === "ollama"
@@ -138,21 +156,28 @@ export class EmbeddingGemmaEmbedding implements EmbeddingProvider {
   }
 
   private async embedOllamaMedia(parts: ContentPart[], prompt: string): Promise<number[]> {
-    if (parts.some((part) => modalityOf(part) === "video")) {
-      throw new Error(
-        'Ollama /api/embed accepts text, images, and audio. It does not accept video. Use backend: "openai" for video.',
-      );
-    }
     const text = applyPrompt(joinText(parts), prompt);
     const images = await mediaBytes(parts, "image");
     const audio = await mediaBytes(parts, "audio");
-    const input: { text?: string; image?: string | string[]; audio?: string | string[] } = {};
+    const videos = await mediaBytes(parts, "video");
+    const input: {
+      text?: string;
+      image?: string | string[];
+      audio?: string | string[];
+      video?: string | string[];
+    } = {};
     if (text) input.text = text;
     const image = oneOrMany(images);
     const sound = oneOrMany(audio);
+    const video = oneOrMany(videos);
     if (image) input.image = image;
     if (sound) input.audio = sound;
-    return this.postOne({ model: this.model, input });
+    if (video) input.video = video;
+    return this.postOne({
+      model: this.model,
+      input,
+      ...processingKwargs(this.videoProcessing, videos.length > 0),
+    });
   }
 
   private async embedOpenAIMedia(parts: ContentPart[], prompt: string): Promise<number[]> {
@@ -180,10 +205,12 @@ export class EmbeddingGemmaEmbedding implements EmbeddingProvider {
         content.push({ type: "video_url" as const, video_url: { url: await mediaUrl(data, mime) } });
       }
     }
+    const hasVideo = parts.some((part) => modalityOf(part) === "video");
     return this.postOne({
       model: this.model,
       messages: [{ role: "user", content }],
       ...(this.dimensions !== NATIVE_DIMENSIONS ? { dimensions: this.dimensions } : {}),
+      ...processingKwargs(this.videoProcessing, hasVideo),
     });
   }
 
@@ -359,7 +386,21 @@ function oneOrMany(values: string[]): string | string[] | undefined {
   return values;
 }
 
-async function mediaBytes(parts: ContentPart[], kind: "image" | "audio"): Promise<string[]> {
+function processingKwargs(
+  video: EmbeddingGemmaVideoProcessing | undefined,
+  hasVideo: boolean,
+): { processing_kwargs?: { video: Record<string, unknown> } } {
+  if (!hasVideo || !video) return {};
+  const kwargs: Record<string, unknown> = {};
+  if (video.maxFrames !== undefined) kwargs.max_frames = video.maxFrames;
+  if (video.fps !== undefined) kwargs.fps = video.fps;
+  if (video.overflowStrategy !== undefined) kwargs.overflow_strategy = video.overflowStrategy;
+  if (video.addTimestamps !== undefined) kwargs.add_timestamps = video.addTimestamps;
+  if (Object.keys(kwargs).length === 0) return {};
+  return { processing_kwargs: { video: kwargs } };
+}
+
+async function mediaBytes(parts: ContentPart[], kind: "image" | "audio" | "video"): Promise<string[]> {
   const selected = parts.filter((part) => modalityOf(part) === kind);
   return Promise.all(selected.map((part) => rawBytes(part.type === "text" ? "" : part.data)));
 }
