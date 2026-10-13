@@ -5,9 +5,48 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Immutable release commit to verify (full 40-character SHA)
+        required: true
+        type: string
+      retain-artifacts:
+        description: Retain the tarballs tested by the complete CI matrix
+        default: true
+        type: boolean
+  workflow_call:
+    inputs:
+      ref:
+        description: Immutable release commit to verify
+        required: true
+        type: string
+      retain-artifacts:
+        default: false
+        type: boolean
+    outputs:
+      manifest-sha256:
+        description: Hash of the retained manifest verified after the entire CI matrix
+        value: ${{ jobs.release-artifacts.outputs.manifest-sha256 }}
+
+permissions:
+  contents: read
 
 jobs:
+  validate-ref:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require an immutable commit when a ref is supplied
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+        run: |
+          if [[ -n "$REQUESTED_REF" && ! "$REQUESTED_REF" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "The requested ref must be a full 40-character commit SHA."
+            exit 1
+          fi
+
   lint-and-test:
+    needs: validate-ref
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -48,6 +87,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Confirm the requested source commit
+        if: inputs.ref != ''
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+        run: test "$(git rev-parse HEAD)" = "$REQUESTED_REF"
 
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -76,16 +123,29 @@ jobs:
         run: npx biome ci .
 
       - name: Verify release metadata
-        run: node --test scripts/release-lock.test.mjs scripts/cjs-declarations.test.mjs
+        run: node --test scripts/release-lock.test.mjs scripts/cjs-declarations.test.mjs scripts/release-artifacts.test.mjs
 
       - name: Run tests, including Redis delivery and MongoDB crash recovery
-        run: npx vitest run
+        run: npx vitest run --maxWorkers=2
         env:
           AGENTIUM_REDIS_TEST: "1"
           AGENTIUM_DURABLE_MONGO_TEST: "1"
           AGENTIUM_COST_POSTGRES_TEST_URL: "postgresql://agentium_test:agentium_test@127.0.0.1:55473/agentium_test"
 
+      - name: Retain final release tarballs
+        if: inputs.retain-artifacts && matrix.node-version == 24
+        run: node scripts/release-artifacts.mjs pack --directory "$RUNNER_TEMP/agentium-release" --ref "$RELEASE_REF"
+        env:
+          RELEASE_REF: ${{ inputs.ref }}
+
+      - name: Verify retained release package consumers and CLI scaffolds
+        if: inputs.retain-artifacts && matrix.node-version == 24
+        run: npm run test:package
+        env:
+          AGENTIUM_RELEASE_ARTIFACT_DIR: ${{ runner.temp }}/agentium-release
+
       - name: Verify packed package consumers and CLI scaffolds
+        if: '!inputs.retain-artifacts || matrix.node-version != 24'
         run: npm run test:package
 
       - name: Install pinned optional sandbox SDK fixture dependencies
@@ -106,3 +166,36 @@ jobs:
       - name: Verify host OpenTelemetry SDK and independent OTLP decoding
         if: matrix.node-version == 24
         run: AGENTIUM_OTEL_SDK_FIXTURE="$RUNNER_TEMP/agentium-otel-fixture" AGENTIUM_OTEL_PROTO_PYTHON="$RUNNER_TEMP/agentium-otel-proto-fixture/bin/python" npx vitest run packages/observability/src/__tests__/otel-sdk.integration.test.ts
+
+      - name: Retain verified release artifacts
+        if: inputs.retain-artifacts && matrix.node-version == 24
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentium-release-${{ inputs.ref }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/agentium-release/manifest.json
+            ${{ runner.temp }}/agentium-release/*.tgz
+          if-no-files-found: error
+
+  release-artifacts:
+    if: inputs.retain-artifacts
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    outputs:
+      manifest-sha256: ${{ steps.verify.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentium-release-${{ inputs.ref }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agentium-release
+      - name: Bind retained artifacts to the complete CI matrix
+        id: verify
+        run: node scripts/release-artifacts.mjs verify --directory "$RUNNER_TEMP/agentium-release" --ref "$RELEASE_REF"
+        env:
+          RELEASE_REF: ${{ inputs.ref }}

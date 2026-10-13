@@ -12,6 +12,8 @@ Agentium is a TypeScript-native agent orchestration framework with zero dependen
 
 > Install from npm: [`@agentium/core`](https://www.npmjs.com/package/@agentium/core) · full docs at [docs.agentium.in](https://docs.agentium.in)
 
+This checkout prepares **4.9.0** after 4.8.3. The local version and verification results do not establish npm publication. Build matching packages from this checkout to test the candidate; see the [changelog](CHANGELOG.md) for its release scope.
+
 ## Features
 
 - **Model-agnostic** — swap between OpenAI, Anthropic, Google Gemini, Ollama, or any OpenAI-compatible API with one line
@@ -20,7 +22,9 @@ Agentium is a TypeScript-native agent orchestration framework with zero dependen
 - **Sessions & Memory** — session history, standing MEMORY.md notes, long-term summaries, vector learnings
 - **Knowledge Base** — vector + BM25 hybrid search with reciprocal rank fusion
 - **Teams** — multi-agent coordination with coordinate, route, broadcast, and collaborate modes
-- **Workflows** — deterministic step execution with typed state, conditions, parallel steps, retry policies
+- **Workflows** — typed state, dependency graphs, stable joins, conditions, parallel steps and bounded repeats. [Checkpoint continuation](packages/core/src/workflow/README.md) validates completed boundaries and definition versions.
+- **Recoverable execution graphs** — opt-in [versioned host catalogs and JSON plans](packages/harness/EXECUTION-GRAPHS.md), fenced node recovery, shared root limits, bounded model planning and streamed pending revisions. Hosts own persistent stores, executable versions and external-effect reconciliation.
+- **Evidence and completion** — optional [scoped recall, archival task summaries and current-evidence verification](packages/harness/DEPENDABILITY.md), using host-owned memory adapters and the existing Agent loop.
 - **Toolkit Catalog** — 30+ built-in toolkits from `@agentium/core/toolkits`, with dynamic credential management via Admin API
 - **Edge & IoT** — Raspberry Pi support with GPIO, I2C sensors, camera, BLE, Ollama local LLM
 - **Transport** — Express REST + SSE streaming + Socket.IO real-time + Voice gateway

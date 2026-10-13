@@ -237,7 +237,7 @@ Streaming usage is saved before transport close. Changed cumulative snapshots re
 
 An accounting write failure after a successful provider call emits `accounting.error`. It does not retry the provider. `flush()` retries the accounting write with the original identity. `usage.recorded`, `cost.assessed`, and `budget.checked` expose canonical status. The legacy `cost.tracked` event remains a replacement run total. Do not add its value to `cost.assessed` amounts.
 
-Legacy synchronous `checkBudget(runId)`, `checkInProgressBudget`, `isBudgetExceeded` and `estimateRemaining` reject with `IncompleteCostError` when canonical usage is incomplete or the local display window has been evicted. They cannot infer a complete ledger from partial display history. Use canonical budget checks and `queryCosts()` for durable accounting decisions.
+Legacy synchronous `checkBudget(runId)`, `checkInProgressBudget`, `isBudgetExceeded` and `estimateRemaining` reject with `IncompleteCostError` after canonical accounting has been used, including when the observed usage is complete. They also reject when their local display window has been evicted. Use asynchronous canonical budget checks and `queryCosts()` for durable accounting decisions.
 
 ### Paid operations beyond chat
 

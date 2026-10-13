@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { expect, it } from "vitest";
@@ -18,6 +19,24 @@ const exec: typeof run = (async (...args: Parameters<typeof run>) => {
 }) as typeof run;
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const packages = ["core", "harness", "transport", "queue", "browser", "eval", "observability", "admin", "edge", "cli"];
+
+async function retainedArtifact(metadata: { name: string; version: string }): Promise<string | undefined> {
+  const directory = process.env.AGENTIUM_RELEASE_ARTIFACT_DIR;
+  if (!directory) return undefined;
+  const manifest: { packages: { name: string; version: string; filename: string; sha256: string }[] } = JSON.parse(
+    await readFile(join(directory, "manifest.json"), "utf8"),
+  );
+  const entry = manifest.packages.find((entry) => entry.name === metadata.name);
+  if (!entry || entry.version !== metadata.version || basename(entry.filename) !== entry.filename)
+    throw new Error(`Retained release artifact identity mismatch: ${metadata.name}`);
+  const path = resolve(directory, entry.filename);
+  expect(
+    createHash("sha256")
+      .update(await readFile(path))
+      .digest("hex"),
+  ).toBe(entry.sha256);
+  return path;
+}
 
 it.skipIf(process.env.AGENTIUM_TEST_PACKAGES !== "1")(
   "consumes all packed packages and compiles every CLI scaffold without optional SDKs",
@@ -39,6 +58,11 @@ it.skipIf(process.env.AGENTIUM_TEST_PACKAGES !== "1")(
             ? dirname(createRequire(join(root, "packages/cli/package.json")).resolve("commander"))
             : join(root, relative);
         const metadata = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
+        const retained = relative.startsWith("packages/") ? await retainedArtifact(metadata) : undefined;
+        if (retained) {
+          dependencies[metadata.name] = `file:${retained}`;
+          continue;
+        }
         if (relative.startsWith("packages/") && !relative.includes("node_modules"))
           await access(join(directory, "dist/index.js"));
         const packed = await exec(

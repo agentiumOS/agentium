@@ -4,118 +4,85 @@ on:
   push:
     tags:
       - "v*"
-  # Allow manually re-firing this workflow (e.g. when GitHub silently
-  # drops the tag-push trigger, as happened for v2.2.0). The input is
-  # the tag name to publish — must already exist on the repo.
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to publish (e.g. v2.2.1). Tag must already exist on the repo.'
+        description: Existing release tag to publish or resume (e.g. v4.9.0)
         required: true
         type: string
 
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Resolve release tag and validate every workspace version
+        id: release
+        run: node scripts/release-artifacts.mjs preflight --tag "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+  verify:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.preflight.outputs.sha }}
+      retain-artifacts: true
+
   publish:
+    needs: [preflight, verify]
     runs-on: ubuntu-latest
     environment: Prod
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
         with:
-          # When triggered manually via workflow_dispatch, check out the
-          # supplied tag. On the normal tag-push trigger, GitHub already
-          # checks out the tag's SHA, so `ref` is empty / ignored.
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Use Node.js 24
-        uses: actions/setup-node@v4
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --legacy-peer-deps --include=optional
-
-      - name: Verify installed native bindings and lock consistency
-        run: |
-          node -e "require('@rolldown/binding-linux-x64-gnu'); console.log('Linux native bindings loaded')"
-          git diff --exit-code -- package-lock.json
-
-      - name: Build packages
-        run: npm run build
-
-      - name: Verify tests and packed public API
-        run: |
-          npm run lint
-          node --test scripts/release-lock.test.mjs scripts/cjs-declarations.test.mjs
-          npm test
-          npm run test:package
-
-      - name: Publish @agentium/core
-        run: npm publish --workspace=packages/core --access public
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentium-release-${{ needs.preflight.outputs.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agentium-release
+      - name: Verify and reconcile publication of the exact retained tarballs
+        run: node scripts/release-artifacts.mjs publish --directory "$RUNNER_TEMP/agentium-release" --ref "$RELEASE_REF" --version "$RELEASE_VERSION" --manifest-sha256 "$MANIFEST_SHA256"
         env:
+          RELEASE_REF: ${{ needs.preflight.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          MANIFEST_SHA256: ${{ needs.verify.outputs.manifest-sha256 }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @agentium/harness
-        run: npm publish --workspace=packages/harness --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @agentium/transport
-        run: npm publish --workspace=packages/transport --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @agentium/queue
-        run: npm publish --workspace=packages/queue --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @agentium/browser
-        run: npm publish --workspace=packages/browser --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @agentium/admin
-        run: npm publish --workspace=packages/admin --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @agentium/edge
-        run: npm publish --workspace=packages/edge --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @agentium/observability
-        run: npm publish --workspace=packages/observability --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @agentium/eval
-        run: npm publish --workspace=packages/eval --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @agentium/cli
-        run: npm publish --workspace=packages/cli --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Extract version from tag
-        id: version
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          echo "TAG=$TAG" >> $GITHUB_OUTPUT
-          echo "VERSION=${TAG#v}" >> $GITHUB_OUTPUT
-
-      - name: Create GitHub Release
+      - name: Retain publication outcomes for safe manual resume
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentium-publication-${{ needs.preflight.outputs.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agentium-release/outcomes.json
+          if-no-files-found: warn
+      - name: Create GitHub Release after every package is verified
         uses: softprops/action-gh-release@v2
         with:
-          name: Agentium v${{ steps.version.outputs.VERSION }}
-          tag_name: ${{ steps.version.outputs.TAG }}
+          name: Agentium v${{ needs.preflight.outputs.version }}
+          tag_name: ${{ needs.preflight.outputs.tag }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,5 +1,6 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import {
   type DurableDocumentCollection,
@@ -97,8 +98,20 @@ async function crash(taskId: string, scenario: FixtureCase, phase: FixturePhase)
   const stale = structuredClone(record.lease);
   worker.child.kill("SIGKILL");
   await worker.exit;
-  // Allow the last server-clock lease renewal to expire before replacement admission.
-  await new Promise((done) => setTimeout(done, 500));
+  // A renewal may commit between the barrier read and SIGKILL. Observe that last
+  // persisted lease against Mongo's clock, which also decides replacement admission.
+  const waitDeadline = performance.now() + 5_000;
+  while (true) {
+    if (performance.now() >= waitDeadline) throw new Error("Killed graph worker lease did not expire within 5s");
+    const latest = await store.get(key(taskId));
+    if (!latest?.lease || latest.lease.workerId !== stale.workerId || latest.lease.fence !== stale.fence)
+      throw new Error("Killed graph worker must retain its original lease until replacement admission");
+    const clock = await client.db(database).command({ hello: 1 }, { timeoutMS: 1_000 });
+    const serverNow = Number(clock.localTime);
+    if (!Number.isFinite(serverNow)) throw new Error("MongoDB fixture server clock unavailable");
+    if (latest.lease.expiresAt <= serverNow) break;
+    await new Promise((done) => setTimeout(done, 25));
+  }
   return { record, stale, pid: worker.message.pid };
 }
 async function recover(taskId: string, scenario: FixtureCase = "single") {

@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { expect, it } from "vitest";
@@ -9,6 +10,24 @@ import { expect, it } from "vitest";
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const enabled = process.env.AGENTIUM_TEST_PACKAGES === "1";
+
+async function retainedArtifact(metadata: { name: string; version: string }): Promise<string | undefined> {
+  const directory = process.env.AGENTIUM_RELEASE_ARTIFACT_DIR;
+  if (!directory) return undefined;
+  const manifest: { packages: { name: string; version: string; filename: string; sha256: string }[] } = JSON.parse(
+    await readFile(join(directory, "manifest.json"), "utf8"),
+  );
+  const entry = manifest.packages.find((entry) => entry.name === metadata.name);
+  if (!entry || entry.version !== metadata.version || basename(entry.filename) !== entry.filename)
+    throw new Error(`Retained release artifact identity mismatch: ${metadata.name}`);
+  const path = resolve(directory, entry.filename);
+  expect(
+    createHash("sha256")
+      .update(await readFile(path))
+      .digest("hex"),
+  ).toBe(entry.sha256);
+  return path;
+}
 
 async function assertGuideLinks(packageDirectory: string, guide: string, labels: string[]) {
   const path = join(packageDirectory, guide);
@@ -59,6 +78,16 @@ it.skipIf(!enabled).each([false, true])(
             ? process.env.AGENTIUM_HARNESS_PACKAGE_DIR
             : join(root, relative);
         const metadata = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
+        // The explicit negative-fixture override must still replace the harness package.
+        const retained =
+          relative.startsWith("packages/") &&
+          !(relative === "packages/harness" && process.env.AGENTIUM_HARNESS_PACKAGE_DIR)
+            ? await retainedArtifact(metadata)
+            : undefined;
+        if (retained) {
+          dependencies[metadata.name] = `file:${retained}`;
+          continue;
+        }
         if (relative.startsWith("packages/")) await access(join(directory, "dist/index.js"));
         const packed = await exec(
           npm,
@@ -383,6 +412,11 @@ it.skipIf(!enabled)(
       ]) {
         const directory = join(root, relative);
         const metadata = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
+        const retained = relative.startsWith("packages/") ? await retainedArtifact(metadata) : undefined;
+        if (retained) {
+          dependencies[metadata.name] = `file:${retained}`;
+          continue;
+        }
         const packed = await exec(
           npm,
           [

@@ -1,5 +1,34 @@
 # Changelog
 
+## [4.9.0] - Release preparation
+
+This entry describes the integrated release candidate after 4.8.3. Package publication and production or live-model validation are separate release gates.
+
+### Added
+- Workflow dependency graphs with incremental readiness, explicit control/data edges, structured-clone input isolation, stable topological joins, strict conflict detection, scoped execution paths, and bounded repeat episodes. Ordinary Workflow checkpoints remain completed top-level boundaries.
+- Opt-in `ExecutionGraphRuntime` in `@agentium/harness`: versioned host executable catalogs, JSON DAG proposals, fenced node/model attempts, retained outputs, Agent decision replay, repeat decisions, and effect intent/receipt reconciliation over the existing durable task store.
+- Shared root execution admission across nested graphs, repeats, Agent tools and planning, with FIFO cancellation/deadline handling and monotonic concurrency, expansion, dispatch-attempt and revision limits retained across recovery.
+- Optional tool-free model DAG planning with bounded validation/corrections and NDJSON revision frames. Only unclaimed pending topology can change; committed fragments never gain execution authority until they form a complete validated plan.
+- Host-owned bounded evidence recall, incremental archival task summaries, source provenance, scope attestation and current-view validation. Recall, summaries and persistent memory remain optional.
+- `verifiedCompletionPolicy()` with a host `CompletionVerifier`, current evidence and bounded `pass`/`fail`/`unknown` decisions; `createHarnessEvalTarget()` connects the actual harness to `@agentium/eval` through the optional testing entrypoint.
+- Explicit `tuple-v1` storage key encodings and borrowed scoped-wrapper ownership; `rememberWithResult()` and truthful owned-memory drain results.
+
+### Fixed
+- Await session commit/release, retain unknown-write evidence without blind retry, preserve incremental log high-water and propagate cancellation through owned work.
+- Preserve provider/reflection/handoff terminal metadata, prevent incomplete cache reuse and double stream usage, and observe all settled members of canceled parallel tool batches.
+- Reject busy/closing/closed Agent admission, wait for owned memory/accounting settlement, and keep failed cleanup retryable without reopening execution.
+- Join only produced Workflow patches, propagate canceled children, expose ordinary step failures, and avoid duplicate controlled effect-budget admission.
+- Validate versioned checkpoint continuation against workflow identity, callable definition version, ordered step names, restored state and absolute cursors.
+- Keep failed evaluation graders distinct from task results, with valid-grade denominators and retained generated output.
+
+### Compatibility and limits
+- Custom `HarnessExecutionServices` implementations/test doubles must add required `observeToolSettlements`, `budget`, `archivedHistory`, `retrieveHistory` and `finishModel`; custom `RunHandle` wrappers must add `budget`. Normal runtime-provided services already implement them.
+- Synchronous `CostTracker` budget helpers reject after canonical accounting is used even when usage is complete. Use asynchronous accounting/budget queries.
+- Existing Agent, Workflow and HarnessRuntime use remains available. Durable graph recovery is opt-in, requires stateless JSON-compatible bindings with host-attested versions, and rejects unsupported mutable/dynamic continuation before dispatch.
+- In-memory task stores advertise `durable: false`; use a verified persistent adapter and `requireDurable: true` for crash recovery. Generic `workflowDriver` still advertises non-durable execution.
+- Budgets/deadlines do not replenish on recovery. Cancellation is cooperative; fencing cannot retract accepted remote work. Unknown effects require destination reconciliation/idempotency or an explicit recovery-required outcome. Exactly-once external execution and remote rollback are not guaranteed.
+- See [dependability](packages/harness/DEPENDABILITY.md), [recoverable execution graphs](packages/harness/EXECUTION-GRAPHS.md), and the [Workflow contract](packages/core/src/workflow/README.md) for supported behavior and host responsibilities.
+
 ## [4.8.3] - 2026-10-12
 
 ### Added
