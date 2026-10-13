@@ -1,3 +1,4 @@
+import { abortable } from "../models/request-controls.js";
 export interface RetryConfig {
   maxRetries: number;
   initialDelayMs: number;
@@ -27,23 +28,37 @@ function isRetryableError(error: unknown): boolean {
   return false;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waiting = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await (signal ? abortable(waiting, signal) : waiting);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-export async function withRetry<T>(fn: () => Promise<T>, config?: Partial<RetryConfig>): Promise<T> {
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  config?: Partial<RetryConfig>,
+  signal?: AbortSignal,
+): Promise<T> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= cfg.maxRetries; attempt++) {
+    signal?.throwIfAborted();
     try {
       return await fn();
     } catch (error) {
+      signal?.throwIfAborted();
       lastError = error;
       if (attempt >= cfg.maxRetries || !cfg.retryableErrors!(error)) throw error;
 
       const delay = Math.min(cfg.initialDelayMs * 2 ** attempt + Math.random() * 200, cfg.maxDelayMs);
-      await sleep(delay);
+      await sleep(delay, signal);
     }
   }
 

@@ -8,6 +8,7 @@ export interface HarnessReason {
   message: string;
 }
 export interface HarnessResult {
+  budget?: import("./budget.js").HarnessBudgetSnapshot;
   status: HarnessStatus;
   text: string;
   structured?: unknown;

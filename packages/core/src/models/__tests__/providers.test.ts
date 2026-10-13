@@ -440,23 +440,22 @@ describe("OpenAIProvider", () => {
       expect(mockCreate.mock.calls[0][0].tools[0].function.name).toBe("test_tool");
     });
 
-    it("falls back to Chat Completions with reasoning_effort none when Responses is missing", async () => {
-      mockCreate.mockResolvedValueOnce(chatOk);
+    it("rejects a reasoning downgrade when Responses is missing", async () => {
       const provider = makeProvider("gpt-5.6-terra");
-
-      await provider.generate([{ role: "user", content: "test" }], { tools });
-      expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe("none");
+      await expect(provider.generate([{ role: "user", content: "test" }], { tools })).rejects.toThrow("preserve");
+      expect(mockCreate).not.toHaveBeenCalled();
     });
 
-    it("falls back to Chat Completions with none when Responses returns 404", async () => {
-      mockCreate.mockResolvedValueOnce(chatOk);
-      const notFound = Object.assign(new Error("Unknown request URL"), { status: 404 });
-      const mockResponses = vi.fn().mockRejectedValueOnce(notFound);
+    it("rejects a reasoning downgrade when Responses returns 404", async () => {
       const provider = makeProvider("gpt-5.6-luna");
-      (provider as any).client.responses = { create: mockResponses };
-
-      await provider.generate([{ role: "user", content: "test" }], { tools });
-      expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe("none");
+      Reflect.set(provider, "client", {
+        responses: {
+          create: vi.fn().mockRejectedValue(Object.assign(new Error("Unknown request URL"), { status: 404 })),
+        },
+        chat: { completions: { create: mockCreate } },
+      });
+      await expect(provider.generate([{ role: "user", content: "test" }], { tools })).rejects.toThrow("preserve");
+      expect(mockCreate).not.toHaveBeenCalled();
     });
 
     it("keeps gpt-5.6 without tools on Chat Completions", async () => {
@@ -512,6 +511,7 @@ describe("AnthropicProvider", () => {
   function makeProvider(modelId = "claude-sonnet-4-20250514") {
     // Bypass the constructor (which requires the SDK) by creating via prototype
     const provider = Object.create(AnthropicProvider.prototype);
+    provider.config = {};
     provider.providerId = "anthropic";
     provider.modelId = modelId;
     provider.client = { messages: { create: mockCreate } };
@@ -811,7 +811,7 @@ describe("OpenAICompatibleProvider GPT-5.6 tools", () => {
     else delete process.env.XAI_API_KEY;
   });
 
-  it("forces reasoning_effort none on Chat Completions when Responses is absent", async () => {
+  it("uses Chat Completions when the host explicitly disables reasoning", async () => {
     process.env.XAI_API_KEY = "test-key";
     const mockCreate = vi.fn().mockResolvedValue({
       choices: [{ message: { content: "hi", tool_calls: [] }, finish_reason: "stop" }],
@@ -823,6 +823,7 @@ describe("OpenAICompatibleProvider GPT-5.6 tools", () => {
 
     await provider.generate([{ role: "user", content: "test" }], {
       tools: [{ name: "t", description: "t", parameters: { type: "object" } }],
+      reasoning: { enabled: false },
     });
     expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe("none");
   });

@@ -1,4 +1,5 @@
 import type { BillingContext } from "../cost/accounting-types.js";
+import { captureRetryFailure } from "../cost/context.js";
 import { responsesPublicMessages } from "./responses-public-messages.js";
 import {
   type ChatMessage,
@@ -24,6 +25,8 @@ import {
 export type ChatMaxTokensField = "max_tokens" | "max_completion_tokens";
 
 export interface ChatCompletionsExtra {
+  endpoint?: "auto" | "responses" | "chat_completions";
+  fallback?: "compatible" | "error";
   stream?: boolean;
   /** Actual biller; compatible wire formats do not imply OpenAI tariffs. */
   providerId?: string;
@@ -123,6 +126,76 @@ export function isResponsesUnavailable(err: unknown): boolean {
   return /unknown request url|\/v1\/responses.*(404|not found|does not exist)|invalid.*responses endpoint/i.test(msg);
 }
 
+export class EndpointCompatibilityError extends Error {
+  readonly code = "ENDPOINT_INCOMPATIBLE";
+  readonly retryable = false;
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "EndpointCompatibilityError";
+  }
+}
+function assertChatCompatible(modelId: string, messages: ChatMessage[], options?: GenerateOptions): void {
+  if (hasResponsesReplay(messages))
+    throw new EndpointCompatibilityError(
+      "Responses continuation requires Responses; start a new session to switch APIs",
+    );
+  if (
+    options?.tools?.length &&
+    (requiresResponsesForTools(modelId) ||
+      (chatCompletionsRejectsToolsWithReasoning(modelId) && wantsReasoning(options)))
+  )
+    throw new EndpointCompatibilityError("Responses is required to preserve this model's tool and reasoning semantics");
+  if (
+    options?.reasoning?.mode ||
+    options?.reasoning?.context ||
+    options?.reasoning?.summary ||
+    options?.providerOptions?.promptCacheRetention
+  )
+    throw new EndpointCompatibilityError(
+      "Responses-only reasoning/cache options cannot be converted to Chat Completions",
+    );
+}
+function selectResponses(
+  modelId: string,
+  messages: ChatMessage[],
+  options: GenerateOptions | undefined,
+  extra: ChatCompletionsExtra | undefined,
+): boolean {
+  if (extra?.endpoint === "chat_completions") {
+    assertChatCompatible(modelId, messages, options);
+    return false;
+  }
+  return (
+    extra?.endpoint === "responses" ||
+    hasResponsesReplay(messages) ||
+    shouldUseResponsesApi(modelId, options) ||
+    Boolean(
+      options?.reasoning?.mode ||
+        options?.reasoning?.context ||
+        options?.reasoning?.summary ||
+        options?.providerOptions?.promptCacheRetention,
+    )
+  );
+}
+function allowFallback(
+  modelId: string,
+  messages: ChatMessage[],
+  options: GenerateOptions | undefined,
+  extra: ChatCompletionsExtra | undefined,
+  cause: unknown,
+): void {
+  if (extra?.endpoint === "responses" || extra?.fallback === "error")
+    throw new EndpointCompatibilityError("Responses endpoint is required and unavailable; fallback is disabled", cause);
+  try {
+    assertChatCompatible(modelId, messages, options);
+  } catch (error) {
+    throw new EndpointCompatibilityError(
+      error instanceof Error ? error.message : "Incompatible endpoint fallback",
+      cause,
+    );
+  }
+}
+
 export function applyChatCompletionsParams(
   params: Record<string, unknown>,
   modelId: string,
@@ -198,13 +271,16 @@ export function buildResponsesParams(
 
   if (options?.maxTokens !== undefined) params.max_output_tokens = options.maxTokens;
 
-  if (options?.reasoning?.enabled && options.reasoning.effort && options.reasoning.effort !== "none") {
-    params.reasoning = {
-      effort: options.reasoning.effort,
-      summary: options.reasoning.summary ?? "detailed",
-      ...(options.reasoning.mode ? { mode: options.reasoning.mode } : {}),
-      ...(options.reasoning.context ? { context: options.reasoning.context } : {}),
-    };
+  if (options?.reasoning) {
+    params.reasoning =
+      options.reasoning.enabled === false || options.reasoning.effort === "none"
+        ? { effort: "none" }
+        : {
+            ...(options.reasoning.effort ? { effort: options.reasoning.effort } : {}),
+            summary: options.reasoning.summary ?? "detailed",
+            ...(options.reasoning.mode ? { mode: options.reasoning.mode } : {}),
+            ...(options.reasoning.context ? { context: options.reasoning.context } : {}),
+          };
   }
   if (/^grok/i.test(normalizeOpenAIModelId(modelId)) && options?.reasoning?.enabled) {
     params.include = ["reasoning.encrypted_content"];
@@ -247,7 +323,10 @@ export async function generateOpenAIStyle(
   if (continuing && typeof client.responses?.create !== "function") {
     throw new Error("Responses continuation requires a Responses-capable endpoint; start a new session to switch APIs");
   }
-  if ((continuing || shouldUseResponsesApi(modelId, options)) && typeof client.responses?.create === "function") {
+  const responses = selectResponses(modelId, messages, options, extra);
+  if (responses && typeof client.responses?.create !== "function")
+    allowFallback(modelId, messages, options, extra, new Error("SDK or endpoint does not implement Responses"));
+  if (responses && typeof client.responses?.create === "function") {
     const create = client.responses.create.bind(client.responses);
     try {
       const response = await withRetry(() =>
@@ -259,6 +338,8 @@ export async function generateOpenAIStyle(
       return normalizeResponsesResponse(response, owner, modelId, extra?.providerId ?? "openai", billingContext);
     } catch (err) {
       if (continuing || !isResponsesUnavailable(err)) throw err;
+      allowFallback(modelId, messages, options, extra, err);
+      await captureRetryFailure(err);
     }
   }
 
@@ -294,7 +375,10 @@ export async function* streamOpenAIStyle(
   if (continuing && typeof client.responses?.create !== "function") {
     throw new Error("Responses continuation requires a Responses-capable endpoint; start a new session to switch APIs");
   }
-  if ((continuing || shouldUseResponsesApi(modelId, options)) && typeof client.responses?.create === "function") {
+  const responses = selectResponses(modelId, messages, options, extra);
+  if (responses && typeof client.responses?.create !== "function")
+    allowFallback(modelId, messages, options, extra, new Error("SDK or endpoint does not implement Responses"));
+  if (responses && typeof client.responses?.create === "function") {
     const create = client.responses.create.bind(client.responses);
     let committed = false;
     try {
@@ -304,6 +388,8 @@ export async function* streamOpenAIStyle(
           ...(options?.signal ? [{ signal: options.signal }] : []),
         ),
       );
+      // Establishment is the safe replay boundary, even before a public chunk exists.
+      committed = true;
       for await (const chunk of iterResponsesStream(
         stream as AsyncIterable<unknown>,
         owner,
@@ -316,6 +402,8 @@ export async function* streamOpenAIStyle(
       return;
     } catch (err) {
       if (committed || continuing || !isResponsesUnavailable(err)) throw err;
+      allowFallback(modelId, messages, options, extra, err);
+      await captureRetryFailure(err);
     }
   }
 

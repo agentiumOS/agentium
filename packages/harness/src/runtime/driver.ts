@@ -19,8 +19,28 @@ import type {
   ToolDef,
   ToolDefinition,
 } from "@agentium/core";
-import { EventBus, evaluateExecutionPolicy, RunContext, ToolExecutor } from "@agentium/core";
+import {
+  EventBus,
+  evaluateExecutionPolicy,
+  ModelUsageError,
+  RunContext,
+  ToolExecutor,
+  validateModelRequest,
+} from "@agentium/core";
 import { z } from "zod/v3";
+import {
+  estimateInputTokens,
+  HarnessBudgetError,
+  HarnessBudgetLedger,
+  type HarnessBudgetSnapshot,
+  type HarnessBudgets,
+  type InputTokenEstimator,
+  validateHarnessBudgets,
+} from "./budget.js";
+
+export type { HarnessBudgetSnapshot, HarnessBudgets, HarnessResourceSnapshot, InputTokenEstimator } from "./budget.js";
+export { HarnessBudgetError } from "./budget.js";
+
 import { fetchHarnessContext } from "./context.js";
 import type { ContextPolicy } from "./context-policy.js";
 import { projectHarnessContext } from "./context-policy.js";
@@ -33,6 +53,15 @@ import {
   type HarnessStatus,
   InMemoryHarnessEventStore,
 } from "./events.js";
+import {
+  archiveCompletedConversation,
+  archiveHistory,
+  type HistoryArchiveReference,
+  planHistoryRetention,
+  type ResidentHistoryPolicy,
+  retrieveHistory,
+  validateHistoryPolicy,
+} from "./history.js";
 import { HarnessInputError, LiveInput, validateRunInput, validateTimeout } from "./input.js";
 import { runAfterModel, runAfterTool, runBeforeModel, validateHarnessMessages } from "./middleware.js";
 import { bindHarness, createHarnessDefinition, resolveHarness } from "./resolve.js";
@@ -54,22 +83,10 @@ export class HarnessUnsupportedError extends Error {
     super(`Unsupported harness operation: ${operation}`);
   }
 }
-export class HarnessBudgetError extends Error {
-  readonly code = "budget_exhausted";
-  constructor(message: string) {
-    super(message);
-  }
-}
 export interface HarnessGrants {
   toolIds: readonly string[];
   requiredToolIds?: readonly string[];
   modelRoles: readonly string[];
-}
-export interface HarnessBudgets {
-  maxModelCalls?: number;
-  maxToolCalls?: number;
-  maxTokens?: number;
-  maxRevisions?: number;
 }
 export interface HarnessRunRequest {
   input: MessageContent;
@@ -106,6 +123,15 @@ export interface ExecutionDriver {
   start: (request: HarnessRunRequest, services: HarnessExecutionServices) => Promise<HarnessDriverOutput>;
 }
 export interface HarnessExecutionServices extends ExecutionServices {
+  readonly budget: HarnessBudgetSnapshot;
+  readonly archivedHistory: readonly HistoryArchiveReference[];
+  retrieveHistory(referenceId: string): Promise<ChatMessage[]>;
+  /** Explicit tool-free finishing work; grants and terminal completion policy still apply. */
+  finishModel(
+    role: string,
+    messages: readonly ChatMessage[],
+    options?: Pick<ModelConfig, "maxTokens" | "temperature">,
+  ): Promise<ModelResponse>;
   readonly definitionId?: string;
   /** Agent-specific declarative options interpreted only by the configured Agent driver. */
   readonly agentConfiguration?: {
@@ -131,6 +157,7 @@ export interface HarnessExecutionServices extends ExecutionServices {
 }
 export type HarnessRunState = "running" | "awaiting_input" | "cancelling" | "finished";
 export interface RunHandle {
+  readonly budget: HarnessBudgetSnapshot;
   readonly runId: string;
   /** Live state; waiting never resolves result(). */
   readonly state: HarnessRunState;
@@ -153,6 +180,8 @@ export interface HarnessRuntimeConfig {
   models?: Readonly<Record<string, ModelRoleBinding>>;
   grants: HarnessGrants;
   budgets?: HarnessBudgets;
+  /** Estimate projected input including tools and opaque replay; hard bounds require a conservative host estimator. */
+  estimateInputTokens?: InputTokenEstimator;
   executionPolicy?: ExecutionPolicy;
   approvalManager?: ApprovalManager;
   controller?: StepController;
@@ -161,6 +190,7 @@ export interface HarnessRuntimeConfig {
   /** Explicit opt-in to new tool effects in completion revisions. */
   allowRevisionEffects?: boolean;
   sessionStore?: HarnessSessionStore;
+  residentHistory?: ResidentHistoryPolicy;
   resources?: HarnessResourcePool;
   eventCapacity?: number;
   /** Active wall time, excluding a pending user question. */
@@ -216,13 +246,14 @@ export class HarnessRuntime {
       throw new HarnessUnsupportedError("interrupt-and-replace without a driver checkpoint adapter");
     if (driver.capabilities.policyCoverage !== "local" || !driver.capabilities.controlledExecution)
       throw new HarnessUnsupportedError("mandatory local execution coverage");
-    for (const value of Object.values(config.budgets ?? {}))
-      if (!Number.isInteger(value) || value < 0) throw new Error("Harness budgets must be nonnegative integers");
+    validateHarnessBudgets(config.budgets ?? {});
+    if (config.residentHistory) validateHistoryPolicy(config.residentHistory);
     this.config = {
       ...config,
       projectRoot: resolve(config.projectRoot ?? process.cwd()),
       requirements: config.requirements && Object.freeze([...config.requirements]),
       budgets: { ...config.budgets },
+      residentHistory: config.residentHistory && { ...config.residentHistory },
       models: Object.fromEntries(
         Object.entries(config.models ?? {}).map(([role, binding]) => [
           role,
@@ -268,6 +299,19 @@ export class HarnessRuntime {
     this.sessions = config.sessionStore ?? new InMemoryHarnessSessionStore();
     this.resources = config.resources ?? new HarnessResourcePool();
   }
+  /** Read archived canonical records by a scoped reference; never injects them into model context. */
+  async retrieveHistory(identity: HarnessIdentity, sessionId: string, referenceId: string): Promise<ChatMessage[]> {
+    const archive = this.config.residentHistory?.archive;
+    if (!archive) throw new Error("No history archive configured");
+    const lease = await this.sessions.acquire(identity, sessionId);
+    try {
+      const reference = lease.read().archivedHistory?.find((item) => item.id === referenceId);
+      if (!reference) throw new Error("Unknown scoped history reference");
+      return await retrieveHistory(archive, { identity, sessionId }, reference);
+    } finally {
+      lease.release();
+    }
+  }
   run(input: MessageContent, options: HarnessStartOptions): Promise<HarnessResult> {
     return this.start(input, options).result();
   }
@@ -278,6 +322,7 @@ export class HarnessRuntime {
     if (!options.identity?.tenantId || !options.identity.userId || !options.sessionId)
       throw new Error("Verified tenant, actor and session identity are required");
     const config = this.config;
+    const budget = new HarnessBudgetLedger(config.budgets);
     if (options.runMode !== undefined && options.runMode !== "execute" && options.runMode !== "plan")
       throw new Error("Invalid run mode");
     const grants = options.grants
@@ -298,7 +343,7 @@ export class HarnessRuntime {
     const controller = new AbortController();
     const runId = randomUUID();
     const request: HarnessRunRequest = Object.freeze({
-      input: structuredClone(input),
+      input: validateRunInput(input),
       identity: Object.freeze({ ...options.identity }),
       sessionId: options.sessionId,
       runId,
@@ -372,10 +417,17 @@ export class HarnessRuntime {
           });
       };
     };
-    const generateObserved = async (provider: ModelProvider, messages: ChatMessage[], supplied: ModelConfig) => {
+    const generateObserved = async (
+      provider: ModelProvider,
+      messages: ChatMessage[],
+      supplied: ModelConfig,
+      onStart: () => void,
+    ) => {
       const end = observeModel(provider);
       try {
         liveInput.assertNotWaiting();
+        supplied.signal?.throwIfAborted();
+        onStart();
         const response = await provider.generate(messages, supplied);
         end(!controller.signal.aborted, response.usage);
         return response;
@@ -389,10 +441,10 @@ export class HarnessRuntime {
     let acceptingSteering = true;
     let cancellationCode = "cancelled";
     const inbox: Array<{ id: string; input: MessageContent; mode: HarnessSendMode }> = [];
-    const cancel = (reason = "Run cancelled") => {
+    const cancel = (reason = "Run cancelled", cause?: unknown) => {
       if (!terminal && !controller.signal.aborted) {
         events.append({ type: "control", operation: "cancel", reason });
-        controller.abort(new Error(reason));
+        controller.abort(cause ?? new Error(reason));
       }
     };
     const liveInput = new LiveInput(
@@ -405,7 +457,7 @@ export class HarnessRuntime {
         cancel(code === "input_timeout" ? "User input timeout exceeded" : "Active execution timeout exceeded");
       },
     );
-    const onAbort = () => cancel("Caller cancelled the run");
+    const onAbort = () => cancel("Caller cancelled the run", options.signal?.reason);
     const callerSignal = options.signal;
     callerSignal?.addEventListener("abort", onAbort, { once: true });
     if (callerSignal?.aborted) onAbort();
@@ -424,16 +476,17 @@ export class HarnessRuntime {
       let bound: Awaited<ReturnType<typeof bindHarness>> | undefined;
       const releases: Array<() => Promise<void>> = [];
       const usage = zero();
-      let modelCalls = 0;
-      let reservedTokens = 0;
+      let stepIndex = 0;
       const cleanupDiagnostics: string[] = [];
-      let toolCalls = 0;
       let revision = 0;
       let currentRole = "main";
       let prepareDefaults: StepOverrides = {};
       let final: HarnessDriverOutput = { text: "", status: "failed" };
       let canonical: ChatMessage[] = [];
       let conversations: Record<string, ChatMessage[]> = {};
+      let archivedHistory: HistoryArchiveReference[] = [];
+      let historyQueue: Promise<unknown> = Promise.resolve();
+      const historyProviders = new Map<string, ModelProvider>();
       let state: Record<string, unknown> = {};
       let replayable = true;
       let committed = false;
@@ -464,8 +517,38 @@ export class HarnessRuntime {
         const snapshot = lease.read();
         canonical = snapshot.history;
         conversations = snapshot.conversations ?? {};
+        archivedHistory = snapshot.archivedHistory ?? [];
         state = snapshot.state;
         replayable = snapshot.replayable;
+        const retain = (
+          provider?: ModelProvider,
+          callCtx?: RunContext,
+          messages?: readonly ChatMessage[],
+        ): Promise<ChatMessage[]> => {
+          const operation = historyQueue.then(async () => {
+            const policy = config.residentHistory;
+            if (!policy) return structuredClone([...(messages ?? canonical)]);
+            const executionId = callCtx?.runId ?? request.runId;
+            if (provider) historyProviders.set(executionId, provider);
+            provider ??= historyProviders.get(executionId) ?? config.models?.main?.provider;
+            const source = executionId === request.runId ? canonical : (conversations[executionId] ?? []);
+            const projected = messages ? planHistoryRetention(messages, policy, provider).resident : undefined;
+            const length = source.length;
+            const retained = await archiveHistory(
+              source.slice(0, length),
+              policy,
+              { identity: request.identity, sessionId: request.sessionId },
+              executionId === request.runId ? "main" : executionId,
+              provider,
+            );
+            // The archive acknowledged before any local record is removed.
+            source.splice(0, length, ...retained.resident);
+            if (retained.reference) archivedHistory.push(retained.reference);
+            return structuredClone(projected ?? source);
+          });
+          historyQueue = operation.catch(() => {});
+          return operation;
+        };
         let policy!: ExecutionPolicy;
         let services!: HarnessExecutionServices;
         const ctx = new RunContext({
@@ -494,9 +577,7 @@ export class HarnessRuntime {
               return { action: "deny", reason: "Tool is outside the effective grants" };
             if (revision > 0 && !config.allowRevisionEffects)
               return { action: "deny", reason: "Completion revisions cannot execute effects without host opt-in" };
-            if (toolCalls >= (config.budgets?.maxToolCalls ?? Infinity))
-              return { action: "deny", reason: "Aggregate tool budget exhausted" };
-            toolCalls++;
+            if (!budget.admitTool()) return { action: "deny", reason: "Aggregate tool budget exhausted" };
             return evaluateExecutionPolicy(config.executionPolicy, call, callCtx);
           },
           resolveEffect: config.executionPolicy?.resolveEffect,
@@ -543,76 +624,86 @@ export class HarnessRuntime {
         ) => {
           ensureActive();
           liveInput.assertNotWaiting();
-          if (
-            modelCalls >= (config.budgets?.maxModelCalls ?? Infinity) ||
-            usage.totalTokens >= (config.budgets?.maxTokens ?? Infinity)
-          )
-            throw new HarnessBudgetError("Aggregate model/token budget exhausted");
-          const index = modelCalls++;
-          const next = config.controller?.prepareStep
-            ? await observeControl("prepareStep", () =>
-                config.controller!.prepareStep!({ index, tools: supplied.tools ?? [] }, callCtx),
-              )
-            : undefined;
-          const overrides = { ...prepareDefaults, ...next };
-          if (overrides.stop) throw new HarnessBudgetError(overrides.stop.reason);
-          const role = overrides.modelRole ?? "main";
-          if (!request.grants.modelRoles.includes(role)) throw new Error("Controller selected an ungranted model role");
-          const binding = config.models?.[role];
-          const selected = binding?.provider ?? (role === "main" ? provider : undefined);
-          if (!selected) throw new Error("No host model binding for selected role");
-          const active =
-            overrides.activeToolIds ??
-            (supplied.tools ?? []).map((tool) => tool.name).filter((id) => request.grants.toolIds.includes(id));
-          narrow(request.grants.toolIds, active, "active tool");
-          if (request.grants.requiredToolIds?.some((id) => !active.includes(id)))
-            throw new Error("Controller omitted a required tool");
-          if (active.some((id) => !(supplied.tools ?? []).some((tool) => tool.name === id)))
-            throw new Error("Controller selected an unavailable tool");
-          for (const key of Object.keys(overrides.options ?? {}))
-            if (!binding?.options?.includes(key as keyof ModelConfig))
-              throw new HarnessUnsupportedError(`model option ${key}`);
-          if (
-            currentRole !== role &&
-            messages.some((message) => message.providerExtras && !message.providerExtras.harnessContext)
-          )
-            throw new Error("Cannot switch model roles while opaque provider continuation is present");
-          currentRole = role;
-          const composed = [...prompts, ...sources.messages, ...messages];
-          const transformed = await runBeforeModel(middleware, composed, callCtx);
-          const projection = await projectHarnessContext(
-            overrides.contextPolicy ?? config.contextPolicy,
-            transformed,
-            callCtx,
-            entries,
-          );
-          ensureActive();
-          const remaining = (config.budgets?.maxTokens ?? Infinity) - usage.totalTokens - reservedTokens;
-          if (remaining <= 0)
-            throw new HarnessBudgetError("Aggregate token budget exhausted or reserved by another call");
-          for (const value of [supplied.maxTokens, overrides.options?.maxTokens]) {
-            if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
-              throw new HarnessUnsupportedError("maxTokens must be a finite positive integer");
+          const callReservation = budget.reserveCall();
+          try {
+            const index = stepIndex++;
+            const next = config.controller?.prepareStep
+              ? await observeControl("prepareStep", () =>
+                  config.controller!.prepareStep!({ index, tools: supplied.tools ?? [] }, callCtx),
+                )
+              : undefined;
+            const overrides = { ...prepareDefaults, ...next };
+            if (overrides.stop) throw new HarnessBudgetError(overrides.stop.reason);
+            const role = overrides.modelRole ?? "main";
+            if (!request.grants.modelRoles.includes(role))
+              throw new Error("Controller selected an ungranted model role");
+            const binding = config.models?.[role];
+            const selected = binding?.provider ?? (role === "main" ? provider : undefined);
+            if (!selected) throw new Error("No host model binding for selected role");
+            const active =
+              overrides.activeToolIds ??
+              (supplied.tools ?? []).map((tool) => tool.name).filter((id) => request.grants.toolIds.includes(id));
+            narrow(request.grants.toolIds, active, "active tool");
+            if (request.grants.requiredToolIds?.some((id) => !active.includes(id)))
+              throw new Error("Controller omitted a required tool");
+            if (active.some((id) => !(supplied.tools ?? []).some((tool) => tool.name === id)))
+              throw new Error("Controller selected an unavailable tool");
+            for (const key of Object.keys(overrides.options ?? {}))
+              if (!binding?.options?.includes(key as keyof ModelConfig))
+                throw new HarnessUnsupportedError(`model option ${key}`);
+            if (
+              currentRole !== role &&
+              messages.some((message) => message.providerExtras && !message.providerExtras.harnessContext)
+            )
+              throw new Error("Cannot switch model roles while opaque provider continuation is present");
+            currentRole = role;
+            const resident = await retain(selected, callCtx, messages);
+            const composed = [...prompts, ...sources.messages, ...resident];
+            const transformed = await runBeforeModel(middleware, composed, callCtx);
+            const projection = await projectHarnessContext(
+              overrides.contextPolicy ?? config.contextPolicy,
+              transformed,
+              callCtx,
+              entries,
+            );
+            ensureActive();
+            for (const value of [supplied.maxTokens, overrides.options?.maxTokens]) {
+              if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
+                throw new HarnessUnsupportedError("maxTokens must be a finite positive integer");
+            }
+            const options: ModelConfig & { tools?: ToolDefinition[] } = {
+              ...supplied,
+              ...overrides.options,
+              signal: supplied.signal ? AbortSignal.any([controller.signal, supplied.signal]) : controller.signal,
+              deadline: Math.min(
+                supplied.deadline ?? Infinity,
+                overrides.options?.deadline ?? Infinity,
+                request.deadline ?? Infinity,
+              ),
+              tools: supplied.tools?.filter((tool) => active.includes(tool.name)),
+            };
+            if (!Number.isFinite(options.deadline)) delete options.deadline;
+            options.maxTokens ??= selected.capabilities?.maxOutputTokens;
+            activeTools.set(callCtx.runId, active);
+            const projectedInput = (config.estimateInputTokens ?? estimateInputTokens)({
+              provider: selected,
+              messages: projection.messages,
+              tools: options.tools ?? [],
+            });
+            validateModelRequest(
+              selected.capabilities,
+              projection.messages,
+              options,
+              selected.unknownCapabilities,
+              projectedInput,
+            );
+            const reservation = budget.reserve(projectedInput, options.maxTokens, false, callReservation);
+            if (reservation.maxTokens !== undefined) options.maxTokens = reservation.maxTokens;
+            return { provider: selected, messages: projection.messages, options, reservation };
+          } catch (error) {
+            callReservation.release();
+            throw error;
           }
-          const options = {
-            ...supplied,
-            ...overrides.options,
-            signal: controller.signal,
-            tools: supplied.tools?.filter((tool) => active.includes(tool.name)),
-            ...(Number.isFinite(remaining)
-              ? {
-                  maxTokens: Math.min(
-                    supplied.maxTokens ?? Infinity,
-                    overrides.options?.maxTokens ?? Infinity,
-                    remaining,
-                  ),
-                }
-              : {}),
-          };
-          activeTools.set(callCtx.runId, active);
-          const reservation = Number.isFinite(remaining) ? (options.maxTokens ?? remaining) : 0;
-          reservedTokens += reservation;
-          return { provider: selected, messages: projection.messages, options, reservation };
         };
         const account = (provider: ModelProvider, amount: TokenUsage) => {
           if (
@@ -638,6 +729,90 @@ export class HarnessRuntime {
               },
             });
         };
+        const independentModel = (
+          role: string,
+          messages: readonly ChatMessage[],
+          options: Pick<ModelConfig, "maxTokens" | "temperature"> = {},
+          finishing = false,
+        ): Promise<ModelResponse> =>
+          track(
+            (async () => {
+              ensureActive();
+              liveInput.assertNotWaiting();
+              if (!request.grants.modelRoles.includes(role)) throw new Error("Ungranted control model role");
+              const binding = config.models?.[role];
+              if (!binding) throw new Error("Control model requires an explicit host binding");
+              for (const key of Object.keys(options)) {
+                if (!["maxTokens", "temperature"].includes(key) || !binding.options?.includes(key as keyof ModelConfig))
+                  throw new HarnessUnsupportedError(`control model option ${key}`);
+              }
+              if (
+                options.maxTokens !== undefined &&
+                (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0)
+              )
+                throw new HarnessUnsupportedError("maxTokens must be a finite positive integer");
+              if (
+                options.temperature !== undefined &&
+                (!Number.isFinite(options.temperature) || options.temperature < 0)
+              )
+                throw new HarnessUnsupportedError("temperature must be finite and non-negative");
+              const projection = structuredClone(messages) as ChatMessage[];
+              if (
+                projection.some(
+                  (message) => message.role === "tool" || message.toolCalls?.length || message.providerExtras,
+                )
+              )
+                throw new Error(
+                  "Control model calls require independent plain messages without provider/tool continuation",
+                );
+              validateHarnessMessages(projection, projection);
+              const projectedInput = (config.estimateInputTokens ?? estimateInputTokens)({
+                provider: binding.provider,
+                messages: projection,
+                tools: [],
+              });
+              const requestedOutput = options.maxTokens ?? binding.provider.capabilities?.maxOutputTokens;
+              validateModelRequest(
+                binding.provider.capabilities,
+                projection,
+                { ...options, maxTokens: requestedOutput },
+                binding.provider.unknownCapabilities,
+                projectedInput,
+              );
+              const reservation = budget.reserve(projectedInput, requestedOutput, finishing);
+              const maxTokens = reservation.maxTokens;
+              let accounted = false;
+              try {
+                ensureActive();
+                const response = await generateObserved(
+                  binding.provider,
+                  projection,
+                  {
+                    ...options,
+                    ...(maxTokens !== undefined ? { maxTokens } : {}),
+                    signal: controller.signal,
+                  },
+                  reservation.start,
+                );
+                reservation.settle(response.usage);
+                account(binding.provider, response.usage);
+                accounted = true;
+                ensureActive();
+                if (response.finishReason !== "stop" || response.message.toolCalls?.length)
+                  throw new Error("Control model must return a complete tool-free response");
+                return response;
+              } catch (error) {
+                const amount = error instanceof ModelUsageError ? error.usage : undefined;
+                if (amount && !accounted) {
+                  reservation.settle(amount);
+                  account(binding.provider, amount);
+                }
+                throw error;
+              } finally {
+                reservation.settle();
+              }
+            })(),
+          );
         services = {
           ctx,
           signal: controller.signal,
@@ -655,78 +830,58 @@ export class HarnessRuntime {
           get history() {
             return structuredClone(canonical);
           },
-          controlModel: (role, messages, options = {}) =>
+          get budget() {
+            return budget.snapshot();
+          },
+          get archivedHistory() {
+            return structuredClone(archivedHistory);
+          },
+          retainHistory: config.residentHistory
+            ? (provider, messages, context) => track(retain(provider, context, messages))
+            : undefined,
+          retrieveHistory: (referenceId) =>
             track(
               (async () => {
                 ensureActive();
-                liveInput.assertNotWaiting();
-                if (!request.grants.modelRoles.includes(role)) throw new Error("Ungranted control model role");
-                const binding = config.models?.[role];
-                if (!binding) throw new Error("Control model requires an explicit host binding");
-                for (const key of Object.keys(options)) {
-                  if (
-                    !["maxTokens", "temperature"].includes(key) ||
-                    !binding.options?.includes(key as keyof ModelConfig)
-                  )
-                    throw new HarnessUnsupportedError(`control model option ${key}`);
-                }
-                if (
-                  options.maxTokens !== undefined &&
-                  (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0)
-                )
-                  throw new HarnessUnsupportedError("maxTokens must be a finite positive integer");
-                if (
-                  options.temperature !== undefined &&
-                  (!Number.isFinite(options.temperature) || options.temperature < 0)
-                )
-                  throw new HarnessUnsupportedError("temperature must be finite and non-negative");
-                const projection = structuredClone(messages) as ChatMessage[];
-                if (
-                  projection.some(
-                    (message) => message.role === "tool" || message.toolCalls?.length || message.providerExtras,
-                  )
-                )
-                  throw new Error(
-                    "Control model calls require independent plain messages without provider/tool continuation",
-                  );
-                validateHarnessMessages(projection, projection);
-                const remaining = (config.budgets?.maxTokens ?? Infinity) - usage.totalTokens - reservedTokens;
-                if (modelCalls >= (config.budgets?.maxModelCalls ?? Infinity) || remaining <= 0)
-                  throw new HarnessBudgetError("Aggregate model/token budget exhausted");
-                const maxTokens = Math.min(options.maxTokens ?? Infinity, remaining);
-                const reservation = Number.isFinite(maxTokens) ? maxTokens : 0;
-                modelCalls++;
-                reservedTokens += reservation;
-                try {
-                  ensureActive();
-                  const response = await generateObserved(binding.provider, projection, {
-                    ...options,
-                    ...(Number.isFinite(maxTokens) ? { maxTokens } : {}),
-                    signal: controller.signal,
-                  });
-                  account(binding.provider, response.usage);
-                  ensureActive();
-                  if (response.finishReason !== "stop" || response.message.toolCalls?.length)
-                    throw new Error("Control model must return a complete tool-free response");
-                  return response;
-                } finally {
-                  reservedTokens -= reservation;
-                }
+                const reference = archivedHistory.find((item) => item.id === referenceId);
+                if (!reference || !config.residentHistory) throw new Error("Unknown scoped history reference");
+                return retrieveHistory(
+                  config.residentHistory.archive,
+                  { identity: request.identity, sessionId: request.sessionId },
+                  reference,
+                );
               })(),
             ),
+          controlModel: (role, messages, options) => independentModel(role, messages, options),
+          finishModel: (role, messages, options) => independentModel(role, messages, options, true),
           model: (provider, messages, options, callCtx) =>
             track(
               (async () => {
                 const call = await prepare(provider, messages, options, callCtx);
+                let accounted = false;
                 try {
                   ensureActive();
-                  const response = await generateObserved(call.provider, call.messages, call.options);
+                  const response = await generateObserved(
+                    call.provider,
+                    call.messages,
+                    call.options,
+                    call.reservation.start,
+                  );
+                  call.reservation.settle(response.usage);
                   account(call.provider, response.usage);
+                  accounted = true;
                   ensureActive();
                   await runAfterModel(middleware, response, callCtx ?? ctx);
                   return response;
+                } catch (error) {
+                  const amount = error instanceof ModelUsageError ? error.usage : undefined;
+                  if (amount && !accounted) {
+                    call.reservation.settle(amount);
+                    account(call.provider, amount);
+                  }
+                  throw error;
                 } finally {
-                  reservedTokens -= call.reservation;
+                  call.reservation.settle();
                 }
               })(),
             ),
@@ -753,6 +908,8 @@ export class HarnessRuntime {
               try {
                 ensureActive();
                 liveInput.assertNotWaiting();
+                call.options.signal?.throwIfAborted();
+                call.reservation.start();
                 stream = call.provider.stream(call.messages, call.options);
                 while (true) {
                   const next = await stream.next();
@@ -764,6 +921,7 @@ export class HarnessRuntime {
                     publicMessages = next.value.publicMessages;
                     phase = next.value.phase;
                     amount = next.value.usage ?? zero();
+                    call.reservation.settle(next.value.usage);
                     account(call.provider, amount);
                   }
                   ensureActive();
@@ -802,9 +960,16 @@ export class HarnessRuntime {
                 };
                 await runAfterModel(middleware, response, callCtx ?? ctx);
                 succeeded = true;
+              } catch (error) {
+                const known = error instanceof ModelUsageError ? error.usage : undefined;
+                if (known && !finished) {
+                  call.reservation.settle(known);
+                  account(call.provider, known);
+                }
+                throw error;
               } finally {
                 endObservation(succeeded, finished ? amount : undefined);
-                reservedTokens -= call.reservation;
+                call.reservation.settle();
                 await stream?.return(undefined);
               }
             })();
@@ -902,10 +1067,13 @@ export class HarnessRuntime {
             ),
           recordConversation: (executionId, messages) => {
             ensureActive();
-            const combined = [...(conversations[executionId] ?? []), ...structuredClone(messages)];
+            const destination = executionId === request.runId ? canonical : (conversations[executionId] ??= []);
+            const additions = structuredClone(messages);
+            const combined = [...destination, ...additions];
             validateHarnessMessages(combined, combined);
-            conversations[executionId] = combined;
-            if (executionId === request.runId) canonical.push(...structuredClone(messages));
+            destination.push(...additions);
+            if (executionId === request.runId && !config.residentHistory)
+              (conversations[executionId] ??= []).push(...structuredClone(additions));
           },
           append: (messages) => {
             ensureActive();
@@ -963,6 +1131,7 @@ export class HarnessRuntime {
             return this.getArtifact(request.identity, request.sessionId, id);
           },
         };
+        if (config.models?.main || !canonical.some((message) => message.providerExtras)) await retain();
         prepareDefaults =
           (config.controller?.prepareRun
             ? await observeControl("prepareRun", () => config.controller!.prepareRun!(ctx))
@@ -1034,7 +1203,20 @@ export class HarnessRuntime {
         const rejected = operations.find((entry) => entry.status === "rejected");
         if (rejected?.status === "rejected") throw rejected.reason;
         ensureActive();
-        lease.commit({ history: canonical, conversations, state, replayable });
+        await retain();
+        // Completed child transcripts are canonical archive records, not permanent resident copies.
+        for (const [executionId, messages] of Object.entries(conversations)) {
+          if (!config.residentHistory) break;
+          const reference = await archiveCompletedConversation(
+            messages,
+            config.residentHistory,
+            { identity: request.identity, sessionId: request.sessionId },
+            executionId,
+          );
+          if (reference) archivedHistory.push(reference);
+          delete conversations[executionId];
+        }
+        lease.commit({ history: canonical, conversations, archivedHistory, state, replayable });
         committed = true;
       } catch (error) {
         final = {
@@ -1061,7 +1243,7 @@ export class HarnessRuntime {
         await Promise.allSettled([...owned]);
         if (lease && !committed) {
           try {
-            lease.commit({ history: canonical, conversations, state, replayable: false });
+            lease.commit({ history: canonical, conversations, archivedHistory, state, replayable: false });
           } catch {
             cleanupDiagnostics.push("partial_history_commit_failed");
           }
@@ -1105,7 +1287,8 @@ export class HarnessRuntime {
         ...(final.structured !== undefined ? { structured: final.structured } : {}),
         ...(final.reason ? { reason: final.reason } : {}),
         ...(final.artifacts ? { artifacts: final.artifacts } : {}),
-        usage: modelCalls ? usage : (final.usage ?? usage),
+        usage: budget.snapshot().modelCalls.used ? usage : (final.usage ?? usage),
+        budget: budget.snapshot(),
         runId,
         sessionId: request.sessionId,
         finalCursor: events.cursor + 1,
@@ -1150,6 +1333,9 @@ export class HarnessRuntime {
       return structuredClone(terminalResult);
     });
     return {
+      get budget() {
+        return budget.snapshot();
+      },
       runId,
       get state() {
         return terminal

@@ -51,6 +51,7 @@ describe("controlled policy model calls", () => {
       critic,
       {
         budgets: { maxTokens: 10, maxModelCalls: 3 },
+        estimateInputTokens: () => 1,
         contextPolicy: { id: "projection", project: projection },
         controller: { id: "task", prepareStep: controller },
       },
@@ -58,7 +59,7 @@ describe("controlled policy model calls", () => {
     expect(await rt.run("hello", start)).toMatchObject({ status: "completed", usage: { totalTokens: 6 } });
     expect(projection).toHaveBeenCalledTimes(2);
     expect(controller).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(critic.generate).mock.calls[0][1]).toMatchObject({ maxTokens: 8 });
+    expect(vi.mocked(critic.generate).mock.calls[0][1]).toMatchObject({ maxTokens: 7 });
     expect(vi.mocked(critic.generate).mock.calls[0][1]?.tools).toBeUndefined();
   });
 

@@ -88,6 +88,13 @@ it.skipIf(!enabled)(
       for (const name of ["createTwilioCallProvider", "createTelnyxCallProvider", "createExotelCallProvider", "createSignalWireCallProvider", "createVonageCallProvider", "createLiveKitSipCallProvider", "OutboundCallService"]) {
         if (typeof telephony[name] !== "function") throw new Error("Missing telephony export: " + name);
       }
+      for (const name of ["validateRunInput", "parseRunInput"]) {
+        if (typeof harness[name] !== "function") throw new Error("Missing input validation export: " + name);
+      }
+      if (harness.RUN_INPUT_LIMITS.maxNormalizedBytes !== 65536 || harness.parseRunInput('"ok"') !== "ok") throw new Error("Inconsistent input metadata");
+      for (const name of ["ModelDeadlineError", "ModelCapabilityError", "EndpointCompatibilityError", "validateModelRequest"]) {
+        if (typeof core[name] !== "function") throw new Error("Missing model control export: " + name);
+      }
       if(typeof harness.requestInputTool !== "function" || typeof harness.HarnessInputError !== "function" || typeof core.getCommunicationCapabilities !== "function") throw new Error("Missing conversational exports");
       if(typeof harness.mcpResources !== "function") throw new Error("Missing MCP resource ability");
       for (const schema of [z3.object({name:z3.string()}), z4.object({name:z4.string()}), mini.object({name:mini.string()})]) {
@@ -122,6 +129,15 @@ it.skipIf(!enabled)(
         join(fixture, "consumer.ts"),
         `
       import { Agent, defineTool, getCommunicationCapabilities, type PublicMessageEvent, type InputRequest, type ModelProvider } from "@agentium/core";
+      import { type OpenAIConfig, type AnthropicConfig, type ModelCapabilities, type ProviderRequestControls, validateModelRequest } from "@agentium/core";
+      import { validateRunInput, parseRunInput, RUN_INPUT_LIMITS, type HarnessBudgetSnapshot, type HistoryArchive, type ResidentHistoryPolicy } from "@agentium/harness";
+      const controls: ProviderRequestControls = {maxRetries: 0, sdkMaxRetries: 0, timeoutMs: 100, callTimeoutMs: 200};
+      const openAIConfig: OpenAIConfig = {...controls, endpoint: "responses", fallback: "error"};
+      const anthropicConfig: AnthropicConfig = {...controls, baseURL: "https://example.test"};
+      const capabilities: ModelCapabilities = {contextWindow: 1000, tools: true, maxOutputTokens: 100};
+      validateModelRequest(capabilities, [], {maxTokens: 100});
+      const input = validateRunInput(parseRunInput('"hello"'));
+      const maxBytes: number = RUN_INPUT_LIMITS.maxEncodedBytes;
       import * as z3 from "zod-v3";
       import * as z4 from "zod";
       import * as mini from "zod/mini";

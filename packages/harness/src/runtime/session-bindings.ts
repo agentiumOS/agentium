@@ -5,6 +5,8 @@ export interface HarnessIdentity {
   tenantId: string;
 }
 export interface HarnessSessionSnapshot {
+  /** Canonical records held by the host archive, in archival order. */
+  archivedHistory?: import("./history.js").HistoryArchiveReference[];
   conversations?: Record<string, ChatMessage[]>;
   history: ChatMessage[];
   state: Record<string, unknown>;

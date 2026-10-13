@@ -29,6 +29,12 @@ export interface ExecutionServices {
   readonly signal: AbortSignal;
   readonly tools: readonly ToolDef[];
   readonly history: readonly ChatMessage[];
+  /** Archive closed records before returning a bounded resident replay window. */
+  retainHistory?(
+    provider: ModelProvider,
+    messages: readonly ChatMessage[],
+    context?: RunContext,
+  ): Promise<ChatMessage[]>;
   readonly executionPolicy: ExecutionPolicy;
   readonly approvalManager?: ApprovalManager;
   readonly state: Record<string, unknown>;

@@ -7,7 +7,7 @@ import type { OpenAIRealtimeConfig } from "../voice/providers/openai-realtime.js
 import { OpenAIRealtimeProvider } from "../voice/providers/openai-realtime.js";
 import type { RealtimeProvider } from "../voice/types.js";
 import type { ModelProvider } from "./provider.js";
-import { AnthropicProvider } from "./providers/anthropic.js";
+import { type AnthropicConfig, AnthropicProvider } from "./providers/anthropic.js";
 import { type AwsBedrockConfig, AwsBedrockProvider } from "./providers/aws-bedrock.js";
 import { type AwsClaudeConfig, AwsClaudeProvider } from "./providers/aws-claude.js";
 import { type AzureFoundryConfig, AzureFoundryProvider } from "./providers/azure-foundry.js";
@@ -19,7 +19,7 @@ import { type JevConfig, JevProvider } from "./providers/jev.js";
 import { type MetaLlamaConfig, MetaLlamaProvider } from "./providers/meta-llama.js";
 import { type MistralConfig, MistralProvider } from "./providers/mistral.js";
 import { OllamaProvider } from "./providers/ollama.js";
-import { OpenAIProvider } from "./providers/openai.js";
+import { type OpenAIConfig, OpenAIProvider } from "./providers/openai.js";
 import { type OpenAIDecisionsConfig, OpenAIDecisionsProvider } from "./providers/openai-decisions.js";
 import { type PerplexityConfig, PerplexityProvider } from "./providers/perplexity.js";
 import { type VercelConfig, VercelProvider } from "./providers/vercel.js";
@@ -61,7 +61,7 @@ modelRegistry.register("google", (modelId, config) => new GoogleProvider(modelId
 
 modelRegistry.register("ollama", (modelId, config) => new OllamaProvider(modelId, config as { host?: string }));
 
-export function openai(modelId: string, config?: { apiKey?: string; baseURL?: string }): ModelProvider {
+export function openai(modelId: string, config?: OpenAIConfig): ModelProvider {
   return modelRegistry.resolve("openai", modelId, config);
 }
 
@@ -72,7 +72,7 @@ export function openaiDecisions(modelId = "gpt-6-luna", config?: OpenAIDecisions
   return modelRegistry.resolve("openai-decisions", modelId, config);
 }
 
-export function anthropic(modelId: string, config?: { apiKey?: string }): ModelProvider {
+export function anthropic(modelId: string, config?: AnthropicConfig): ModelProvider {
   return modelRegistry.resolve("anthropic", modelId, config);
 }
 

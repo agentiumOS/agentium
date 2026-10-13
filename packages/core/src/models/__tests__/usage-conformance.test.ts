@@ -221,6 +221,7 @@ import type { StreamChunk } from "../types.js";
 
 function adapter(prototype: ModelProvider, providerId: string, fields: Record<string, unknown>): ModelProvider {
   const provider: ModelProvider = Object.create(prototype);
+  Reflect.set(provider, "config", {});
   Object.assign(provider, { providerId, modelId: "fixture-model", ...fields });
   return provider;
 }

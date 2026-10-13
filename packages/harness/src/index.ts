@@ -22,6 +22,14 @@ export type {
   TextContextOptions,
 } from "./presets.js";
 export { base, fileContext, research, suppliedTools, textContext } from "./presets.js";
+export type { HarnessBudgetSnapshot, HarnessResourceSnapshot, InputTokenEstimator } from "./runtime/budget.js";
+export type {
+  HistoryArchive,
+  HistoryArchiveReference,
+  HistoryArchiveScope,
+  ResidentHistoryPolicy,
+} from "./runtime/history.js";
+export { HistoryRetentionError } from "./runtime/history.js";
 export type {
   AbilityBinding,
   AbilityFactory,
@@ -89,7 +97,7 @@ export {
   resolveHarnessRuntime,
 } from "./runtime/index.js";
 export type { HarnessInputErrorCode } from "./runtime/input.js";
-export { HarnessInputError } from "./runtime/input.js";
+export { HarnessInputError, parseRunInput, RUN_INPUT_LIMITS, validateRunInput } from "./runtime/input.js";
 export { defineWatch, describeWatch } from "./watch/definition.js";
 export { type GmailWatchClient, type GmailWatchOptions, gmailWatchSource } from "./watch/gmail.js";
 export { DurableWatch } from "./watch/runtime.js";

@@ -494,3 +494,115 @@ await observation.shutdown();
 The runtime emits one run lifecycle, uniquely identified model invocations for `services.model`, `streamModel` and `controlModel`, and controller spans for `prepareRun`, `prepareStep` and completion evaluation. Decisions include action, selected model role and active tool count. Success, failure and cancellation close their spans. Observation failures do not control execution. Prompts, output text, controller explanations and tool arguments are omitted from these events.
 
 Use this bus with its own collector when observing the harness. Do not attach the same tracer or metrics collector to both the harness bus and the wrapped Agent bus: those layers share execution IDs and describe overlapping work. Direct provider calls that bypass the execution services also bypass runtime budgets and telemetry; custom drivers should use the services. Transport/toolkit-specific tracing remains available on their existing buses.
+
+### Resource budgets and finishing work
+
+`HarnessRuntime` reserves projected input plus output before submitting each model
+call. Input includes the projected messages, tool schemas, and opaque provider
+continuation. A synchronous `estimateInputTokens({ provider, messages, tools })`
+option can supply a provider-specific conservative bound; the default estimator
+is advisory. Output is capped to the available balance after projected input.
+Concurrent task, control, and finishing operations share admission. Call slots
+are reserved before controllers/context projection, and released on preparation
+failure without consuming a logical call.
+
+```ts
+const runtime = new HarnessRuntime({
+  driver,
+  grants: { toolIds: [], modelRoles: ["main", "finisher"] },
+  models: { finisher: { provider: model, options: ["maxTokens"] } },
+  budgets: {
+    maxModelCalls: 12,
+    maxTokens: 80_000,
+    finishingModelCalls: 1,
+    finishingTokens: 6_000,
+  },
+  completionPolicy,
+});
+const handle = runtime.start("task", { identity, sessionId });
+console.log(handle.budget.tokens); // limit, used, reserved, remaining,
+                                  // finishingReserved, ordinaryRemaining
+```
+
+Snapshots are available from `handle.budget`, `services.budget`, and
+`result.budget`. Counts use logical model calls, tool attempts admitted by policy,
+and total input + output tokens. `null` limits/remaining mean unlimited.
+`remaining = max(0, limit - used - reserved)`; `finishingReserved` is the protected
+uncommitted remainder inside that total, and `ordinaryRemaining` excludes it.
+Known usage replaces projected token reservations, including late usage after
+cancellation. Reservations are always released. Requests that started but have no
+complete usage consume their projection conservatively and increment
+`unknownUsageCalls`. Reported `result.usage` remains actual received evidence;
+it can differ from conservatively charged `result.budget.tokens.used`.
+
+A trusted driver or completion controller can call
+`services.finishModel("finisher", messages, { maxTokens: 2_000 })`. This explicitly
+uses finishing capacity (plus available ordinary capacity), requires a granted,
+explicitly bound role, and only accepts complete tool-free responses. Returning
+that candidate from the driver still invokes `completionPolicy`; finishing does
+not bypass evidence validation or authorize tools/effects. Ordinary work and
+repeated budget denials cannot consume the finishing reserve. No extra allowance
+is added above the configured total.
+
+These are per-run projected resource budgets, separate from core's store-backed
+currency reservations. Actual provider overages are recorded and reduce future
+admission; estimates cannot guarantee a hard physical-token ceiling. Unknown SDK
+retry consumption is not visible here. For a strict host bound, supply conservative
+input estimates, bounded outputs, disable internal retries, and choose an explicit
+host retry/accounting policy. An unlimited token budget without a maxTokens value
+cannot conservatively bound unknown output usage.
+
+### Resident history and host archives
+
+Request context projection still leaves canonical records intact. Opt into
+`residentHistory: { maxMessages, maxBytes?, archive, canEvict? }` to move old closed
+turns from resident memory into a host-owned archive. `archive.write(scope,
+reference, messages)` must acknowledge storage before resolving;
+`archive.read(scope, reference)` returns the original records. No storage backend
+is bundled. References include a conversation ID, count, and SHA-256 digest and
+are persisted as `HarnessSessionSnapshot.archivedHistory`.
+
+Limits apply per conversation at model/session boundaries. Whole user turns are
+atomic, including every parallel tool call/result and opaque replay item. Host
+instructions and the latest turn stay resident; an oversized indivisible turn
+fails with `HistoryRetentionError`. An archive failure leaves local records intact.
+The failure snapshot retains evidence even when it cannot fit the requested limit.
+Closed OpenAI Responses/Anthropic replay groups are supported. Unknown opaque
+payloads require an explicit `canEvict` host attestation or provider
+`capabilities.historyEviction: "closed_turns"`; an explicit `"unsupported"` rejects
+eviction. Never declare support for providers that require evicted continuation.
+
+`services.history` is the resident replay window; `services.archivedHistory` lists
+archive references. Retrieve a reference using `services.retrieveHistory(id)` in
+an active run or `runtime.retrieveHistory(identity, sessionId, id)` between runs.
+Retrieval verifies count/digest and tool structure; it does not automatically insert
+retrieved records into trusted model context. The host can present retrieved
+records as source data through its context policy. Built-in Agent loops release
+evicted initial/transcript copies. Custom drivers own their extra copies, and
+parallel active child conversations have independent resident limits. Completed
+child transcripts are archived in full at successful session commit. Archive reference
+metadata, host storage retention, and aggregate limits across many sessions remain
+host responsibilities. Without this opt-in, existing full-history behavior remains.
+
+### Public input prevalidation
+
+Import `parseRunInput`, `validateRunInput`, `RUN_INPUT_LIMITS`, and
+`HarnessInputError` from `@agentium/harness`. `parseRunInput(encodedJSON)` bounds
+UTF-8 bytes before parsing and validates a JSON-encoded **MessageContent value**,
+not an entire reply envelope. `validateRunInput(unknownValue)` returns a validated
+copy using exactly the rules enforced by `start`, `send`, and `reply`.
+
+The frozen limits expose `maxEncodedBytes`/`maxNormalizedBytes` (65,536),
+`maxQuestionBytes` (32,768), and `maxChoices` (100). Bytes include JSON quotes and
+escaping; the encoded limit also counts whitespace. Validation permits empty
+strings but requires nonempty arrays of strictly shaped content parts. Media
+payloads are shape-checked; provider-specific media support remains a later check.
+Prevalidation does not claim a pending request. Run state, request correlation,
+already-resolved replies, cancellation, and timeouts are rechecked atomically when
+`reply(requestId, value)` consumes it.
+
+Session snapshots persist conversation/state; they do not restore a live run.
+Durable recovery requires versioned execution checkpoints, pending-input state and
+safe continuation of effects. That work is deferred, as is paged skill-reference
+retrieval: the current built-in skill tool still reads whole files. A future paging
+contract should include stable offsets/revisions and truthful omission markers.

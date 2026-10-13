@@ -1,0 +1,3 @@
+# input-validation
+
+Export `validateRunInput(input: unknown): MessageContent`, immutable `RUN_INPUT_LIMITS`, and `parseRunInput(encoded: string): MessageContent` at @agentium/harness root. Encoded parsing bounds UTF-8 JSON bytes before parsing; normalized content uses exactly the execution-time validator. Metadata names units explicitly: max encoded/normalized JSON bytes, max question bytes, max choices. Enforce common validator at start, send, reply. Stateless prevalidation guarantees content shape/size, not current request ownership, correlation, pending/terminal status, timeout, grants or downstream provider media support. Reply atomically rechecks state when consumed. Preserve existing 65536-byte and 32768-byte normalized limits.

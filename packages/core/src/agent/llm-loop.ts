@@ -208,7 +208,8 @@ export class LLMLoop {
     try {
       return await withRetry(
         () => this.generateObserved(this.provider, messages, options, ctx, "answer", operationId),
-        this.retry,
+        this.controlledExecution ? { maxRetries: 0, ...this.retry } : this.retry,
+        options.signal,
       );
     } finally {
       tracker?.endPendingAttempt(lifetime);
@@ -340,6 +341,23 @@ export class LLMLoop {
       if (ctx.signal?.aborted) throw new RunCancelledError();
 
       this.applySteering(ctx, append);
+      if (ctx.executionServices?.retainHistory) {
+        const retained = await ctx.executionServices.retainHistory(this.provider, currentMessages, ctx);
+        currentMessages.splice(0, currentMessages.length, ...retained);
+        // Agent-owned initial/transcript copies must not retain evicted payloads.
+        const residentRecords = new Set(retained.map((message) => JSON.stringify(message)));
+        messages.splice(
+          0,
+          messages.length,
+          ...messages.filter((message) => residentRecords.has(JSON.stringify(message))),
+        );
+        if (transcript)
+          transcript.splice(
+            0,
+            transcript.length,
+            ...transcript.filter((message) => residentRecords.has(JSON.stringify(message))),
+          );
+      }
       const mandatoryMessages = !this.controlledExecution ? undefined : structuredClone(currentMessages);
       // Hook: beforeLLMCall — allows message modification (e.g. context compaction, PII scrubbing)
       if (this.loopHooks?.beforeLLMCall) {
@@ -638,6 +656,23 @@ export class LLMLoop {
       if (ctx.signal?.aborted) throw new RunCancelledError();
 
       this.applySteering(ctx, append);
+      if (ctx.executionServices?.retainHistory) {
+        const retained = await ctx.executionServices.retainHistory(this.provider, currentMessages, ctx);
+        currentMessages.splice(0, currentMessages.length, ...retained);
+        // Agent-owned initial/transcript copies must not retain evicted payloads.
+        const residentRecords = new Set(retained.map((message) => JSON.stringify(message)));
+        messages.splice(
+          0,
+          messages.length,
+          ...messages.filter((message) => residentRecords.has(JSON.stringify(message))),
+        );
+        if (transcript)
+          transcript.splice(
+            0,
+            transcript.length,
+            ...transcript.filter((message) => residentRecords.has(JSON.stringify(message))),
+          );
+      }
       const mandatoryMessages = !this.controlledExecution ? undefined : structuredClone(currentMessages);
       // Hook: beforeLLMCall
       if (this.loopHooks?.beforeLLMCall) {

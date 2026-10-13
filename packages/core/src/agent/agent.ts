@@ -515,6 +515,8 @@ export class Agent {
       ? {
           accountingRole: "composite" as const,
           communicationCapabilities: this.config.model.communicationCapabilities,
+          capabilities: this.config.model.capabilities,
+          unknownCapabilities: this.config.model.unknownCapabilities,
           providerId: this.config.model.providerId,
           modelId: this.config.model.modelId,
           generate: (

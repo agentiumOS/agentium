@@ -215,6 +215,10 @@ export interface ModelBillingContext {
 }
 
 export interface ModelConfig {
+  /** Absolute logical-call deadline (epoch milliseconds), including retries and streaming. */
+  deadline?: number;
+  /** Whole logical-call timeout; the earliest constructor/call deadline or caller abort wins. */
+  callTimeoutMs?: number;
   /** Billing facts for metered calls. Provider-returned facts take precedence. */
   billingContext?: ModelBillingContext;
   /** Cooperative cancellation, forwarded by compatible providers. */

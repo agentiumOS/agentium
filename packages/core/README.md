@@ -273,3 +273,69 @@ and supported/unsupported/conditional summary support. Public summaries only use
 documented provider summary fields; raw thinking and opaque providerExtras are
 not display summaries. See the [conversational runs guide](../harness/CONVERSATIONAL-RUNS.md)
 for live questions, steering, and completed-tool-round compaction through the harness.
+
+### Host-controlled model requests
+
+OpenAI and Anthropic constructors and the `openai()`/`anthropic()` factories accept
+`maxRetries` (Agentium, default 2), `sdkMaxRetries` (omitted preserves the SDK
+default), `timeoutMs` (SDK request timeout), and `callTimeoutMs` (the entire logical
+call, including retry waits and stream consumption). To let the host own retries:
+
+```ts
+import { openai } from "@agentium/core";
+
+const model = openai("your-model", {
+  apiKey: process.env.OPENAI_API_KEY,
+  maxRetries: 0,
+  sdkMaxRetries: 0,
+  timeoutMs: 30_000,
+  callTimeoutMs: 90_000,
+  endpoint: "responses",
+  fallback: "error",
+});
+const response = await model.generate([{ role: "user", content: "Hello" }], {
+  signal: controller.signal,
+  deadline: Date.now() + 60_000,
+  maxTokens: 2_000,
+});
+```
+
+The earliest caller cancellation, constructor/call timeout, or absolute deadline
+wins. Caller abort reasons are preserved; logical deadlines throw
+`ModelDeadlineError`. SDK request timeouts may be retried, whereas logical
+deadlines/cancellation are terminal. Wait listeners and timers are released.
+Streams are retried only during SDK request establishment, never after stream
+iteration begins, even if only provider metadata has arrived. SDK timeout details
+are SDK-version-dependent; use a logical deadline to bound the full stream.
+
+There is also an Agent-level retry wrapper. Harness-controlled Agents now default
+that wrapper to zero retries; explicit `Agent({ retry: { maxRetries: ... } })` opts
+in. Standalone Agents preserve their prior defaults, so set
+`retry: { maxRetries: 0 }` there when the host owns retries. Model `maxRetries` and
+`sdkMaxRetries` remain separate from the Agent setting.
+
+Accounting distinguishes a logical operation from its observed SDK invocations.
+`attemptVisibility` is `physical` only with `sdkMaxRetries: 0`; otherwise it is
+`opaque`. SDK-internal retries cannot be counted accurately by Agentium. Harness
+model-call budgets and model telemetry count logical calls, not HTTP attempts.
+`ModelUsageError` exposes usage from a response that failed normalization or
+completion validation; harness reservations reconcile this evidence too.
+
+`OpenAIConfig.endpoint` accepts `auto` (default), `responses` (required), or
+`chat_completions`. `fallback` accepts `compatible` (default) or `error`.
+Unavailable Responses endpoints now fail if Chat Completions would disable
+reasoning, lose provider replay, or drop Responses-only reasoning/cache options.
+Requiring Responses never falls back. Explicit Chat Completions also validates
+compatibility before transport. This intentionally replaces the previous silent
+reasoning downgrade on some model/tool combinations.
+
+`ModelCapabilities` is a host-supplied interface, independent of any registry:
+`contextWindow`, `maxOutputTokens`, `tools`, `reasoningEfforts`, `reasoningModes`,
+and `historyEviction`. Supply `capabilities` to either adapter and optionally
+`unknownCapabilities: "error"`; the default permits unknown fields. Strict mode
+requires context/output limit facts and facts for explicitly requested features.
+Known output limits also cap omitted adapter output defaults.
+`validateModelRequest()` exposes the same preflight checks for other adapters.
+Configured incompatibilities fail before transport. Context sizing is an estimate
+unless the host supplies an authoritative tokenizer/bound; provider enforcement
+is authoritative. Capabilities do not change the provider endpoint's semantics.

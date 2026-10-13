@@ -2,6 +2,8 @@ import type { CommunicationCapabilities } from "./public-messages.js";
 import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefinition } from "./types.js";
 
 export interface ModelProvider {
+  readonly capabilities?: import("./capabilities.js").ModelCapabilities;
+  readonly unknownCapabilities?: import("./capabilities.js").UnknownCapabilityPolicy;
   readonly providerId: string;
   readonly communicationCapabilities?: CommunicationCapabilities;
   readonly modelId: string;

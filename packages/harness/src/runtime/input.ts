@@ -20,6 +20,14 @@ export class HarnessInputError extends Error {
   }
 }
 
+/** UTF-8 JSON bytes, including quoting/escaping. Frozen metadata shared with execution. */
+export const RUN_INPUT_LIMITS = Object.freeze({
+  maxEncodedBytes: 65536,
+  maxNormalizedBytes: 65536,
+  maxQuestionBytes: 32768,
+  maxChoices: 100,
+});
+
 const text = z.object({ type: z.literal("text"), text: z.string() }).strict();
 const media = z.discriminatedUnion("type", [
   text,
@@ -45,16 +53,29 @@ const message = z.union([z.string(), z.array(media).min(1)]);
 const question = z
   .object({
     question: z.string().trim().min(1),
-    choices: z.array(z.string().min(1)).min(1).max(100).optional(),
+    choices: z.array(z.string().min(1)).min(1).max(RUN_INPUT_LIMITS.maxChoices).optional(),
     timeoutMs: z.number().int().positive().safe().optional(),
   })
   .strict();
 
-export function validateRunInput(input: MessageContent): MessageContent {
+export function validateRunInput(input: unknown): MessageContent {
   const parsed = message.safeParse(input);
-  if (!parsed.success || Buffer.byteLength(JSON.stringify(parsed.data)) > 65536)
+  if (!parsed.success || Buffer.byteLength(JSON.stringify(parsed.data)) > RUN_INPUT_LIMITS.maxNormalizedBytes)
     throw new HarnessInputError("invalid_input", "Input must be valid message content no larger than 64KB");
   return parsed.data;
+}
+
+/** Prevalidate encoded message content before claiming a reply. State is checked again by reply/send/start. */
+export function parseRunInput(encoded: string): MessageContent {
+  if (typeof encoded !== "string" || Buffer.byteLength(encoded) > RUN_INPUT_LIMITS.maxEncodedBytes)
+    throw new HarnessInputError("invalid_input", "Encoded input exceeds the UTF-8 JSON byte limit");
+  let input: unknown;
+  try {
+    input = JSON.parse(encoded);
+  } catch {
+    throw new HarnessInputError("invalid_input", "Input must be valid JSON message content");
+  }
+  return validateRunInput(input);
 }
 
 export function validateTimeout(value: number | undefined): void {
@@ -112,7 +133,7 @@ export class LiveInput {
   requestInput(options: InputRequestOptions): Promise<InputReply> {
     this.assertNotWaiting();
     const parsed = question.safeParse(options);
-    if (!parsed.success || Buffer.byteLength(JSON.stringify(parsed.data)) > 32768)
+    if (!parsed.success || Buffer.byteLength(JSON.stringify(parsed.data)) > RUN_INPUT_LIMITS.maxQuestionBytes)
       throw new HarnessInputError("invalid_input", "Question must be valid and no larger than 32KB");
     const request: InputRequest = { ...parsed.data, id: `${this.runId}:${randomUUID()}`, runId: this.runId };
     const promise = new Promise<InputReply>((resolve, reject) => {

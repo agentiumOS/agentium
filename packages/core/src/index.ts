@@ -256,6 +256,7 @@ export type { JevQuestions } from "./models/jev-sdk.js";
 export { choice, noul, score } from "./models/jev-sdk.js";
 // Models
 export type { ModelProvider } from "./models/provider.js";
+export type { AnthropicConfig } from "./models/providers/anthropic.js";
 export { AnthropicProvider } from "./models/providers/anthropic.js";
 export type { AwsBedrockConfig } from "./models/providers/aws-bedrock.js";
 export { AwsBedrockProvider } from "./models/providers/aws-bedrock.js";
@@ -277,6 +278,7 @@ export { MetaLlamaProvider } from "./models/providers/meta-llama.js";
 export type { MistralConfig } from "./models/providers/mistral.js";
 export { MistralProvider } from "./models/providers/mistral.js";
 export { OllamaProvider } from "./models/providers/ollama.js";
+export type { OpenAIConfig } from "./models/providers/openai.js";
 export { OpenAIProvider } from "./models/providers/openai.js";
 export type { OpenAICompatibleConfig } from "./models/providers/openai-compatible.js";
 export { OpenAICompatibleProvider } from "./models/providers/openai-compatible.js";
@@ -315,6 +317,8 @@ export {
   vertex,
   xai,
 } from "./models/registry.js";
+export type { ProviderRequestControls } from "./models/request-controls.js";
+export { ModelDeadlineError } from "./models/request-controls.js";
 export type {
   AudioPart,
   ChatMessage,
@@ -555,6 +559,8 @@ export type { CritiqueResult, LoopEscapeResult, PlanCritiqueResult, ReflectionCo
 // Agent Reflection
 export { ReflectionManager } from "./agent/reflection.js";
 export * from "./durable/index.js";
+export type { ModelCapabilities, UnknownCapabilityPolicy } from "./models/capabilities.js";
+export { ModelCapabilityError, validateModelRequest } from "./models/capabilities.js";
 export type { CircuitBreakerConfig, CircuitState, ErrorClassification } from "./models/circuit-breaker.js";
 // Model Resilience
 export { CircuitBreaker, defaultClassifyError } from "./models/circuit-breaker.js";
@@ -562,6 +568,7 @@ export type { FallbackProviderConfig } from "./models/fallback-provider.js";
 export { FallbackProvider, withFallback } from "./models/fallback-provider.js";
 export type { ModelRouterConfig, ModelTier, RoutingRule } from "./models/model-router.js";
 export { classifyComplexity, ModelRouter } from "./models/model-router.js";
+export { EndpointCompatibilityError } from "./models/openai-api.js";
 export type {
   CommunicationCapabilities,
   PublicMessage,

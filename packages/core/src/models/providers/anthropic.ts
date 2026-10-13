@@ -1,8 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import type { RawMessageStreamEvent } from "@anthropic-ai/sdk/resources/messages";
 import type { BillingContext } from "../../cost/accounting-types.js";
-import { captureRetryFailure } from "../../cost/context.js";
+import {
+  type ModelCapabilities,
+  type UnknownCapabilityPolicy,
+  validateModelCapabilities,
+  validateModelRequest,
+} from "../capabilities.js";
 import type { ModelProvider } from "../provider.js";
+import {
+  abortableStream,
+  createRequestScope,
+  type ProviderRequestControls,
+  validateRequestControls,
+} from "../request-controls.js";
 import { anthropicReplayContent, applyAnthropicThinking, extrasFromAnthropicContent } from "../thinking-replay.js";
 import {
   type ChatMessage,
@@ -19,8 +31,11 @@ import { mergeResponseContext, providerTokenUsage, safeResponseContext } from ".
 
 const _require = createRequire(import.meta.url);
 
-interface AnthropicConfig {
+export interface AnthropicConfig extends ProviderRequestControls {
+  capabilities?: ModelCapabilities;
+  unknownCapabilities?: UnknownCapabilityPolicy;
   apiKey?: string;
+  baseURL?: string;
 }
 
 /**
@@ -46,19 +61,29 @@ function isAnthropicReasoningOnlyTempModel(modelId: string): boolean {
 export class AnthropicProvider implements ModelProvider {
   readonly providerId = "anthropic";
   readonly modelId: string;
+  readonly capabilities?: ModelCapabilities;
+  readonly unknownCapabilities?: UnknownCapabilityPolicy;
   readonly communicationCapabilities = { messagePhases: "inferred", reasoningSummaries: "conditional" } as const;
+  readonly attemptVisibility: "physical" | "opaque";
+  private config: AnthropicConfig;
   private client: any;
   private AnthropicCtor: any;
   private clientCache = new Map<string, any>();
 
   constructor(modelId: string, config?: AnthropicConfig) {
     this.modelId = modelId;
+    this.config = { ...config };
+    this.capabilities = { historyEviction: "closed_turns", ...structuredClone(config?.capabilities ?? {}) };
+    this.unknownCapabilities = config?.unknownCapabilities;
+    validateModelCapabilities(this.capabilities);
+    validateRequestControls(this.config);
+    this.attemptVisibility = config?.sdkMaxRetries === 0 ? "physical" : "opaque";
     try {
       const mod = _require("@anthropic-ai/sdk");
       this.AnthropicCtor = mod.default ?? mod;
       const key = config?.apiKey ?? process.env.ANTHROPIC_API_KEY;
       if (key) {
-        this.client = new this.AnthropicCtor({ apiKey: key });
+        this.client = new this.AnthropicCtor(this.clientOptions(key));
       }
     } catch (e: any) {
       if (e?.code === "MODULE_NOT_FOUND" || e?.code === "ERR_MODULE_NOT_FOUND") {
@@ -74,7 +99,7 @@ export class AnthropicProvider implements ModelProvider {
     if (apiKey) {
       let cached = this.clientCache.get(apiKey);
       if (!cached) {
-        cached = new this.AnthropicCtor({ apiKey });
+        cached = new this.AnthropicCtor(this.clientOptions(apiKey));
         this.clientCache.set(apiKey, cached);
         if (this.clientCache.size > 50) {
           const oldest = this.clientCache.keys().next().value;
@@ -86,7 +111,7 @@ export class AnthropicProvider implements ModelProvider {
     if (this.client) return this.client;
     const envKey = process.env.ANTHROPIC_API_KEY;
     if (envKey) {
-      this.client = new this.AnthropicCtor({ apiKey: envKey });
+      this.client = new this.AnthropicCtor(this.clientOptions(envKey));
       return this.client;
     }
     throw new Error(
@@ -94,211 +119,221 @@ export class AnthropicProvider implements ModelProvider {
     );
   }
 
-  private async withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        return await fn();
-      } catch (err: any) {
-        const status = err?.status ?? err?.statusCode ?? err?.code;
-        const isRetryable =
-          status === 429 ||
-          status === 500 ||
-          status === 502 ||
-          status === 503 ||
-          err?.code === "ECONNRESET" ||
-          err?.code === "ETIMEDOUT" ||
-          err?.message?.includes("rate limit");
-        if (!isRetryable || attempt === retries) throw err;
-        await captureRetryFailure(err);
-        const delay = Math.min(1000 * 2 ** attempt + Math.random() * 500, 10000);
-        await new Promise((r) => setTimeout(r, delay));
-      }
-    }
-    throw new Error("Unreachable");
+  private clientOptions(apiKey: string) {
+    return {
+      apiKey,
+      baseURL: this.config.baseURL,
+      ...(this.config.sdkMaxRetries !== undefined ? { maxRetries: this.config.sdkMaxRetries } : {}),
+      ...(this.config.timeoutMs !== undefined ? { timeout: this.config.timeoutMs } : {}),
+    };
   }
 
   async generate(
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): Promise<ModelResponse> {
-    const { systemMsg, anthropicMessages } = this.toAnthropicMessages(messages);
+    if (options?.maxTokens === undefined)
+      options = { ...options, maxTokens: Math.min(4096, this.capabilities?.maxOutputTokens ?? 4096) };
+    validateModelRequest(this.capabilities, messages, options, this.unknownCapabilities);
+    const scope = createRequestScope(this.config, options);
+    options = { ...options, signal: scope.signal };
+    try {
+      const { systemMsg, anthropicMessages } = this.toAnthropicMessages(messages);
 
-    const maxTokens = options?.maxTokens ?? 4096;
+      const maxTokens = options?.maxTokens ?? 4096;
 
-    const params: Record<string, unknown> = {
-      model: this.modelId,
-      messages: anthropicMessages,
-      max_tokens: maxTokens,
-    };
+      const params: Record<string, unknown> = {
+        model: this.modelId,
+        messages: anthropicMessages,
+        max_tokens: maxTokens,
+      };
 
-    // Newer Claude models (Opus 4.x, Sonnet 4.5+, Haiku 4.5+) have deprecated
-    // arbitrary temperature — only the default is accepted. Detect by ID and
-    // drop the field so callers can keep passing temperature: 0 elsewhere.
-    const supportsTemperature = !isAnthropicReasoningOnlyTempModel(this.modelId);
+      // Newer Claude models (Opus 4.x, Sonnet 4.5+, Haiku 4.5+) have deprecated
+      // arbitrary temperature — only the default is accepted. Detect by ID and
+      // drop the field so callers can keep passing temperature: 0 elsewhere.
+      const supportsTemperature = !isAnthropicReasoningOnlyTempModel(this.modelId);
 
-    if (systemMsg) params.system = systemMsg;
-    if (supportsTemperature && options?.temperature !== undefined) params.temperature = options.temperature;
-    if (options?.topP !== undefined) params.top_p = options.topP;
-    if (options?.stop) params.stop_sequences = options.stop;
-    if (options?.tools?.length) {
-      params.tools = this.toAnthropicTools(options.tools);
+      if (systemMsg) params.system = systemMsg;
+      if (supportsTemperature && options?.temperature !== undefined) params.temperature = options.temperature;
+      if (options?.topP !== undefined) params.top_p = options.topP;
+      if (options?.stop) params.stop_sequences = options.stop;
+      if (options?.tools?.length) {
+        params.tools = this.toAnthropicTools(options.tools);
+      }
+      const betaHeaders = applyAnthropicThinking(params, this.modelId, options);
+
+      const client = this.getClient(options?.apiKey);
+      const response = await scope.retry(() =>
+        client.messages.create(
+          params,
+          betaHeaders || options?.signal
+            ? {
+                ...(betaHeaders ? { headers: betaHeaders } : {}),
+                ...(options?.signal ? { signal: options.signal } : {}),
+              }
+            : undefined,
+        ),
+      );
+      return this.normalizeResponse(response, options?.reasoning?.enabled === true);
+    } finally {
+      scope.dispose();
     }
-    const betaHeaders = applyAnthropicThinking(params, this.modelId, options);
-
-    const client = this.getClient(options?.apiKey);
-    const response = await this.withRetry(() =>
-      client.messages.create(
-        params,
-        betaHeaders || options?.signal
-          ? { ...(betaHeaders ? { headers: betaHeaders } : {}), ...(options?.signal ? { signal: options.signal } : {}) }
-          : undefined,
-      ),
-    );
-    return this.normalizeResponse(response, options?.reasoning?.enabled === true);
   }
 
   async *stream(
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): AsyncGenerator<StreamChunk> {
-    const { systemMsg, anthropicMessages } = this.toAnthropicMessages(messages);
+    if (options?.maxTokens === undefined)
+      options = { ...options, maxTokens: Math.min(4096, this.capabilities?.maxOutputTokens ?? 4096) };
+    validateModelRequest(this.capabilities, messages, options, this.unknownCapabilities);
+    const scope = createRequestScope(this.config, options);
+    options = { ...options, signal: scope.signal };
+    try {
+      const { systemMsg, anthropicMessages } = this.toAnthropicMessages(messages);
 
-    const maxTokens = options?.maxTokens ?? 4096;
+      const maxTokens = options?.maxTokens ?? 4096;
 
-    const params: Record<string, unknown> = {
-      model: this.modelId,
-      messages: anthropicMessages,
-      max_tokens: maxTokens,
-      stream: true,
-    };
+      const params: Record<string, unknown> = {
+        model: this.modelId,
+        messages: anthropicMessages,
+        max_tokens: maxTokens,
+        stream: true,
+      };
 
-    const supportsTemperature = !isAnthropicReasoningOnlyTempModel(this.modelId);
+      const supportsTemperature = !isAnthropicReasoningOnlyTempModel(this.modelId);
 
-    if (systemMsg) params.system = systemMsg;
-    if (supportsTemperature && options?.temperature !== undefined) params.temperature = options.temperature;
-    if (options?.topP !== undefined) params.top_p = options.topP;
-    if (options?.stop) params.stop_sequences = options.stop;
-    if (options?.tools?.length) {
-      params.tools = this.toAnthropicTools(options.tools);
-    }
-    const betaHeaders = applyAnthropicThinking(params, this.modelId, options);
+      if (systemMsg) params.system = systemMsg;
+      if (supportsTemperature && options?.temperature !== undefined) params.temperature = options.temperature;
+      if (options?.topP !== undefined) params.top_p = options.topP;
+      if (options?.stop) params.stop_sequences = options.stop;
+      if (options?.tools?.length) {
+        params.tools = this.toAnthropicTools(options.tools);
+      }
+      const betaHeaders = applyAnthropicThinking(params, this.modelId, options);
 
-    const client = this.getClient(options?.apiKey);
-    const stream = await this.withRetry<any>(() =>
-      client.messages.create(
-        params,
-        betaHeaders || options?.signal
-          ? { ...(betaHeaders ? { headers: betaHeaders } : {}), ...(options?.signal ? { signal: options.signal } : {}) }
-          : undefined,
-      ),
-    );
+      const client = this.getClient(options?.apiKey);
+      const stream = await scope.retry<AsyncIterable<RawMessageStreamEvent>>(() =>
+        client.messages.create(
+          params,
+          betaHeaders || options?.signal
+            ? {
+                ...(betaHeaders ? { headers: betaHeaders } : {}),
+                ...(options?.signal ? { signal: options.signal } : {}),
+              }
+            : undefined,
+        ),
+      );
 
-    let currentToolId = "";
-    let inThinkingBlock = false;
-    let streamUsage: Record<string, unknown> = {};
-    let streamContext: Partial<BillingContext> = { modelId: this.modelId };
-    const replayContent: unknown[] = [];
-    let currentBlock: Record<string, unknown> | null = null;
-    let toolInputJson = "";
+      let currentToolId = "";
+      let inThinkingBlock = false;
+      let streamUsage: Record<string, unknown> = {};
+      let streamContext: Partial<BillingContext> = { modelId: this.modelId };
+      const replayContent: unknown[] = [];
+      let currentBlock: Record<string, unknown> | null = null;
+      let toolInputJson = "";
 
-    for await (const event of stream) {
-      switch (event.type) {
-        case "content_block_start": {
-          const block = event.content_block;
-          if (block?.type === "tool_use") {
-            currentToolId = block.id;
-            toolInputJson = "";
-            currentBlock = { type: "tool_use", id: block.id, name: block.name, input: block.input ?? {} };
-            replayContent.push(currentBlock);
+      for await (const event of abortableStream(stream, scope.signal)) {
+        switch (event.type) {
+          case "content_block_start": {
+            const block = event.content_block;
+            if (block?.type === "tool_use") {
+              currentToolId = block.id;
+              toolInputJson = "";
+              currentBlock = { type: "tool_use", id: block.id, name: block.name, input: block.input ?? {} };
+              replayContent.push(currentBlock);
+              yield {
+                type: "tool_call_start",
+                toolCall: {
+                  id: block.id,
+                  name: block.name,
+                },
+              };
+            } else if (block?.type === "thinking") {
+              inThinkingBlock = true;
+              currentBlock = { type: "thinking", thinking: block.thinking ?? "", signature: block.signature ?? "" };
+              replayContent.push(currentBlock);
+            } else if (block?.type === "redacted_thinking") {
+              currentBlock = { type: "redacted_thinking", data: block.data };
+              replayContent.push(currentBlock);
+            } else if (block?.type === "text") {
+              currentBlock = { type: "text", text: block.text ?? "" };
+              replayContent.push(currentBlock);
+            }
+            break;
+          }
+          case "content_block_delta": {
+            if (event.delta?.type === "thinking_delta") {
+              if (currentBlock?.type === "thinking") {
+                currentBlock.thinking = `${currentBlock.thinking ?? ""}${event.delta.thinking ?? ""}`;
+              }
+              yield { type: "thinking", text: event.delta.thinking };
+              // This adapter explicitly requests display: summarized when reasoning is enabled.
+              if (options?.reasoning?.enabled) yield { type: "reasoning_summary", text: event.delta.thinking };
+            } else if (event.delta?.type === "signature_delta") {
+              if (currentBlock?.type === "thinking") {
+                currentBlock.signature = `${currentBlock.signature ?? ""}${event.delta.signature ?? ""}`;
+              }
+            } else if (event.delta?.type === "text_delta") {
+              if (currentBlock?.type === "text") {
+                currentBlock.text = `${currentBlock.text ?? ""}${event.delta.text ?? ""}`;
+              }
+              yield { type: "text", text: event.delta.text };
+            } else if (event.delta?.type === "input_json_delta") {
+              toolInputJson += event.delta.partial_json ?? "";
+              yield {
+                type: "tool_call_delta",
+                toolCallId: currentToolId,
+                argumentsDelta: event.delta.partial_json,
+              };
+            }
+            break;
+          }
+          case "content_block_stop": {
+            if (currentBlock?.type === "tool_use" && toolInputJson) {
+              try {
+                currentBlock.input = JSON.parse(toolInputJson);
+              } catch {
+                /* keep whatever was on the start event */
+              }
+            }
+            if (inThinkingBlock) {
+              inThinkingBlock = false;
+            } else if (currentToolId) {
+              yield { type: "tool_call_end", toolCallId: currentToolId };
+              currentToolId = "";
+            }
+            currentBlock = null;
+            break;
+          }
+          case "message_delta": {
+            if (event.usage) streamUsage = { ...streamUsage, ...event.usage };
+            const usage = providerTokenUsage(this.providerId, "messages", streamUsage, streamContext);
+
+            let finishReason: string = event.delta?.stop_reason ?? "stop";
+            if (finishReason === "tool_use") finishReason = "tool_calls";
+            if (finishReason === "end_turn") finishReason = "stop";
+
             yield {
-              type: "tool_call_start",
-              toolCall: {
-                id: block.id,
-                name: block.name,
-              },
+              type: "finish",
+              finishReason,
+              usage,
+              providerExtras: extrasFromAnthropicContent(replayContent),
             };
-          } else if (block?.type === "thinking") {
-            inThinkingBlock = true;
-            currentBlock = { type: "thinking", thinking: block.thinking ?? "", signature: block.signature ?? "" };
-            replayContent.push(currentBlock);
-          } else if (block?.type === "redacted_thinking") {
-            currentBlock = { type: "redacted_thinking", data: block.data };
-            replayContent.push(currentBlock);
-          } else if (block?.type === "text") {
-            currentBlock = { type: "text", text: block.text ?? "" };
-            replayContent.push(currentBlock);
+            break;
           }
-          break;
-        }
-        case "content_block_delta": {
-          if (event.delta?.type === "thinking_delta") {
-            if (currentBlock?.type === "thinking") {
-              currentBlock.thinking = `${currentBlock.thinking ?? ""}${event.delta.thinking ?? ""}`;
+          case "message_start": {
+            if (event.message?.usage) {
+              streamUsage = { ...event.message.usage };
+              streamContext = mergeResponseContext(streamContext, event.message);
+              providerTokenUsage(this.providerId, "messages", streamUsage, streamContext);
             }
-            yield { type: "thinking", text: event.delta.thinking };
-            // This adapter explicitly requests display: summarized when reasoning is enabled.
-            if (options?.reasoning?.enabled) yield { type: "reasoning_summary", text: event.delta.thinking };
-          } else if (event.delta?.type === "signature_delta") {
-            if (currentBlock?.type === "thinking") {
-              currentBlock.signature = `${currentBlock.signature ?? ""}${event.delta.signature ?? ""}`;
-            }
-          } else if (event.delta?.type === "text_delta") {
-            if (currentBlock?.type === "text") {
-              currentBlock.text = `${currentBlock.text ?? ""}${event.delta.text ?? ""}`;
-            }
-            yield { type: "text", text: event.delta.text };
-          } else if (event.delta?.type === "input_json_delta") {
-            toolInputJson += event.delta.partial_json ?? "";
-            yield {
-              type: "tool_call_delta",
-              toolCallId: currentToolId,
-              argumentsDelta: event.delta.partial_json,
-            };
+            break;
           }
-          break;
-        }
-        case "content_block_stop": {
-          if (currentBlock?.type === "tool_use" && toolInputJson) {
-            try {
-              currentBlock.input = JSON.parse(toolInputJson);
-            } catch {
-              /* keep whatever was on the start event */
-            }
-          }
-          if (inThinkingBlock) {
-            inThinkingBlock = false;
-          } else if (currentToolId) {
-            yield { type: "tool_call_end", toolCallId: currentToolId };
-            currentToolId = "";
-          }
-          currentBlock = null;
-          break;
-        }
-        case "message_delta": {
-          if (event.usage) streamUsage = { ...streamUsage, ...event.usage };
-          const usage = providerTokenUsage(this.providerId, "messages", streamUsage, streamContext);
-
-          let finishReason = event.delta?.stop_reason ?? "stop";
-          if (finishReason === "tool_use") finishReason = "tool_calls";
-          if (finishReason === "end_turn") finishReason = "stop";
-
-          yield {
-            type: "finish",
-            finishReason,
-            usage,
-            providerExtras: extrasFromAnthropicContent(replayContent),
-          };
-          break;
-        }
-        case "message_start": {
-          if (event.message?.usage) {
-            streamUsage = { ...event.message.usage };
-            streamContext = mergeResponseContext(streamContext, event.message);
-            providerTokenUsage(this.providerId, "messages", streamUsage, streamContext);
-          }
-          break;
         }
       }
+    } finally {
+      scope.dispose();
     }
   }
 
