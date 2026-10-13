@@ -4,6 +4,8 @@ A developer kit for building agent execution environments from explicit abilitie
 
 Definitions can contribute tools, source context, prompt fragments and ordered middleware. Define, extend and inspect are synchronous and perform no filesystem scans, provider calls or client initialization. Binding and execution begin when the runtime starts a run.
 
+The [dependability guide](DEPENDABILITY.md) shows three complete paths: an ordinary Agent, the same configuration under harness grants/budgets, and optional evidence continuity with verified completion and evaluation. It also defines resource ownership, source trust, incomplete outcomes, storage migration and recovery limits.
+
 ## Build and use
 
 Install matching versions of `@agentium/core` and `@agentium/harness`, plus your chosen provider SDK. This package has no required browser, queue or provider SDK dependency. ESM and CommonJS exports expose the same API. In this workspace:

@@ -29,7 +29,7 @@ const recent: ChatMessage[] = [
 const provider = (): ModelProvider => ({
   providerId: "fixture",
   modelId: "fixture",
-  generate: vi.fn(async () => ({
+  generate: vi.fn<ModelProvider["generate"]>(async () => ({
     message: { role: "assistant", content: "answer" },
     finishReason: "stop",
     usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },

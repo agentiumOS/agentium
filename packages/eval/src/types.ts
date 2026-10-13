@@ -1,4 +1,8 @@
-import type { Agent, MessageContent, RunOpts, RunOutput } from "@agentium/core";
+import type { MessageContent, RunOpts, RunOutput } from "@agentium/core";
+
+export interface EvalTarget {
+  run(input: MessageContent, opts?: RunOpts): Promise<RunOutput>;
+}
 
 export interface EvalCase {
   name: string;
@@ -12,6 +16,7 @@ export interface ScorerResult {
   score: number;
   pass: boolean;
   reason?: string;
+  status?: "graded" | "infrastructure_error";
 }
 
 export interface ScorerContext {
@@ -35,6 +40,7 @@ export interface EvalResult {
   failureKind?: "timeout" | "cancelled" | "infrastructure" | "execution";
   /** Callback ignored cancellation and is still settling; its session remains reserved. */
   cleanupPending?: boolean;
+  gradingStatus?: "complete" | "incomplete";
 }
 
 export interface EvalSuiteResult {
@@ -44,12 +50,16 @@ export interface EvalSuiteResult {
   failed: number;
   total: number;
   averageScore: number;
+  gradedCases?: number;
+  infrastructureFailures?: number;
+  /** Mean over valid grades in completely graded cases; null when none are available. */
+  gradedAverageScore?: number | null;
   durationMs: number;
 }
 
 export interface EvalSuiteConfig {
   name: string;
-  agent: Agent;
+  agent: EvalTarget;
   cases: EvalCase[];
   scorers: Scorer[];
   threshold?: number;

@@ -1,9 +1,8 @@
-import type { Agent } from "@agentium/core";
 import { positive, runCases, successful, validateConfig } from "./case-lifecycle.js";
-import type { EvalCase, Reporter, ScorerResult } from "./types.js";
+import type { EvalCase, EvalTarget, Reporter, ScorerResult } from "./types.js";
 export interface PerformanceEvalConfig {
   name: string;
-  agent: Agent;
+  agent: EvalTarget;
   cases: EvalCase[];
   maxDurationMs?: number;
   maxTimeToFirstTokenMs?: number;

@@ -26,6 +26,11 @@ export class ConsoleReporter implements Reporter {
     console.log(
       `  Results: ${result.passed}/${result.total} passed | Avg score: ${result.averageScore.toFixed(3)} | ${result.durationMs}ms`,
     );
+    if (result.gradedCases !== undefined) {
+      console.log(
+        `  Graded: ${result.gradedCases}/${result.total} | Infrastructure: ${result.infrastructureFailures ?? 0} | Valid-grade mean: ${result.gradedAverageScore?.toFixed(3) ?? "unavailable"}`,
+      );
+    }
     console.log(`${line}\n`);
   }
 }

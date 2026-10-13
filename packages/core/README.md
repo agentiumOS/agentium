@@ -44,7 +44,9 @@ Use `HarnessRuntime({ definition, driver: agentDriver(config), ... })` for a har
 
 `Agent.deep()`, `AgentConfig.harness`, `harnessOptions`, `replaceTools` and `harnessDescription` were removed in 4.0.0. Explicit workspace configuration requires `{path, mode: "read" | "write"}`. Ordinary Agent options remain available; the [harness migration guide](../harness/README.md) shows the removed deep preset's behaviors as explicit choices. Stored conversation readers and public Zod 3 tool schemas remain supported.
 
-Borrowed approval dispatchers stay open when an Agent closes. `Agent.close({closeStorage:false})` releases Agent-owned resources while leaving a supplied storage client with its host; harness-owned Agent drivers use this mode. Ordinary `close()` retains its existing storage-close behavior.
+Borrowed approval dispatchers stay open when an Agent closes. `Agent.close({closeStorage:false})` releases Agent-owned resources while leaving a supplied storage client with its host; harness-owned Agent drivers use this mode. Ordinary `close()` still closes configured memory storage, after owned memory work settles. It rejects busy Agents instead of cancelling admitted work and waits up to 30 seconds for memory by default. A timed-out or cancelled drain leaves storage open and run admission closed; retry close once that work settles. See the [dependability guide](https://github.com/agentiumOS/agentium/blob/main/packages/harness/DEPENDABILITY.md) for typed errors, cancellation and the three adoption paths.
+
+For new shared stores, configure explicit `tuple-v1` scope/Redis key encoding. Existing persistent stores retain legacy defaults and require a host migration; see [storage identities and migration](src/storage/README.md). Workflow strict joins, failure policy and version-bound continuation are described in the [workflow contract](src/workflow/README.md).
 
 ## Execution policy and approvals
 
@@ -234,6 +236,8 @@ Threshold checks can overshoot while accepted work is running. Warning mode cont
 Streaming usage is saved before transport close. Changed cumulative snapshots replace prior snapshots. A custom adapter can mark a finish chunk with `usageObservation: { kind: "delta", id, sequence }`; use a stable event ID and sequence so replayed deltas count once. Observations stay provisional until transport close. Budget checks run after each new usage observation. `Team` and `Workflow` pass the accounting scope to child work.
 
 An accounting write failure after a successful provider call emits `accounting.error`. It does not retry the provider. `flush()` retries the accounting write with the original identity. `usage.recorded`, `cost.assessed`, and `budget.checked` expose canonical status. The legacy `cost.tracked` event remains a replacement run total. Do not add its value to `cost.assessed` amounts.
+
+Legacy synchronous `checkBudget(runId)`, `checkInProgressBudget`, `isBudgetExceeded` and `estimateRemaining` reject with `IncompleteCostError` when canonical usage is incomplete or the local display window has been evicted. They cannot infer a complete ledger from partial display history. Use canonical budget checks and `queryCosts()` for durable accounting decisions.
 
 ### Paid operations beyond chat
 

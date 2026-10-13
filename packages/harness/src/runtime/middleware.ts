@@ -76,3 +76,20 @@ export async function runAfterTool(
     await item.afterTool?.(structuredClone(result), ctx);
   }
 }
+/** Settlement evidence must remain observable when cancellation prevents ordinary hooks. */
+export async function runToolSettlementObservers(
+  middleware: readonly HarnessMiddleware[],
+  result: ToolCallResult,
+  ctx: RunContext,
+): Promise<boolean> {
+  let complete = true;
+  for (const item of middleware) {
+    if (!item.observeToolSettlement) continue;
+    try {
+      await item.observeToolSettlement(structuredClone(result), ctx);
+    } catch {
+      complete = false;
+    }
+  }
+  return complete;
+}

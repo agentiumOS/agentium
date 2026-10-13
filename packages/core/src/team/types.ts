@@ -10,6 +10,12 @@ export enum TeamMode {
   Route = "route",
   Broadcast = "broadcast",
   Collaborate = "collaborate",
+  /**
+   * @deprecated Native Agent tools return settled transfer control, which this
+   * legacy Team protocol does not own. Configure Agent handoff targets outside
+   * controlled execution, or use host-owned routing / Team route, broadcast or
+   * coordinate within a controlled runtime. Preserved through this major.
+   */
   Handoff = "handoff",
 }
 
@@ -22,14 +28,15 @@ export interface TeamConfig {
   members: Array<Agent | import("../a2a/a2a-remote-agent.js").A2ARemoteAgent>;
   instructions?: string;
   sessionState?: Record<string, unknown>;
+  /** Retained configuration field; configure storage on borrowed member Agents explicitly. */
   storage?: StorageDriver;
   maxRounds?: number;
   eventBus?: EventBus;
   /** Auto-register this team in the global registry. Default: true. Set false to opt out. */
   register?: boolean;
   /**
-   * Shared memory across all team members. Member agents that don't have their own
-   * memory config will use this shared memory, enabling cross-agent knowledge sharing.
+   * Retained configuration field. Team does not reconfigure borrowed Agents'
+   * memory or storage; configure those explicitly on each member.
    */
   memory?: UnifiedMemoryConfig;
 }

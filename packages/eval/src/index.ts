@@ -45,6 +45,7 @@ export type {
   EvalResult,
   EvalSuiteConfig,
   EvalSuiteResult,
+  EvalTarget,
   Reporter,
   Scorer,
   ScorerContext,

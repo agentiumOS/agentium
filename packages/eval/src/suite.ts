@@ -30,6 +30,7 @@ export class EvalSuite {
             scores[scorer.name] = {
               score: 0,
               pass: false,
+              status: "infrastructure_error",
               reason: error instanceof Error ? error.message : String(error),
             };
           }

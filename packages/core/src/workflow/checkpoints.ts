@@ -3,7 +3,7 @@ import type { StepResult } from "./types.js";
 
 /**
  * Per-step workflow checkpoint. Captures the state immediately after a step
- * completed so the workflow can replay or fork from that exact point.
+ * completed. Continuation/fork execute remaining steps afresh and may repeat effects.
  */
 export interface WorkflowCheckpoint<TState> {
   /** Stable identifier - `${runId}:${stepIndex}`. */
@@ -18,6 +18,12 @@ export interface WorkflowCheckpoint<TState> {
   /** Cumulative step results up to and including this step. */
   stepResults: StepResult[];
   timestamp: number;
+  formatVersion?: 2;
+  definitionVersion?: string;
+  /** Ordered top-level step names, bound to definitionVersion. */
+  stepNames?: string[];
+  parentCheckpointId?: string;
+  parentRunId?: string;
 }
 
 export interface WorkflowCheckpointStore<TState> {

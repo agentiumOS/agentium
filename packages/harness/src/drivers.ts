@@ -3,6 +3,7 @@ import {
   Agent,
   type AgentConfig,
   type ChatMessage,
+  ModelProtocolError,
   type RunOpts,
   type RunOutput,
   type Team,
@@ -41,6 +42,9 @@ function output(result: RunOutput, history?: readonly ChatMessage[]): HarnessDri
     structured: result.structured,
     usage: result.usage,
     status: result.status === "error" ? "failed" : (result.status ?? "completed"),
+    ...(result.reason ? { reason: result.reason } : {}),
+    ...(result.partial !== undefined ? { partial: result.partial } : {}),
+    ...(result.providerFinishReason ? { providerFinishReason: result.providerFinishReason } : {}),
     ...(history ? { history } : {}),
   };
 }
@@ -73,7 +77,13 @@ export function agentDriver(agent: Agent | AgentConfig, config: { stream?: boole
         : (agent as Agent);
       {
         if (!config.stream) {
-          const result = await instance.run(request.input, options(request, services));
+          let result: RunOutput;
+          try {
+            result = await instance.run(request.input, options(request, services));
+          } catch (error) {
+            if (error instanceof ModelProtocolError) return output(error.output, services.history);
+            throw error;
+          }
           emitText(services, result.text);
           return output(result, services.history);
         }
@@ -85,6 +95,9 @@ export function agentDriver(agent: Agent | AgentConfig, config: { stream?: boole
         try {
           for await (const chunk of instance.stream(request.input, options(request, services)))
             if (chunk.type === "text") emitText(services, chunk.text);
+        } catch (error) {
+          if (error instanceof ModelProtocolError) return output(error.output, services.history);
+          throw error;
         } finally {
           instance.eventBus.off("run.complete", listener);
         }
@@ -109,7 +122,18 @@ export function workflowDriver<T extends Record<string, unknown>>(
         : JSON.parse(typeof request.input === "string" ? request.input : "null");
       if (!patch || typeof patch !== "object" || Array.isArray(patch))
         throw new Error("Workflow driver input must be a JSON object");
-      const result = await workflow.run({ ...options(request, services), initialState: patch });
+      let result: Awaited<ReturnType<typeof workflow.run>>;
+      try {
+        result = await workflow.run({ ...options(request, services), initialState: patch });
+      } catch (error) {
+        if ((error as { code?: string })?.code === "workflow_cancelled")
+          return {
+            text: "",
+            status: "cancelled",
+            reason: { code: "workflow_cancelled", message: "Workflow cancellation acknowledged" },
+          };
+        throw error;
+      }
       const failed = result.stepResults.find((step) => step.status === "error");
       const text = JSON.stringify(result.state);
       services.append([
@@ -119,8 +143,12 @@ export function workflowDriver<T extends Record<string, unknown>>(
       return {
         text,
         structured: result.state,
-        status: failed ? "failed" : "completed",
-        ...(failed ? { reason: { code: "workflow_step_failed", message: failed.error ?? failed.stepName } } : {}),
+        status: result.status ?? (failed ? "failed" : "completed"),
+        ...(result.reason
+          ? { reason: result.reason }
+          : failed
+            ? { reason: { code: "workflow_step_failed", message: failed.error ?? failed.stepName } }
+            : {}),
       };
     },
   };

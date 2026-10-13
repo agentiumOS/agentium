@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent } from "../../agent/agent.js";
+import { executionFixture } from "../../agent/__tests__/execution-fixture.js";
+import { Agent } from "../../agent/agent.js";
 import type { RunOutput } from "../../agent/types.js";
 import { EventBus } from "../../events/event-bus.js";
-import { HandoffSignal } from "../../handoff/types.js";
+import { createHandoffTool } from "../../handoff/handoff-tool.js";
 import type { ModelProvider } from "../../models/provider.js";
+import type { ModelResponse } from "../../models/types.js";
 import { Team } from "../team.js";
 import { TeamMode } from "../types.js";
 
@@ -392,97 +394,117 @@ describe("Team", () => {
     });
   });
 
-  describe("TeamMode.Handoff", () => {
-    it("runs the first member when no handoff occurs", async () => {
-      const a1 = mockAgent("starter", "done by starter");
-      const a2 = mockAgent("backup", "backup response");
+  describe("deprecated TeamMode.Handoff native journeys", () => {
+    function nativeModel(transfer = false): ModelProvider {
+      let requested = false;
+      return {
+        providerId: "fixture",
+        modelId: "fixture",
+        generate: vi.fn(async (): Promise<ModelResponse> => {
+          if (transfer && !requested) {
+            requested = true;
+            return {
+              message: {
+                role: "assistant",
+                content: null,
+                toolCalls: [
+                  {
+                    id: "transfer",
+                    name: "transfer_to_agent",
+                    arguments: { agent: "specialist", reason: "needs expert help" },
+                  },
+                ],
+              },
+              usage: makeUsage(),
+              finishReason: "tool_calls",
+              raw: {},
+            };
+          }
+          return {
+            message: { role: "assistant", content: "specialist answer" },
+            usage: makeUsage(),
+            finishReason: "stop",
+            raw: {},
+          };
+        }),
+        async *stream() {
+          yield { type: "finish", finishReason: "stop", usage: makeUsage() };
+        },
+      };
+    }
 
+    it("cannot route a real native transfer tool through the obsolete thrown-signal Team protocol", async () => {
+      const targetModel = nativeModel();
+      const target = new Agent({ name: "specialist", register: false, model: targetModel });
+      const source = new Agent({
+        name: "triage",
+        register: false,
+        model: nativeModel(true),
+        tools: [createHandoffTool([{ agent: target, description: "specialist" }])],
+      });
       const team = new Team({
-        name: "handoff-team",
+        name: "native-obsolete",
+        register: false,
         mode: TeamMode.Handoff,
-        model: mockModel("unused"),
-        members: [a1, a2],
+        model: nativeModel(),
+        members: [source, target],
         eventBus,
       });
-
-      const result = await team.run("task");
-
-      expect(a1.run).toHaveBeenCalled();
-      expect(a2.run).not.toHaveBeenCalled();
-      expect(result.text).toBe("done by starter");
+      await expect(team.run("complex question")).rejects.toThrow("Handoff requested without configured targets");
+      expect(targetModel.generate).not.toHaveBeenCalled();
     });
 
-    it("follows HandoffSignal to the next agent", async () => {
-      const a1 = mockAgent("triage", "");
-      (a1.run as ReturnType<typeof vi.fn>).mockRejectedValue(new HandoffSignal("specialist", "needs expert help"));
-
-      const a2 = mockAgent("specialist", "specialist answer");
-
-      const team = new Team({
-        name: "handoff-chain",
-        mode: TeamMode.Handoff,
-        model: mockModel("unused"),
-        members: [a1, a2],
-        eventBus,
+    it("supports direct Agent handoff targets outside controlled execution", async () => {
+      const targetModel = nativeModel();
+      const target = new Agent({ name: "specialist", register: false, model: targetModel });
+      const source = new Agent({
+        name: "triage",
+        register: false,
+        model: nativeModel(true),
+        handoff: { targets: [{ agent: target, description: "specialist" }] },
       });
-
-      const result = await team.run("complex question");
-      expect(a2.run).toHaveBeenCalled();
+      const result = await source.run("complex question");
       expect(result.text).toBe("specialist answer");
-    });
-
-    it("throws when handoff target is not found in team", async () => {
-      const a1 = mockAgent("router", "");
-      (a1.run as ReturnType<typeof vi.fn>).mockRejectedValue(new HandoffSignal("unknown-agent", "route to unknown"));
-
-      const team = new Team({
-        name: "bad-handoff",
-        mode: TeamMode.Handoff,
-        model: mockModel("unused"),
-        members: [a1],
-        eventBus,
-      });
-
-      await expect(team.run("test")).rejects.toThrow("not found in team");
-    });
-
-    it("throws when maximum handoffs are exceeded", async () => {
-      const a1 = mockAgent("bouncer", "");
-      (a1.run as ReturnType<typeof vi.fn>).mockRejectedValue(new HandoffSignal("bouncer", "loop back"));
-
-      const team = new Team({
-        name: "loop-team",
-        mode: TeamMode.Handoff,
-        model: mockModel("unused"),
-        members: [a1],
-        maxRounds: 2,
-        eventBus,
-      });
-
-      await expect(team.run("test")).rejects.toThrow("Maximum handoffs");
-    });
-
-    it("accumulates token usage across handoff chain", async () => {
-      const a1 = mockAgent("first", "");
-      (a1.run as ReturnType<typeof vi.fn>).mockRejectedValue(new HandoffSignal("second", "forward"));
-
-      const a2 = mockAgent("second", "final");
-      (a2.run as ReturnType<typeof vi.fn>).mockResolvedValue({
-        text: "final",
-        toolCalls: [],
-        usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
-      });
-
-      const team = new Team({
-        name: "usage-team",
-        mode: TeamMode.Handoff,
-        model: mockModel("unused"),
-        members: [a1, a2],
-        eventBus,
-      });
-
-      const result = await team.run("test");
+      expect(targetModel.generate).toHaveBeenCalledOnce();
       expect(result.usage.totalTokens).toBe(30);
+    });
+
+    it("keeps native Agent transfer ownership outside Team even when configured on a member", async () => {
+      const target = new Agent({ name: "specialist", register: false, model: nativeModel() });
+      const source = new Agent({
+        name: "triage",
+        register: false,
+        model: nativeModel(true),
+        handoff: { targets: [{ agent: target, description: "specialist" }] },
+      });
+      const delegate = vi.fn();
+      eventBus.on("team.delegate", delegate);
+      const team = new Team({
+        name: "member-owned",
+        register: false,
+        mode: TeamMode.Handoff,
+        model: nativeModel(),
+        members: [source, target],
+        eventBus,
+      });
+      expect((await team.run("complex question")).text).toBe("specialist answer");
+      expect(delegate).toHaveBeenCalledOnce();
+      expect(delegate).toHaveBeenCalledWith(expect.objectContaining({ memberId: "triage" }));
+    });
+
+    it("rejects direct Agent handoff inside host execution services before requesting a model", async () => {
+      const target = new Agent({ name: "specialist", register: false, model: nativeModel() });
+      const model = nativeModel(true);
+      const source = new Agent({
+        name: "triage",
+        register: false,
+        model,
+        handoff: { targets: [{ agent: target, description: "specialist" }] },
+      });
+      await expect(source.run("question", { executionServices: executionFixture() })).rejects.toThrow(
+        "host-owned delegation",
+      );
+      expect(model.generate).not.toHaveBeenCalled();
     });
   });
 

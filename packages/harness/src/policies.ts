@@ -5,8 +5,11 @@ import {
   countConversationTokens,
   getTextContent,
   groupConversationTurns,
+  type RunContext,
   validateConversationTransform,
 } from "@agentium/core";
+import { z } from "zod/v3";
+import { validateCompletionDecision } from "./runtime/controller.js";
 import type { HarnessExecutionServices } from "./runtime/driver.js";
 import type { CompletionDecision, CompletionPolicy, ContextPolicy } from "./runtime/index.js";
 
@@ -46,6 +49,62 @@ function boundedJSON(value: unknown, maxBytes: number): string {
   const text = JSON.stringify(value);
   if (Buffer.byteLength(text) > maxBytes) throw new Error("Policy source exceeds maxInputBytes");
   return text;
+}
+export type CompletionCandidate = { text: string; structured?: unknown; revision: number };
+export type CompletionVerification = {
+  verdict: "pass" | "fail" | "unknown";
+  reason: string;
+  evidence?: readonly string[];
+};
+export interface CompletionVerifier {
+  /** Read current host facts; never infer verification from the candidate's claims. */
+  verify(candidate: CompletionCandidate, ctx: RunContext): Promise<CompletionVerification>;
+}
+export interface VerifiedCompletionPolicyOptions {
+  id?: string;
+  verifier: CompletionVerifier;
+  onFailure?: { action: "stop" } | { action: "revise"; instruction: string };
+  maxEvidenceEntries?: number;
+  maxEvidenceBytes?: number;
+}
+const verificationSchema = z
+  .object({
+    verdict: z.enum(["pass", "fail", "unknown"]),
+    reason: z.string().trim().min(1),
+    evidence: z.array(z.string().trim().min(1)).optional(),
+  })
+  .strict();
+
+/** Optional host verification recipe. Unknown evidence always stops; revisions stay runtime-governed. */
+export function verifiedCompletionPolicy(options: VerifiedCompletionPolicyOptions): CompletionPolicy {
+  const maxEntries = positive(options.maxEvidenceEntries ?? 32, "maxEvidenceEntries");
+  const maxBytes = positive(options.maxEvidenceBytes ?? 8192, "maxEvidenceBytes");
+  if (maxEntries > 32 || maxBytes > 8192)
+    throw new Error("Verifier bounds may only narrow the runtime completion limits");
+  const id = options.id ?? "agentium/verified-completion";
+  if (!id.trim()) throw new Error("Completion policy id must be nonempty");
+  const onFailure = options.onFailure ?? { action: "stop" };
+  if (onFailure.action === "revise" && !onFailure.instruction.trim())
+    throw new Error("Revision instruction must be nonempty");
+  return {
+    id,
+    async evaluate(candidate, ctx) {
+      ctx.signal?.throwIfAborted();
+      const result = verificationSchema.parse(await options.verifier.verify(candidate, ctx));
+      ctx.signal?.throwIfAborted();
+      if ((result.evidence?.length ?? 0) > maxEntries || Buffer.byteLength(JSON.stringify(result), "utf8") > maxBytes) {
+        throw new Error("Completion verification exceeds configured evidence limits");
+      }
+      const detail = { reason: result.reason, ...(result.evidence ? { evidence: result.evidence } : {}) };
+      return validateCompletionDecision(
+        result.verdict === "pass"
+          ? { action: "accept", ...detail }
+          : result.verdict === "fail" && onFailure.action === "revise"
+            ? { action: "revise", instruction: onFailure.instruction, ...detail }
+            : { action: "stop", ...detail },
+      );
+    },
+  };
 }
 function decision(text: string): CompletionDecision {
   if (Buffer.byteLength(text) > 65536) throw new Error("Reflection response exceeds 64KB");

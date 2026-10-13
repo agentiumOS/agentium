@@ -128,7 +128,7 @@ describe("host budget reservations", () => {
       },
     );
     expect((await rt.run("go", start)).status).toBe("completed");
-    provider.generate = vi.fn(async () => ({ ...response(), finishReason: "tool_calls" }));
+    provider.generate = vi.fn<ModelProvider["generate"]>(async () => ({ ...response(), finishReason: "tool_calls" }));
     const bad = runtime(
       async (_, services) => {
         await services.finishModel("finish", []);

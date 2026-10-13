@@ -56,6 +56,8 @@ export interface HarnessMiddleware {
   beforeModel?: (messages: readonly ChatMessage[], ctx: RunContext) => Promise<ChatMessage[]>;
   afterModel?: (response: ModelResponse, ctx: RunContext) => Promise<void>;
   afterTool?: (result: ToolCallResult, ctx: RunContext) => Promise<void>;
+  /** Observation only; also runs after cancellation, without admitting further work. */
+  observeToolSettlement?: (result: ToolCallResult, ctx: RunContext) => void | Promise<void>;
 }
 export interface AbilityBinding {
   tools: readonly ToolDef[];

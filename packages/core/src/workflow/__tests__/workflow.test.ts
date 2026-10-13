@@ -285,7 +285,9 @@ describe("Workflow", () => {
       const result = await wf.run();
 
       const groupResult = result.stepResults.find((r) => r.stepName === "mixed-parallel");
-      expect(groupResult?.status).toBe("done");
+      expect(groupResult?.status).toBe("error");
+      expect(result.status).toBe("failed");
+      expect(result.state.value).toBe("ok");
     });
   });
 

@@ -467,7 +467,7 @@ describe("EmbeddingGemmaEmbedding", () => {
 
   describe("ollama text embeddings", () => {
     it("prefixes documents and queries differently for retrieval", async () => {
-      const fetchMock = vi.fn(async () => jsonResponse({ embeddings: [vector(768)] }));
+      const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ embeddings: [vector(768)] }));
       vi.stubGlobal("fetch", fetchMock);
       const embedder = new EmbeddingGemmaEmbedding();
 
@@ -479,8 +479,8 @@ describe("EmbeddingGemmaEmbedding", () => {
         "http://127.0.0.1:11434/api/embed",
         expect.objectContaining({ method: "POST" }),
       );
-      const documentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-      const queryBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      const documentBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+      const queryBody = JSON.parse(fetchMock.mock.calls[1][1]?.body as string);
       expect(documentBody).toEqual({
         model: "embeddinggemma-2",
         input: ["title: none | text: shipping delays"],
@@ -489,7 +489,9 @@ describe("EmbeddingGemmaEmbedding", () => {
     });
 
     it("uses the code prompt and a caller-supplied document title", async () => {
-      const fetchMock = vi.fn(async () => jsonResponse({ embeddings: [vector(768)], prompt_eval_count: 12 }));
+      const fetchMock = vi.fn<typeof fetch>(async () =>
+        jsonResponse({ embeddings: [vector(768)], prompt_eval_count: 12 }),
+      );
       vi.stubGlobal("fetch", fetchMock);
       const embedder = new EmbeddingGemmaEmbedding({
         task: "code",
@@ -499,8 +501,8 @@ describe("EmbeddingGemmaEmbedding", () => {
       await embedder.embed("export const store = 1;");
       await embedder.embedQuery("where is the store created");
 
-      const documentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-      const queryBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      const documentBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+      const queryBody = JSON.parse(fetchMock.mock.calls[1][1]?.body as string);
       expect(documentBody.input).toEqual(["title: src/store.ts | text: export const store = 1;"]);
       expect(queryBody.input).toEqual(["task: code retrieval | query: where is the store created"]);
     });
@@ -541,7 +543,7 @@ describe("EmbeddingGemmaEmbedding", () => {
     });
 
     it("sends one image as base64 and prefixes the text for a document", async () => {
-      const fetchMock = vi.fn(async () => jsonResponse({ embeddings: [vector(768)] }));
+      const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ embeddings: [vector(768)] }));
       vi.stubGlobal("fetch", fetchMock);
       const embedder = new EmbeddingGemmaEmbedding();
 
@@ -550,7 +552,7 @@ describe("EmbeddingGemmaEmbedding", () => {
         { type: "image", data: "iVBORw0KGgo", mimeType: "image/png" },
       ]);
 
-      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
       expect(body).toEqual({
         model: "embeddinggemma-2",
         input: { text: "title: none | text: a cat on a windowsill", image: "iVBORw0KGgo" },
@@ -558,7 +560,7 @@ describe("EmbeddingGemmaEmbedding", () => {
     });
 
     it("fetches an image URL and sends several images as an array", async () => {
-      const fetchMock = vi.fn(async (url: string) => {
+      const fetchMock = vi.fn<typeof fetch>(async (url) => {
         if (String(url).startsWith("https://")) {
           return new Response(Buffer.from("fetched-image"), {
             status: 200,
@@ -576,7 +578,7 @@ describe("EmbeddingGemmaEmbedding", () => {
         { type: "audio", data: "UklGRiQA", mimeType: "audio/wav" },
       ]);
 
-      const body = JSON.parse(fetchMock.mock.calls[1][1].body);
+      const body = JSON.parse(fetchMock.mock.calls[1][1]?.body as string);
       expect(body.input.image).toEqual([Buffer.from("fetched-image").toString("base64"), "SECOND"]);
       expect(body.input.audio).toBe("UklGRiQA");
       expect(body.input.text).toBeUndefined();
@@ -596,19 +598,19 @@ describe("EmbeddingGemmaEmbedding", () => {
     });
 
     it("keeps a text-only multimodal call on the text embed request", async () => {
-      const fetchMock = vi.fn(async () => jsonResponse({ embeddings: [vector(768)] }));
+      const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ embeddings: [vector(768)] }));
       vi.stubGlobal("fetch", fetchMock);
       const embedder = new EmbeddingGemmaEmbedding();
       await embedder.embedMultimodal("shipping delays");
       await embedder.embedMultimodalQuery("why is the shipment late");
-      const documentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-      const queryBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      const documentBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+      const queryBody = JSON.parse(fetchMock.mock.calls[1][1]?.body as string);
       expect(documentBody.input).toEqual(["title: none | text: shipping delays"]);
       expect(queryBody.input).toEqual(["task: search result | query: why is the shipment late"]);
     });
 
     it("does not retry a 400", async () => {
-      const fetchMock = vi.fn(async () => new Response("bad", { status: 400 }));
+      const fetchMock = vi.fn<typeof fetch>(async () => new Response("bad", { status: 400 }));
       vi.stubGlobal("fetch", fetchMock);
       const embedder = new EmbeddingGemmaEmbedding();
       await expect(embedder.embed("bad")).rejects.toThrow(/400/);
@@ -618,7 +620,7 @@ describe("EmbeddingGemmaEmbedding", () => {
 
   describe("openai-compatible server", () => {
     it("posts to /embeddings, sorts by index, and asks for a shorter dimension", async () => {
-      const fetchMock = vi.fn(async () =>
+      const fetchMock = vi.fn<typeof fetch>(async () =>
         jsonResponse({
           data: [
             { embedding: vector(256, 2), index: 1 },
@@ -642,30 +644,30 @@ describe("EmbeddingGemmaEmbedding", () => {
       expect(results[1]![0]).toBe(2);
 
       expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8000/v1/embeddings");
-      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
       expect(body).toEqual({
         model: "google/embeddinggemma-2",
         input: ["title: none | text: alpha", "title: none | text: beta"],
         dimensions: 256,
       });
-      expect(fetchMock.mock.calls[0][1].headers.authorization).toBe("Bearer local");
+      expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("authorization")).toBe("Bearer local");
     });
 
     it("uses one prefix for classification on both sides", async () => {
-      const fetchMock = vi.fn(async () => jsonResponse({ data: [{ embedding: vector(768), index: 0 }] }));
+      const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ data: [{ embedding: vector(768), index: 0 }] }));
       vi.stubGlobal("fetch", fetchMock);
       const embedder = new EmbeddingGemmaEmbedding({ backend: "openai", task: "classification" });
       await embedder.embed("The battery died");
       await embedder.embedQuery("Negative");
-      const documentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-      const queryBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+      const documentBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+      const queryBody = JSON.parse(fetchMock.mock.calls[1][1]?.body as string);
       expect(documentBody.input).toEqual(["task: classification | query: The battery died"]);
       expect(queryBody.input).toEqual(["task: classification | query: Negative"]);
       expect(documentBody.dimensions).toBeUndefined();
     });
 
     it("sends image, audio, and video as chat content and prefixes only the text", async () => {
-      const fetchMock = vi.fn(async () => jsonResponse({ data: [{ embedding: vector(768), index: 0 }] }));
+      const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ data: [{ embedding: vector(768), index: 0 }] }));
       vi.stubGlobal("fetch", fetchMock);
       const embedder = new EmbeddingGemmaEmbedding({ backend: "openai", apiKey: "local" });
 
@@ -676,7 +678,7 @@ describe("EmbeddingGemmaEmbedding", () => {
         { type: "file", data: "MP4DATA", mimeType: "video/mp4" },
       ]);
 
-      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
       expect(body.messages).toEqual([
         {
           role: "user",
@@ -689,11 +691,11 @@ describe("EmbeddingGemmaEmbedding", () => {
         },
       ]);
       expect(body.input).toBeUndefined();
-      expect(fetchMock.mock.calls[0][1].headers.authorization).toBe("Bearer local");
+      expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("authorization")).toBe("Bearer local");
     });
 
     it("uses the query prompt for a multimodal query and leaves a remote image URL in place", async () => {
-      const fetchMock = vi.fn(async () => jsonResponse({ data: [{ embedding: vector(768), index: 0 }] }));
+      const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ data: [{ embedding: vector(768), index: 0 }] }));
       vi.stubGlobal("fetch", fetchMock);
       const embedder = new EmbeddingGemmaEmbedding({ backend: "openai" });
 
@@ -702,7 +704,7 @@ describe("EmbeddingGemmaEmbedding", () => {
         { type: "text", text: "task: search result | query: orange cat" },
       ]);
 
-      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
       expect(body.messages[0].content).toEqual([
         { type: "image_url", image_url: { url: "https://example.com/cat.png" } },
         { type: "text", text: "task: search result | query: orange cat" },

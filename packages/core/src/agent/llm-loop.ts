@@ -20,6 +20,7 @@ import {
   type ProviderOptions,
   type ReasoningConfig,
   type StreamChunk,
+  type TokenUsage,
   type ToolDefinition,
 } from "../models/types.js";
 import { convertJsonSchema } from "../tools/json-schema.js";
@@ -115,6 +116,67 @@ function truncateObject(obj: Record<string, unknown>, maxChars: number): string 
   return JSON.stringify(result, null, 2);
 }
 
+/** Partial evidence from a provider stream that never supplied a terminal frame. */
+export class ModelProtocolError extends Error {
+  readonly code: "incomplete_stream" | "invalid_model_response";
+  readonly partial = true;
+  readonly reason: { code: string; message: string };
+  readonly output: RunOutput;
+  constructor(
+    readonly text: string,
+    readonly usage: TokenUsage,
+    toolCalls: ToolCallResult[] = [],
+    code: "incomplete_stream" | "invalid_model_response" = "incomplete_stream",
+  ) {
+    super(
+      code === "incomplete_stream"
+        ? "Provider stream ended without a finish frame; no unfinished tools executed"
+        : "Provider ended a tool turn without a complete tool call; no tools executed",
+    );
+    this.name = "ModelProtocolError";
+    this.code = code;
+    this.reason = { code, message: this.message };
+    this.output = { text, usage, toolCalls, status: "error", partial: true, reason: this.reason };
+  }
+}
+
+/** Internal carrier for usage already observed before cancellation. */
+export class LoopCancelledError extends RunCancelledError {
+  constructor(readonly usage: TokenUsage) {
+    super();
+  }
+}
+
+export type LoopStreamOutcome = Pick<RunOutput, "providerFinishReason" | "partial" | "reason" | "publicMessages"> & {
+  usage?: TokenUsage;
+  status: "completed" | "stopped";
+};
+
+function assertNotCancelled(ctx: RunContext, usage?: TokenUsage): void {
+  if (ctx.signal?.aborted) throw usage ? new LoopCancelledError(usage) : new RunCancelledError();
+}
+
+function terminalMetadata(
+  finishReason: string,
+): Pick<RunOutput, "status" | "providerFinishReason" | "partial" | "reason"> {
+  return {
+    providerFinishReason: finishReason,
+    ...(finishReason === "length" || finishReason === "content_filter"
+      ? {
+          status: "stopped" as const,
+          partial: true,
+          reason: {
+            code: `provider_${finishReason}`,
+            message:
+              finishReason === "length"
+                ? "Provider output limit reached"
+                : "Provider content filter stopped the answer",
+          },
+        }
+      : {}),
+  };
+}
+
 export class LLMLoop {
   private provider: ModelProvider;
   private toolExecutor: ToolExecutor | null;
@@ -153,6 +215,8 @@ export class LLMLoop {
       controlledExecution?: boolean;
     },
   ) {
+    if (!Number.isSafeInteger(options.maxToolRoundtrips) || options.maxToolRoundtrips < 0)
+      throw new TypeError("maxToolRoundtrips must be a nonnegative safe integer");
     this.provider = provider;
     this.toolExecutor = toolExecutor;
     this.maxToolRoundtrips = options.maxToolRoundtrips;
@@ -250,9 +314,13 @@ export class LLMLoop {
     }
   }
 
-  private publish(ctx: RunContext, event: PublicMessageEvent): void {
+  private publish(ctx: RunContext, event: PublicMessageEvent, usage?: TokenUsage): void {
+    const terminalFailure = event.type === "message.failed";
+    if (!terminalFailure) assertNotCancelled(ctx, usage);
     ctx.eventBus.emit("run.message", { runId: ctx.runId, messageEvent: event });
+    if (!terminalFailure) assertNotCancelled(ctx, usage);
     ctx.executionServices?.publishMessage?.(event);
+    if (!terminalFailure) assertNotCancelled(ctx, usage);
   }
 
   private applySteering(ctx: RunContext, append: (message: ChatMessage) => void): boolean {
@@ -265,12 +333,13 @@ export class LLMLoop {
     return applied;
   }
 
-  private claimControlledToolRoundtrip(): void {
-    if (!this.controlledExecution) return;
-    if (this.controlledToolRoundtrips >= this.maxToolRoundtrips) {
-      throw new Error("Controlled tool roundtrip budget exhausted; no further tools executed");
+  private claimToolRoundtrip(local: { used: number }): void {
+    const used = this.controlledExecution ? this.controlledToolRoundtrips : local.used;
+    if (used >= this.maxToolRoundtrips) {
+      throw new Error("Tool roundtrip budget exhausted; no further tools executed");
     }
-    this.controlledToolRoundtrips++;
+    if (this.controlledExecution) this.controlledToolRoundtrips++;
+    else local.used++;
   }
 
   private async limitToolResult(content: string, toolName: string, ctx: RunContext): Promise<string> {
@@ -336,9 +405,21 @@ export class LLMLoop {
       this.logger?.debug("llm", { tools: toolDefs.map((t) => t.name) });
     }
 
+    const localToolRoundtrips = { used: 0 };
+    const observedUsage = (): TokenUsage => ({
+      promptTokens: totalPromptTokens,
+      completionTokens: totalCompletionTokens,
+      totalTokens: totalPromptTokens + totalCompletionTokens,
+      ...(totalReasoningTokens ? { reasoningTokens: totalReasoningTokens } : {}),
+      ...(totalCachedTokens ? { cachedTokens: totalCachedTokens } : {}),
+      ...(totalCacheWriteTokens ? { cacheWriteTokens: totalCacheWriteTokens } : {}),
+      ...(totalAudioInputTokens ? { audioInputTokens: totalAudioInputTokens } : {}),
+      ...(totalAudioOutputTokens ? { audioOutputTokens: totalAudioOutputTokens } : {}),
+      ...(lastProviderMetrics ? { providerMetrics: lastProviderMetrics } : {}),
+    });
     let handoff: HandoffSignal | undefined;
     for (let roundtrip = 0; roundtrip <= this.maxToolRoundtrips; roundtrip++) {
-      if (ctx.signal?.aborted) throw new RunCancelledError();
+      assertNotCancelled(ctx, observedUsage());
 
       this.applySteering(ctx, append);
       if (ctx.executionServices?.retainHistory) {
@@ -358,6 +439,7 @@ export class LLMLoop {
             ...transcript.filter((message) => residentRecords.has(JSON.stringify(message))),
           );
       }
+      assertNotCancelled(ctx, observedUsage());
       const mandatoryMessages = !this.controlledExecution ? undefined : structuredClone(currentMessages);
       // Hook: beforeLLMCall — allows message modification (e.g. context compaction, PII scrubbing)
       if (this.loopHooks?.beforeLLMCall) {
@@ -368,6 +450,7 @@ export class LLMLoop {
         }
       }
 
+      assertNotCancelled(ctx, observedUsage());
       if (mandatoryMessages) validateConversationTransform(mandatoryMessages, currentMessages);
 
       const modelConfig: ModelConfig & { tools?: ToolDefinition[] } = {};
@@ -397,11 +480,6 @@ export class LLMLoop {
         }
       }
 
-      // Hook: afterLLMCall
-      if (this.loopHooks?.afterLLMCall) {
-        await this.loopHooks.afterLLMCall({ finishReason: response.finishReason, usage: response.usage }, roundtrip);
-      }
-
       if (roundtrip === 0) {
         this.logger?.debug(
           `[LLMLoop] Roundtrip 0 usage — prompt: ${response.usage.promptTokens}, completion: ${response.usage.completionTokens}, reasoning: ${response.usage.reasoningTokens ?? 0}`,
@@ -417,6 +495,13 @@ export class LLMLoop {
       if (response.usage.audioOutputTokens) totalAudioOutputTokens += response.usage.audioOutputTokens;
       if (response.usage.providerMetrics) lastProviderMetrics = response.usage.providerMetrics;
 
+      assertNotCancelled(ctx, observedUsage());
+      // Accounting and local usage settle before cancellation can reject a late response.
+      if (this.loopHooks?.afterLLMCall) {
+        await this.loopHooks.afterLLMCall({ finishReason: response.finishReason, usage: response.usage }, roundtrip);
+        assertNotCancelled(ctx, observedUsage());
+      }
+
       if ((response as any).thinking) {
         thinkingContent += (thinkingContent ? "\n" : "") + (response as any).thinking;
       }
@@ -424,18 +509,33 @@ export class LLMLoop {
       if (response.message.toolCalls?.length && (response.finishReason !== "tool_calls" || !this.toolExecutor)) {
         throw new Error("Incomplete or unsupported tool turn; no tools executed");
       }
-      if (response.message.toolCalls?.length) this.claimControlledToolRoundtrip();
+      if (response.finishReason === "tool_calls" && !response.message.toolCalls?.length)
+        throw new ModelProtocolError(
+          getTextContent(response.message.content),
+          observedUsage(),
+          allToolCalls,
+          "invalid_model_response",
+        );
+      if (response.message.toolCalls?.length) this.claimToolRoundtrip(localToolRoundtrips);
       append(response.message);
       for (const message of publicMessagesFromResponse(response)) {
         publicMessages.push(message);
-        this.publish(ctx, { type: "message.started", id: message.id, phase: message.phase });
+        this.publish(ctx, { type: "message.started", id: message.id, phase: message.phase }, observedUsage());
         for (let offset = 0; offset < message.text.length; offset += 8192)
-          this.publish(ctx, { type: "message.delta", id: message.id, text: message.text.slice(offset, offset + 8192) });
-        this.publish(ctx, { type: "message.completed", message });
+          this.publish(
+            ctx,
+            { type: "message.delta", id: message.id, text: message.text.slice(offset, offset + 8192) },
+            observedUsage(),
+          );
+        this.publish(ctx, { type: "message.completed", message }, observedUsage());
       }
 
       if (response.finishReason !== "tool_calls" || !response.message.toolCalls?.length || !this.toolExecutor) {
-        if (this.applySteering(ctx, append) || response.message.phase === "commentary") continue;
+        if (
+          response.finishReason === "stop" &&
+          (this.applySteering(ctx, append) || response.message.phase === "commentary")
+        )
+          continue;
         const text = getTextContent(response.message.content);
 
         const usage = {
@@ -451,6 +551,7 @@ export class LLMLoop {
         };
 
         const output: RunOutput = {
+          ...terminalMetadata(response.finishReason),
           text,
           publicMessages,
           toolCalls: allToolCalls,
@@ -474,10 +575,11 @@ export class LLMLoop {
         }
 
         ctx.executionServices?.finishInput?.(ctx);
+        assertNotCancelled(ctx, observedUsage());
         return output;
       }
 
-      if (ctx.signal?.aborted) throw new RunCancelledError();
+      assertNotCancelled(ctx, observedUsage());
 
       // Hook: beforeToolExec — per-tool interception (skip individual tools)
       const toolCalls = response.message.toolCalls!;
@@ -485,6 +587,7 @@ export class LLMLoop {
       for (const tc of toolCalls) {
         if (this.loopHooks?.beforeToolExec) {
           const hookResult = await this.loopHooks.beforeToolExec(tc.name, tc.arguments);
+          assertNotCancelled(ctx, observedUsage());
           if (hookResult?.skip) {
             allToolCalls.push({
               toolCallId: tc.id,
@@ -503,6 +606,7 @@ export class LLMLoop {
         filteredToolCalls.push(tc);
       }
 
+      assertNotCancelled(ctx, observedUsage());
       const execute = () => this.toolExecutor!.executeAll(filteredToolCalls, ctx);
       const toolResults = await (ctx.executionServices ? ctx.executionServices.runOwned(execute) : execute());
 
@@ -511,8 +615,10 @@ export class LLMLoop {
       const argsById = new Map(filteredToolCalls.map((tc) => [tc.id, tc.arguments]));
       const recordedResults = new Set<string>();
       try {
+        await ctx.executionServices?.observeToolSettlements?.(toolResults, ctx);
         for (const result of toolResults) {
           await ctx.executionServices?.observeTool(result, ctx);
+          assertNotCancelled(ctx, observedUsage());
           let content = typeof result.result === "string" ? result.result : result.result.content;
 
           this.logger?.toolCall(result.toolName, argsById.get(result.toolCallId) ?? {});
@@ -520,11 +626,13 @@ export class LLMLoop {
 
           if (typeof content === "string") {
             content = await this.limitToolResult(content, result.toolName, ctx);
+            assertNotCancelled(ctx, observedUsage());
           }
 
           // Hook: afterToolExec — allows transforming tool results
           if (this.loopHooks?.afterToolExec && typeof content === "string") {
             const transformed = await this.loopHooks.afterToolExec(result.toolName, content);
+            assertNotCancelled(ctx, observedUsage());
             if (transformed !== undefined) {
               content = transformed;
             }
@@ -539,8 +647,12 @@ export class LLMLoop {
           recordedResults.add(result.toolCallId);
         }
       } finally {
-        // Observer failure or cancellation cannot orphan an already settled handoff batch.
-        if (toolResults.some((result) => result.toolName === "transfer_to_agent" || getHandoffControl(result))) {
+        // Cancellation or observer failure cannot orphan an already settled transfer batch.
+        // Under abort, preserve every settled result without calling more host hooks.
+        if (
+          ctx.signal?.aborted ||
+          toolResults.some((result) => result.toolName === "transfer_to_agent" || getHandoffControl(result))
+        ) {
           for (const result of toolResults)
             if (!recordedResults.has(result.toolCallId)) {
               append({
@@ -576,7 +688,9 @@ export class LLMLoop {
           tokenUsage: tokensSoFar,
           sessionState: structuredClone(ctx.sessionState),
         });
+        assertNotCancelled(ctx, observedUsage());
         const hookResult = await this.loopHooks?.onRoundtripComplete?.(roundtrip, tokensSoFar);
+        assertNotCancelled(ctx, observedUsage());
         if (hookResult?.stop) {
           const lastAssistant = currentMessages.filter((m) => m.role === "assistant").pop();
           const text = getTextContent(lastAssistant?.content ?? null);
@@ -594,6 +708,7 @@ export class LLMLoop {
       if (handoff) break;
     }
 
+    assertNotCancelled(ctx, observedUsage());
     const lastAssistantMsg = [...currentMessages].reverse().find((m) => m.role === "assistant");
 
     const text = getTextContent(lastAssistantMsg?.content ?? null);
@@ -628,7 +743,7 @@ export class LLMLoop {
     apiKey?: string,
     transcript?: ChatMessage[],
     collectedTools?: ToolCallResult[],
-    outcome?: { status: "completed" | "stopped"; publicMessages?: PublicMessage[] },
+    outcome?: LoopStreamOutcome,
     publicMessageEvents = false,
   ): AsyncGenerator<StreamChunk> {
     const currentMessages = !this.controlledExecution ? [...messages] : structuredClone(messages);
@@ -652,8 +767,34 @@ export class LLMLoop {
     let totalAudioOutputTokens = 0;
     let lastProviderMetrics: Record<string, unknown> | undefined;
 
+    const localToolRoundtrips = { used: 0 };
+    let observedText = "";
+    const observedUsage = (next?: TokenUsage): TokenUsage => ({
+      promptTokens: totalPromptTokens + (next?.promptTokens ?? 0),
+      completionTokens: totalCompletionTokens + (next?.completionTokens ?? 0),
+      totalTokens: totalPromptTokens + totalCompletionTokens + (next?.totalTokens ?? 0),
+      ...(totalReasoningTokens || next?.reasoningTokens
+        ? { reasoningTokens: totalReasoningTokens + (next?.reasoningTokens ?? 0) }
+        : {}),
+      ...(totalCachedTokens || next?.cachedTokens
+        ? { cachedTokens: totalCachedTokens + (next?.cachedTokens ?? 0) }
+        : {}),
+      ...(totalCacheWriteTokens || next?.cacheWriteTokens
+        ? { cacheWriteTokens: totalCacheWriteTokens + (next?.cacheWriteTokens ?? 0) }
+        : {}),
+      ...(totalAudioInputTokens || next?.audioInputTokens
+        ? { audioInputTokens: totalAudioInputTokens + (next?.audioInputTokens ?? 0) }
+        : {}),
+      ...(totalAudioOutputTokens || next?.audioOutputTokens
+        ? { audioOutputTokens: totalAudioOutputTokens + (next?.audioOutputTokens ?? 0) }
+        : {}),
+      ...((next?.providerMetrics ?? lastProviderMetrics)
+        ? { providerMetrics: next?.providerMetrics ?? lastProviderMetrics }
+        : {}),
+    });
+
     for (let roundtrip = 0; roundtrip <= this.maxToolRoundtrips; roundtrip++) {
-      if (ctx.signal?.aborted) throw new RunCancelledError();
+      assertNotCancelled(ctx, observedUsage());
 
       this.applySteering(ctx, append);
       if (ctx.executionServices?.retainHistory) {
@@ -673,6 +814,7 @@ export class LLMLoop {
             ...transcript.filter((message) => residentRecords.has(JSON.stringify(message))),
           );
       }
+      assertNotCancelled(ctx, observedUsage());
       const mandatoryMessages = !this.controlledExecution ? undefined : structuredClone(currentMessages);
       // Hook: beforeLLMCall
       if (this.loopHooks?.beforeLLMCall) {
@@ -683,6 +825,7 @@ export class LLMLoop {
         }
       }
 
+      assertNotCancelled(ctx, observedUsage());
       if (mandatoryMessages) validateConversationTransform(mandatoryMessages, currentMessages);
 
       const modelConfig: ModelConfig & { tools?: ToolDefinition[] } = {};
@@ -711,7 +854,7 @@ export class LLMLoop {
       }> = [];
       let finishReason = "stop";
       let finished = false;
-      let chunkUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      let chunkUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
       let providerExtras: Record<string, unknown> | undefined;
 
       const publicStream = new PublicMessageStream();
@@ -720,15 +863,20 @@ export class LLMLoop {
 
       try {
         for await (const chunk of streamGen) {
+          // The metered stream has already settled terminal usage before it yields a finish.
+          if (chunk.type === "finish" && chunk.usage) chunkUsage = chunk.usage;
+          assertNotCancelled(ctx, observedUsage(chunkUsage));
           for (const event of publicStream.consume(chunk)) {
-            this.publish(ctx, event);
+            this.publish(ctx, event, observedUsage(chunkUsage));
             if (event.type === "message.completed" && outcome) (outcome.publicMessages ??= []).push(event.message);
             if (publicMessageEvents) yield { type: "public_message", event };
           }
+          assertNotCancelled(ctx, observedUsage(chunkUsage));
           if (chunk.type !== "reasoning_summary") yield chunk;
 
           if (chunk.type === "text") {
             fullText += chunk.text;
+            observedText += chunk.text;
             ctx.eventBus.emit("run.stream.chunk", {
               runId: ctx.runId,
               chunk: chunk.text,
@@ -754,15 +902,16 @@ export class LLMLoop {
         }
       } catch (error) {
         for (const event of publicStream.fail(Boolean(ctx.signal?.aborted))) {
-          this.publish(ctx, event);
+          this.publish(ctx, event, observedUsage(chunkUsage));
           if (publicMessageEvents) yield { type: "public_message", event };
         }
         throw error;
       } finally {
-        for (const event of publicStream.fail(Boolean(ctx.signal?.aborted))) this.publish(ctx, event);
+        for (const event of publicStream.fail(Boolean(ctx.signal?.aborted)))
+          this.publish(ctx, event, observedUsage(chunkUsage));
       }
-      if (!finished && pendingToolCalls.length)
-        throw new Error("Stream ended before tool calls completed; no tools executed");
+      assertNotCancelled(ctx, observedUsage(chunkUsage));
+      if (!finished) throw new ModelProtocolError(observedText, observedUsage(chunkUsage), collectedTools);
       totalPromptTokens += chunkUsage.promptTokens;
       totalCompletionTokens += chunkUsage.completionTokens;
       if ((chunkUsage as any).reasoningTokens) totalReasoningTokens += (chunkUsage as any).reasoningTokens;
@@ -794,18 +943,23 @@ export class LLMLoop {
         ...(providerExtras ? { providerExtras } : {}),
       };
       if (pendingToolCalls.length === 0) delete assistantMsg.toolCalls;
-      else this.claimControlledToolRoundtrip();
+      else this.claimToolRoundtrip(localToolRoundtrips);
       // Hook: afterLLMCall. Runtime-owned model observers run inside execution services.
       if (this.loopHooks?.afterLLMCall) {
         await this.loopHooks.afterLLMCall({ finishReason, usage: chunkUsage }, roundtrip);
       }
+      assertNotCancelled(ctx, observedUsage());
+      if (finishReason === "tool_calls" && pendingToolCalls.length === 0)
+        throw new ModelProtocolError(observedText, observedUsage(), collectedTools, "invalid_model_response");
       append(assistantMsg);
       if (finishReason !== "tool_calls" || pendingToolCalls.length === 0 || !this.toolExecutor) {
-        if (this.applySteering(ctx, append) || phase === "commentary") continue;
+        if (finishReason === "stop" && (this.applySteering(ctx, append) || phase === "commentary")) continue;
+        if (outcome) Object.assign(outcome, terminalMetadata(finishReason), { usage: observedUsage() });
         ctx.executionServices?.finishInput?.(ctx);
+        assertNotCancelled(ctx, observedUsage());
         return;
       }
-      if (ctx.signal?.aborted) throw new RunCancelledError();
+      assertNotCancelled(ctx, observedUsage());
 
       // Hook: beforeToolExec
       const allCalls = assistantMsg.toolCalls!;
@@ -813,6 +967,7 @@ export class LLMLoop {
       for (const tc of allCalls) {
         if (this.loopHooks?.beforeToolExec) {
           const hookResult = await this.loopHooks.beforeToolExec(tc.name, tc.arguments);
+          assertNotCancelled(ctx, observedUsage());
           if (hookResult?.skip) {
             append({
               role: "tool",
@@ -826,6 +981,7 @@ export class LLMLoop {
         filteredCalls.push(tc);
       }
 
+      assertNotCancelled(ctx, observedUsage());
       const execute = () => this.toolExecutor!.executeAll(filteredCalls, ctx);
       const toolResults = await (ctx.executionServices ? ctx.executionServices.runOwned(execute) : execute());
       collectedTools?.push(...toolResults);
@@ -833,8 +989,10 @@ export class LLMLoop {
       const argsById = new Map(filteredCalls.map((tc) => [tc.id, tc.arguments]));
       const recordedResults = new Set<string>();
       try {
+        await ctx.executionServices?.observeToolSettlements?.(toolResults, ctx);
         for (const result of toolResults) {
           await ctx.executionServices?.observeTool(result, ctx);
+          assertNotCancelled(ctx, observedUsage());
           let content = typeof result.result === "string" ? result.result : result.result.content;
 
           this.logger?.toolCall(result.toolName, argsById.get(result.toolCallId) ?? {});
@@ -842,11 +1000,13 @@ export class LLMLoop {
 
           if (typeof content === "string") {
             content = await this.limitToolResult(content, result.toolName, ctx);
+            assertNotCancelled(ctx, observedUsage());
           }
 
           // Hook: afterToolExec
           if (this.loopHooks?.afterToolExec && typeof content === "string") {
             const transformed = await this.loopHooks.afterToolExec(result.toolName, content);
+            assertNotCancelled(ctx, observedUsage());
             if (transformed !== undefined) content = transformed;
           }
 
@@ -859,8 +1019,12 @@ export class LLMLoop {
           recordedResults.add(result.toolCallId);
         }
       } finally {
-        // Observer failure or cancellation cannot orphan an already settled handoff batch.
-        if (toolResults.some((result) => result.toolName === "transfer_to_agent" || getHandoffControl(result))) {
+        // Cancellation or observer failure cannot orphan an already settled transfer batch.
+        // Under abort, preserve every settled result without calling more host hooks.
+        if (
+          ctx.signal?.aborted ||
+          toolResults.some((result) => result.toolName === "transfer_to_agent" || getHandoffControl(result))
+        ) {
           for (const result of toolResults)
             if (!recordedResults.has(result.toolCallId)) {
               append({
@@ -893,7 +1057,9 @@ export class LLMLoop {
           tokenUsage: tokensSoFar,
           sessionState: structuredClone(ctx.sessionState),
         });
+        assertNotCancelled(ctx, observedUsage());
         const hookResult = await this.loopHooks?.onRoundtripComplete?.(roundtrip, tokensSoFar);
+        assertNotCancelled(ctx, observedUsage());
         if (hookResult?.stop) {
           if (outcome) outcome.status = "stopped";
           return;
@@ -906,6 +1072,7 @@ export class LLMLoop {
         return;
       }
     }
+    assertNotCancelled(ctx, observedUsage());
     if (outcome) outcome.status = "stopped";
   }
 

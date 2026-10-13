@@ -1,15 +1,22 @@
 import type { StorageDriver } from "../storage/driver.js";
+import { encodeScopeNamespace } from "../storage/key-codec.js";
+import type { ScopedStorageOptions } from "../storage/scoped.js";
 
 export class TenantScopedStorage implements StorageDriver {
   private inner: StorageDriver;
   private tenantId: string;
 
-  constructor(inner: StorageDriver, tenantId: string) {
+  constructor(
+    inner: StorageDriver,
+    tenantId: string,
+    private readonly options: ScopedStorageOptions = {},
+  ) {
     this.inner = inner;
     this.tenantId = tenantId;
   }
 
   private scopeNamespace(namespace: string): string {
+    if (this.options.keyEncoding === "tuple-v1") return encodeScopeNamespace(namespace, { tenantId: this.tenantId });
     return `t:${this.tenantId}:${namespace}`;
   }
 
@@ -34,7 +41,7 @@ export class TenantScopedStorage implements StorageDriver {
   }
 
   async close(): Promise<void> {
-    return this.inner.close();
+    return this.options.ownsInner === false ? Promise.resolve() : this.inner.close();
   }
 
   getTenantId(): string {

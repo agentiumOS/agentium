@@ -1,7 +1,13 @@
 import { Agent, type ChatMessage, type ModelProvider, type ModelResponse } from "@agentium/core";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod/v3";
-import { agentDriver, HarnessRuntime, reflectionPolicy, summaryContextPolicy } from "../index.js";
+import {
+  agentDriver,
+  HarnessRuntime,
+  reflectionPolicy,
+  summaryContextPolicy,
+  verifiedCompletionPolicy,
+} from "../index.js";
 import type { ExecutionDriver } from "../runtime/index.js";
 
 const start = { identity: { userId: "actor", tenantId: "tenant" }, sessionId: "session" };
@@ -47,6 +53,138 @@ const history = (): ChatMessage[] => [
   },
   { role: "tool", toolCallId: "current", name: "lookup", content: "current result" },
 ];
+
+describe("host completion verification", () => {
+  it.each(["missing", "stale", "failed", "current"])("requires a current successful host record (%s)", async (kind) => {
+    let currentRun = "";
+    const record = {
+      runId: "old-run",
+      candidateRevision: 0,
+      artifactRevision: "old-hash",
+      exitCode: kind === "failed" ? 1 : 0,
+    };
+    const schema = z.object({
+      runId: z.string(),
+      candidateRevision: z.number().int().nonnegative(),
+      artifactRevision: z.string(),
+      exitCode: z.number().int(),
+    });
+    const rt = new HarnessRuntime({
+      driver: custom(async (request) => {
+        currentRun = request.runId;
+        if (kind === "current" || kind === "failed") {
+          record.runId = currentRun;
+          record.artifactRevision = "current-hash";
+        }
+        return { text: "All tests passed" };
+      }),
+      grants: { toolIds: [], modelRoles: ["main"] },
+      completionPolicy: verifiedCompletionPolicy({
+        verifier: {
+          async verify(candidate, ctx) {
+            const fact = kind === "missing" ? undefined : schema.parse(record);
+            if (
+              !fact ||
+              fact.runId !== ctx.runId ||
+              fact.candidateRevision !== candidate.revision ||
+              fact.artifactRevision !== "current-hash"
+            )
+              return { verdict: "unknown", reason: "No matching host evidence" };
+            return {
+              verdict: fact.exitCode === 0 ? "pass" : "fail",
+              reason: "Current test execution",
+              evidence: [`test:${currentRun}:current-hash`],
+            };
+          },
+        },
+      }),
+    });
+    const result = await rt.run("Finish", start);
+    expect(result.status).toBe(kind === "current" ? "completed" : "stopped");
+    expect(result.completion?.decision.action).toBe(kind === "current" ? "accept" : "stop");
+  });
+
+  it("does not accept a verifier that resolves after cancellation", async () => {
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let settle!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const rt = new HarnessRuntime({
+      driver: custom(async () => ({ text: "candidate" })),
+      grants: { toolIds: [], modelRoles: ["main"] },
+      completionPolicy: verifiedCompletionPolicy({
+        verifier: {
+          async verify() {
+            entered();
+            await gate;
+            return { verdict: "pass", reason: "Host checked" };
+          },
+        },
+      }),
+    });
+    const handle = rt.start("Finish", start);
+    await started;
+    handle.cancel();
+    settle();
+    expect(await handle.result()).toMatchObject({ status: "cancelled", text: "candidate" });
+    expect((await handle.result()).completion).toBeUndefined();
+  });
+
+  it("classifies malformed verifier data as failure", async () => {
+    const rt = new HarnessRuntime({
+      driver: custom(async () => ({ text: "candidate" })),
+      grants: { toolIds: [], modelRoles: ["main"] },
+      completionPolicy: verifiedCompletionPolicy({
+        verifier: {
+          async verify() {
+            return { verdict: "pass", reason: "" };
+          },
+        },
+      }),
+    });
+    expect((await rt.run("Finish", start)).status).toBe("failed");
+  });
+
+  it("bounds evidence and honors the ordinary revision limit", async () => {
+    const provider = model(answer("draft"));
+    const rt = new HarnessRuntime({
+      driver: agentDriver({ name: "verifier-revision", model: provider }),
+      grants: { toolIds: [], modelRoles: ["main"] },
+      budgets: { maxRevisions: 0 },
+      completionPolicy: verifiedCompletionPolicy({
+        verifier: {
+          async verify() {
+            return { verdict: "fail", reason: "Tests failed", evidence: ["test:current"] };
+          },
+        },
+        onFailure: { action: "revise", instruction: "Fix the failing check" },
+      }),
+    });
+    expect(await rt.run("Finish", start)).toMatchObject({
+      status: "stopped",
+      reason: { code: "revision_limit" },
+      completion: { revision: 0, decision: { action: "revise" } },
+    });
+    expect(provider.generate).toHaveBeenCalledOnce();
+    const oversized = new HarnessRuntime({
+      driver: custom(async () => ({ text: "candidate" })),
+      grants: { toolIds: [], modelRoles: ["main"] },
+      completionPolicy: verifiedCompletionPolicy({
+        maxEvidenceEntries: 1,
+        verifier: {
+          async verify() {
+            return { verdict: "pass", reason: "Checked", evidence: ["one", "two"] };
+          },
+        },
+      }),
+    });
+    expect((await oversized.run("Finish", start)).status).toBe("failed");
+  });
+});
 
 describe("reflection policy", () => {
   it("revises through the runtime with aggregate usage and unchanged canonical/provider history", async () => {

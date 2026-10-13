@@ -80,6 +80,7 @@ export interface AgentConfig {
   events?: EventBus;
   sessionId?: string;
   userId?: string;
+  /** Maximum admitted tool-request batches. Zero permits a model answer without tool effects. */
   maxToolRoundtrips?: number;
   temperature?: number;
   /** Maximum output tokens per LLM call. */
@@ -276,6 +277,12 @@ export interface RunOutput {
   modelProvider?: string;
   /** Run completion status. */
   status?: "completed" | "error" | "stopped" | "cancelled";
+  /** Provider termination reason, including truncated or filtered answers. */
+  providerFinishReason?: string;
+  /** True when the output is evidence of an incomplete answer. */
+  partial?: boolean;
+  /** Stable machine-readable terminal reason. */
+  reason?: { code: string; message: string };
   /** Unix timestamp (ms) when the run was created. */
   createdAt?: number;
 
@@ -339,3 +346,9 @@ export interface LoopHooks {
 }
 
 export type { StreamChunk };
+/** Close waits for owned memory operations, and rejects while a run/stream is active. */
+export interface AgentCloseOptions {
+  closeStorage?: boolean;
+  /** The Agent default is a 30-second wait; cancellation only cancels waiting. */
+  memoryDrain?: import("../memory/memory-manager.js").MemoryDrainOptions;
+}

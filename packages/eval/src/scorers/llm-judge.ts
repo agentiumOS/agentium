@@ -49,7 +49,8 @@ export function llmJudge(config: {
         return {
           score: 0,
           pass: false,
-          reason: `Judge error: ${(err as Error).message}`,
+          status: "infrastructure_error",
+          reason: `Judge error: ${err instanceof Error ? err.message : String(err)}`,
         };
       }
     },

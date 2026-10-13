@@ -114,6 +114,7 @@ export class Team {
 
       const scope = getAccountingContext();
       if (scope) output = { ...output, costs: await getRunCostSnapshot(scope) };
+      ctx.signal?.throwIfAborted();
       this.eventBus.emit("run.complete", { runId: ctx.runId, output });
       return output;
     } catch (error) {
@@ -375,16 +376,18 @@ export class Team {
     };
   }
 
-  private generate(ctx: RunContext, messages: import("../models/types.js").ChatMessage[]) {
+  private async generate(ctx: RunContext, messages: import("../models/types.js").ChatMessage[]) {
     ctx.signal?.throwIfAborted();
-    return ctx.executionServices
+    const response = await (ctx.executionServices
       ? ctx.executionServices.model(
           createMeteredProvider(this.config.model, "team-orchestration"),
           messages,
-          undefined,
+          { signal: ctx.signal },
           ctx,
         )
-      : meteredGenerateFor("team-orchestration", this.config.model, messages);
+      : meteredGenerateFor("team-orchestration", this.config.model, messages, { signal: ctx.signal }));
+    ctx.signal?.throwIfAborted();
+    return response;
   }
 
   private buildMemberDescriptions(): string {

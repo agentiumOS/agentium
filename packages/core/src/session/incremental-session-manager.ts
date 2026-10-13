@@ -16,6 +16,8 @@ import type { Session } from "./types.js";
  *
  * `seq` is a zero-padded monotonically increasing integer so that
  * `list(ns, sessionId + ":")` returns entries in chronological order.
+ * Recovery preserves readable loose writes after metadata failure. Locks remain
+ * local to this manager; hosts must enforce one writer across manager instances.
  */
 export interface IncrementalSessionConfig {
   /** Take a full snapshot every N message appends. Default: 25. */
@@ -81,12 +83,24 @@ export class IncrementalSessionManager {
 
   private async getOrInitMeta(sessionId: string, userId?: string): Promise<SessionMeta> {
     const existing = await this.storage.get<SessionMeta>(NS_META, sessionId);
+    const snapshot = await this.readSnapshot(sessionId);
+    const loose = await this.readLoose(sessionId);
+    this.assertSequence(existing ? existing.nextSeq : 0);
+    let nextSeq = Math.max(existing?.nextSeq ?? 0, snapshot.nextSeq);
+    let appendsSinceSnapshot = 0;
+    for (const entry of loose) {
+      const seq = Number(entry.key.slice(sessionId.length + 1));
+      this.assertSequence(seq);
+      if (seq === Number.MAX_SAFE_INTEGER) throw new Error("Invalid incremental session sequence: exhausted");
+      nextSeq = Math.max(nextSeq, seq + 1);
+      if (seq >= snapshot.nextSeq) appendsSinceSnapshot++;
+    }
     if (existing) {
-      const snapshot = await this.readSnapshot(sessionId);
       // Re-hydrate Date instances (storage drivers may have JSON-serialized them).
       return {
         ...existing,
-        nextSeq: Math.max(existing.nextSeq, snapshot.nextSeq),
+        nextSeq,
+        appendsSinceSnapshot,
         createdAt: existing.createdAt instanceof Date ? existing.createdAt : new Date(existing.createdAt),
         updatedAt: existing.updatedAt instanceof Date ? existing.updatedAt : new Date(existing.updatedAt),
       };
@@ -97,8 +111,8 @@ export class IncrementalSessionManager {
       state: {},
       createdAt: new Date(),
       updatedAt: new Date(),
-      nextSeq: 0,
-      appendsSinceSnapshot: 0,
+      nextSeq,
+      appendsSinceSnapshot,
     };
     await this.storage.set(NS_META, sessionId, meta);
     return meta;
@@ -108,7 +122,12 @@ export class IncrementalSessionManager {
     const stored = await this.storage.get<SessionSnapshot | ChatMessage[]>(NS_SNAP, sessionId);
     // Existing installations stored bare arrays. Their loose entries have no watermark.
     if (!stored || Array.isArray(stored)) return { messages: stored ?? [], nextSeq: 0 };
+    this.assertSequence(stored.nextSeq);
     return stored;
+  }
+
+  private assertSequence(sequence: number): void {
+    if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error("Invalid incremental session sequence");
   }
 
   private async readLoose(sessionId: string): Promise<Array<{ key: string; value: ChatMessage }>> {
@@ -118,7 +137,7 @@ export class IncrementalSessionManager {
     // session's numeric sequence suffix belongs to this read or cleanup.
     return entries
       .filter((entry) => /^\d{10,}$/.test(entry.key.slice(prefix.length)))
-      .sort((a, b) => a.key.localeCompare(b.key));
+      .sort((a, b) => Number(a.key.slice(prefix.length)) - Number(b.key.slice(prefix.length)));
   }
 
   private async readMessages(sessionId: string): Promise<ChatMessage[]> {
@@ -151,6 +170,7 @@ export class IncrementalSessionManager {
     if (msgs.length === 0) return;
     return this.withLock(sessionId, async () => {
       const meta = await this.getOrInitMeta(sessionId);
+      this.assertSequence(meta.nextSeq + msgs.length);
       for (const msg of msgs) {
         const seq = meta.nextSeq++;
         await this.storage.set(NS_MSG, `${sessionId}:${padSeq(seq)}`, msg);
@@ -191,7 +211,12 @@ export class IncrementalSessionManager {
    */
   async snapshotNow(sessionId: string): Promise<void> {
     return this.withLock(sessionId, async () => {
-      if (!(await this.storage.get<SessionMeta>(NS_META, sessionId))) return;
+      if (
+        !(await this.storage.get<SessionMeta>(NS_META, sessionId)) &&
+        !(await this.storage.get(NS_SNAP, sessionId)) &&
+        (await this.readLoose(sessionId)).length === 0
+      )
+        return;
       const meta = await this.getOrInitMeta(sessionId);
       await this.snapshot(sessionId, {
         ...meta,

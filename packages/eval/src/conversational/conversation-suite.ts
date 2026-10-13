@@ -1,6 +1,6 @@
-import type { Agent, ModelProvider } from "@agentium/core";
-import { positive, validateConfig, validateScorers } from "../case-lifecycle.js";
-import type { Reporter } from "../types.js";
+import type { ModelProvider } from "@agentium/core";
+import { gradingSummary, positive, validateConfig, validateScorers } from "../case-lifecycle.js";
+import type { EvalTarget, Reporter } from "../types.js";
 import { ConversationRunner } from "./scenario-runner.js";
 import type { ConversationEvalResult, ConversationSuiteConfig, ConversationSuiteResult } from "./types.js";
 
@@ -19,7 +19,7 @@ export class ConversationSuite {
     this.model = config.judgeModel ?? model;
   }
 
-  async run(agent: Agent, reporters?: Reporter[]): Promise<ConversationSuiteResult> {
+  async run(agent: EvalTarget, reporters?: Reporter[]): Promise<ConversationSuiteResult> {
     const startTime = Date.now();
     const runner = new ConversationRunner(this.model);
     const concurrency = this.config.concurrency ?? 1;
@@ -48,6 +48,8 @@ export class ConversationSuite {
             scores: {},
             durationMs: 0,
             pass: false,
+            gradingStatus: "incomplete",
+            failureKind: "infrastructure",
             error: result.reason?.message ?? "Unknown error",
             turns: [],
             turnCount: 0,
@@ -70,11 +72,12 @@ export class ConversationSuite {
       averageTurns,
       averageScore,
       durationMs: Date.now() - startTime,
+      ...gradingSummary(results),
     };
 
     if (reporters) {
       for (const reporter of reporters) {
-        await reporter.report(suiteResult as any);
+        await reporter.report(suiteResult);
       }
     }
 

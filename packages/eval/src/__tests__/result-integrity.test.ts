@@ -336,3 +336,74 @@ it("checks elapsed wall time even when synchronous work prevents the timer from 
   expect(result.results[0]).toMatchObject({ pass: false, failureKind: "timeout" });
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it("preserves generated output and grades only valid complete cases", async () => {
+  let generations = 0;
+  const result = await new EvalSuite({
+    name: "coverage",
+    agent: {
+      run: async () => {
+        generations++;
+        return output("completed");
+      },
+    },
+    cases: [
+      { name: "valid failure", input: "task failure" },
+      { name: "invalid grade", input: "bad judge" },
+    ],
+    scorers: [{ name: "quality", score: async (input) => ({ score: input === "bad judge" ? NaN : 0, pass: false }) }],
+  }).run();
+  expect(generations).toBe(2);
+  expect(result).toMatchObject({
+    total: 2,
+    passed: 0,
+    failed: 2,
+    gradedCases: 1,
+    infrastructureFailures: 1,
+    gradedAverageScore: 0,
+  });
+  expect(result.results[0]).toMatchObject({ gradingStatus: "complete", scores: { quality: { status: "graded" } } });
+  expect(result.results[0].failureKind).toBeUndefined();
+  expect(result.results[1]).toMatchObject({
+    gradingStatus: "incomplete",
+    failureKind: "infrastructure",
+    scores: { quality: { status: "infrastructure_error" } },
+  });
+});
+
+it("retains the generated output when judging times out without regenerating", async () => {
+  vi.useFakeTimers();
+  const generated = output("completed");
+  const run = vi.fn(async () => generated);
+  const pending = new EvalSuite({
+    name: "judge timeout",
+    agent: { run },
+    cases,
+    timeoutMs: 10,
+    scorers: [{ name: "judge", score: async () => new Promise(() => {}) }],
+  }).run();
+  await vi.advanceTimersByTimeAsync(10);
+  const result = await pending;
+  expect(result.results[0]).toMatchObject({
+    output: generated,
+    failureKind: "timeout",
+    gradingStatus: "incomplete",
+    cleanupPending: true,
+  });
+  expect(result).toMatchObject({ total: 1, gradedCases: 0, infrastructureFailures: 0, gradedAverageScore: null });
+  expect(run).toHaveBeenCalledTimes(1);
+});
+
+it("classifies a malformed JSON judge as infrastructure", async () => {
+  const result = await new EvalSuite({
+    name: "bad JSON",
+    agent: { run: async () => output() },
+    cases,
+    scorers: [llmJudge({ model: fakeModel('{"score":"1"}') })],
+  }).run();
+  expect(result.results[0]).toMatchObject({
+    failureKind: "infrastructure",
+    gradingStatus: "incomplete",
+    scores: { "llm-judge": { status: "infrastructure_error" } },
+  });
+});

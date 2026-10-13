@@ -97,7 +97,7 @@ describe("Agent cost accounting DX", () => {
     expect(closeTracker).toHaveBeenCalledTimes(1);
     expect(closeStore).not.toHaveBeenCalled();
   });
-  it("close waits for active owned accounting", async () => {
+  it("rejects busy close without interrupting active owned accounting", async () => {
     let started!: () => void;
     let release!: () => void;
     const began = new Promise<void>((resolve) => {
@@ -113,20 +113,19 @@ describe("Agent cost accounting DX", () => {
       return response();
     };
     const agent = new Agent({ name: "drain", model: provider, cost: { catalog: fixtureCatalog() }, register: false });
+    const closeTracker = vi.spyOn(CostTracker.prototype, "close");
     const run = agent.run("hello");
     await began;
-    let closed = false;
-    const close = agent.close().then(() => {
-      closed = true;
-    });
-    await Promise.resolve();
-    expect(closed).toBe(false);
+    await expect(agent.close()).rejects.toMatchObject({ name: "AgentLifecycleError", code: "AGENT_BUSY" });
+    expect(closeTracker).not.toHaveBeenCalled();
     release();
-    expect((await run).costs?.total).toBe("0.072");
-    await close;
-    expect(closed).toBe(true);
+    const result = await run;
+    expect(result.status).toBe("completed");
+    expect(result.costs?.total).toBe("0.072");
+    await agent.close();
+    expect(closeTracker).toHaveBeenCalledTimes(1);
   });
-  it("close also waits through a hook gap before later metered work", async () => {
+  it("rejects busy close through a hook gap before later metered work", async () => {
     let reached!: () => void;
     let release!: () => void;
     const began = new Promise<void>((resolve) => {
@@ -149,18 +148,17 @@ describe("Agent cost accounting DX", () => {
         },
       },
     });
+    const closeTracker = vi.spyOn(CostTracker.prototype, "close");
     const run = agent.run("hello");
     await began;
-    let closed = false;
-    const close = agent.close().then(() => {
-      closed = true;
-    });
-    await Promise.resolve();
-    expect(closed).toBe(false);
+    await expect(agent.close()).rejects.toMatchObject({ name: "AgentLifecycleError", code: "AGENT_BUSY" });
+    expect(closeTracker).not.toHaveBeenCalled();
     release();
-    expect((await run).costs?.total).toBe("0.144");
-    await close;
-    expect(closed).toBe(true);
+    const result = await run;
+    expect(result.status).toBe("completed");
+    expect(result.costs?.total).toBe("0.144");
+    await agent.close();
+    expect(closeTracker).toHaveBeenCalledTimes(1);
   });
   it("does not wait for unrelated work on a shared tracker", async () => {
     const tracker = new CostTracker({ catalog: fixtureCatalog() });

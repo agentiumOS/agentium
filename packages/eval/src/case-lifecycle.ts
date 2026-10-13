@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { type Agent, getTextContent, type RunOutput } from "@agentium/core";
-import type { EvalCase, EvalResult, EvalSuiteResult, Reporter, Scorer, ScorerContext, ScorerResult } from "./types.js";
+import { getTextContent, type RunOutput } from "@agentium/core";
+import type {
+  EvalCase,
+  EvalResult,
+  EvalSuiteResult,
+  EvalTarget,
+  Reporter,
+  Scorer,
+  ScorerContext,
+  ScorerResult,
+} from "./types.js";
 
 export function positive(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647)
@@ -25,14 +34,18 @@ export function validateScorers(scorers: Scorer[], requireOne = false): void {
 export function validateScore(score: ScorerResult): ScorerResult {
   if (!score || !Number.isFinite(score.score) || score.score < 0 || score.score > 1 || typeof score.pass !== "boolean")
     throw new Error("Scorer must return a finite score in [0,1] and an explicit boolean pass");
-  return score;
+  if (score.status !== undefined && score.status !== "graded" && score.status !== "infrastructure_error")
+    throw new Error("Invalid scorer status");
+  if (score.reason !== undefined && typeof score.reason !== "string") throw new Error("Invalid scorer reason");
+  return { ...score, status: score.status ?? "graded" };
 }
 export function successful(output: RunOutput): boolean {
   return output.status === undefined || output.status === "completed";
 }
 export function scoresPass(scores: Record<string, ScorerResult>, minimum: number): boolean {
   return (
-    Object.values(scores).length > 0 && Object.values(scores).every((s) => validateScore(s).pass && s.score >= minimum)
+    Object.values(scores).length > 0 &&
+    Object.values(scores).every((s) => validateScore(s).status === "graded" && s.pass && s.score >= minimum)
   );
 }
 export class EvalInterruption extends Error {
@@ -44,11 +57,12 @@ export class EvalInterruption extends Error {
   }
 }
 // A timed-out callback may still be running. Never overlap a reused explicit session with it.
-const activeSessions = new WeakMap<Agent, Map<string, Promise<RunOutput>>>();
+const activeSessions = new WeakMap<EvalTarget, Map<string, Promise<RunOutput>>>();
 export class CaseLifecycle implements ScorerContext {
   readonly deadline: number;
   readonly signal: AbortSignal;
   private controller = new AbortController();
+  output?: RunOutput;
   private pending = new Set<Promise<unknown>>();
   private timer: ReturnType<typeof setTimeout>;
   private closed = false;
@@ -100,7 +114,7 @@ export class CaseLifecycle implements ScorerContext {
       this.signal.removeEventListener("abort", abort);
     }
   }
-  async agent(agent: Agent, evalCase: EvalCase): Promise<RunOutput> {
+  async agent(agent: EvalTarget, evalCase: EvalCase): Promise<RunOutput> {
     this.check();
     const sessionId =
       evalCase.runOpts?.sessionId ?? evalCase.runOpts?.executionServices?.sessionKey ?? `eval-${randomUUID()}`;
@@ -117,7 +131,10 @@ export class CaseLifecycle implements ScorerContext {
         throw new EvalInterruption("infrastructure", "Evaluation session still has unsettled work");
       const work = Promise.resolve().then(() => {
         this.check();
-        return agent.run(evalCase.input, { ...evalCase.runOpts, sessionId, signal: this.signal });
+        return agent.run(evalCase.input, { ...evalCase.runOpts, sessionId, signal: this.signal }).then((output) => {
+          this.output = output;
+          return output;
+        });
       });
       owned.set(sessionId, work);
       void work.then(
@@ -161,14 +178,29 @@ export async function evaluateCase(
     life.check();
     const result = await evaluate(life);
     life.check();
-    return { ...result, caseName: evalCase.name, input: inputText(evalCase), durationMs: Date.now() - started };
+    const scores = Object.fromEntries(
+      Object.entries(result.scores).map(([name, score]) => [name, validateScore(score)]),
+    );
+    const infrastructure = Object.values(scores).some((score) => score.status === "infrastructure_error");
+    return {
+      ...result,
+      scores,
+      pass: result.pass && !infrastructure,
+      gradingStatus: infrastructure ? "incomplete" : "complete",
+      ...(infrastructure ? { failureKind: "infrastructure" as const } : {}),
+      caseName: evalCase.name,
+      input: inputText(evalCase),
+      durationMs: Date.now() - started,
+    };
   } catch (error) {
     await Promise.resolve();
     return {
       caseName: evalCase.name,
       input: inputText(evalCase),
+      ...(life.output ? { output: life.output } : {}),
       scores: {},
       pass: false,
+      gradingStatus: "incomplete",
       durationMs: Date.now() - started,
       ...failure(error),
       ...(life.cleanupPending ? { cleanupPending: true } : {}),
@@ -176,6 +208,19 @@ export async function evaluateCase(
   } finally {
     life.close();
   }
+}
+export function gradingSummary(results: readonly EvalResult[]) {
+  const graded = results.filter((result) => result.gradingStatus === "complete");
+  const values = graded.flatMap((result) =>
+    Object.values(result.scores)
+      .filter((score) => score.status !== "infrastructure_error")
+      .map((score) => score.score),
+  );
+  return {
+    gradedCases: graded.length,
+    infrastructureFailures: results.filter((result) => result.failureKind === "infrastructure").length,
+    gradedAverageScore: values.length ? values.reduce((sum, score) => sum + score, 0) / values.length : null,
+  };
 }
 export async function runCases<T extends EvalCase>(
   config: { name: string; cases: T[]; timeoutMs?: number; concurrency?: number; signal?: AbortSignal },
@@ -205,6 +250,7 @@ export async function runCases<T extends EvalCase>(
     total: results.length,
     averageScore: values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0,
     durationMs: Date.now() - start,
+    ...gradingSummary(results),
   };
   for (const reporter of reporters ?? []) await reporter.report(result);
   return result;

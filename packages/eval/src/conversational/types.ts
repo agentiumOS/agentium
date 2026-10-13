@@ -1,5 +1,5 @@
 import type { ModelProvider } from "@agentium/core";
-import type { EvalResult, Scorer } from "../types.js";
+import type { EvalResult, EvalSuiteResult, Scorer } from "../types.js";
 
 export interface UserPersona {
   name: string;
@@ -64,7 +64,7 @@ export interface ConversationSuiteConfig {
   judgeModel?: ModelProvider;
 }
 
-export interface ConversationSuiteResult {
+export interface ConversationSuiteResult extends EvalSuiteResult {
   name: string;
   results: ConversationEvalResult[];
   passed: number;

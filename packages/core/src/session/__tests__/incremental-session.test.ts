@@ -4,6 +4,120 @@ import { InMemoryStorage } from "../../storage/in-memory.js";
 import { IncrementalSessionManager } from "../incremental-session-manager.js";
 
 describe("IncrementalSessionManager", () => {
+  class FaultStorage extends InMemoryStorage {
+    writesUntilFailure: number | undefined;
+    override async set<T>(namespace: string, key: string, value: T) {
+      if (this.writesUntilFailure !== undefined && this.writesUntilFailure-- === 0) throw new Error("write failed");
+      return super.set(namespace, key, JSON.parse(JSON.stringify(value)));
+    }
+  }
+
+  it.each([0, 1, 2, 3])("recovers a multi-message batch after write %s fails", async (failure) => {
+    const storage = new FaultStorage();
+    const manager = new IncrementalSessionManager(storage, { snapshotFrequency: 100 });
+    await manager.getOrCreate("s");
+    storage.writesUntilFailure = failure;
+    await expect(
+      manager.appendMessages(
+        "s",
+        ["A", "B", "C"].map((content) => ({ role: "user", content })),
+      ),
+    ).rejects.toThrow("write failed");
+    storage.writesUntilFailure = undefined;
+    const recovered = new IncrementalSessionManager(storage, { snapshotFrequency: 100 });
+    await recovered.appendMessage("s", { role: "user", content: "next" });
+    expect((await recovered.getHistory("s")).map((message) => message.content)).toEqual([
+      ...["A", "B", "C"].slice(0, failure),
+      "next",
+    ]);
+    expect((await recovered.getOrCreate("s")).createdAt).toBeInstanceOf(Date);
+  });
+
+  it("recovers missing metadata and snapshots orphan logs", async () => {
+    const storage = new FaultStorage();
+    await storage.set("sessions:msg", "s:0000000004", { role: "user", content: "orphan" });
+    const manager = new IncrementalSessionManager(storage);
+    await manager.snapshotNow("s");
+    expect(await storage.get("sessions:snapshot", "s")).toMatchObject({ nextSeq: 5 });
+    await manager.appendMessage("s", { role: "user", content: "next" });
+    expect((await manager.getHistory("s")).map((message) => message.content)).toEqual(["orphan", "next"]);
+  });
+
+  it("counts only loose entries above the snapshot watermark", async () => {
+    const storage = new FaultStorage();
+    await storage.set("sessions:snapshot", "s", { messages: [{ role: "user", content: "old" }], nextSeq: 3 });
+    await storage.set("sessions:msg", "s:0000000001", { role: "user", content: "leftover" });
+    await storage.set("sessions:msg", "s:0000000003", { role: "user", content: "new" });
+    const manager = new IncrementalSessionManager(storage, { snapshotFrequency: 2 });
+    await manager.appendMessage("s", { role: "user", content: "next" });
+    expect(await storage.get("sessions:snapshot", "s")).toMatchObject({ nextSeq: 5 });
+    expect((await manager.getHistory("s")).map((message) => message.content)).toEqual(["old", "new", "next"]);
+  });
+
+  it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid watermark %s without overwriting history",
+    async (nextSeq) => {
+      const storage = new FaultStorage();
+      await storage.set("sessions:snapshot", "s", { messages: [], nextSeq });
+      await expect(
+        new IncrementalSessionManager(storage).appendMessage("s", { role: "user", content: "next" }),
+      ).rejects.toThrow(/sequence/);
+      expect(await storage.list("sessions:msg", "s:")).toEqual([]);
+    },
+  );
+
+  it("rejects exhausted loose sequence without overwriting history", async () => {
+    const storage = new FaultStorage();
+    await storage.set("sessions:msg", `s:${Number.MAX_SAFE_INTEGER}`, { role: "user", content: "old" });
+    await expect(
+      new IncrementalSessionManager(storage).appendMessage("s", { role: "user", content: "next" }),
+    ).rejects.toThrow(/sequence/);
+  });
+
+  it.each(["missing", "behind"] as const)("recovers metadata %s the committed snapshot", async (metadata) => {
+    const storage = new FaultStorage();
+    await storage.set("sessions:snapshot", "s", { messages: [{ role: "user", content: "old" }], nextSeq: 5 });
+    if (metadata === "behind")
+      await storage.set("sessions:meta", "s", {
+        sessionId: "s",
+        state: {},
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        nextSeq: 1,
+        appendsSinceSnapshot: 9,
+      });
+    const manager = new IncrementalSessionManager(storage, { snapshotFrequency: 2 });
+    await manager.appendMessage("s", { role: "user", content: "new" });
+    expect(await storage.get("sessions:msg", "s:0000000005")).toMatchObject({ content: "new" });
+    expect(await storage.get("sessions:meta", "s")).toMatchObject({ nextSeq: 6, appendsSinceSnapshot: 1 });
+    expect((await manager.getHistory("s")).map((message) => message.content)).toEqual(["old", "new"]);
+  });
+
+  it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])("rejects unsafe metadata sequence %s", async (nextSeq) => {
+    const storage = new FaultStorage();
+    await storage.set("sessions:meta", "s", {
+      sessionId: "s",
+      state: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      nextSeq,
+      appendsSinceSnapshot: 0,
+    });
+    await expect(
+      new IncrementalSessionManager(storage).appendMessage("s", { role: "user", content: "next" }),
+    ).rejects.toThrow(/sequence/);
+    expect(await storage.list("sessions:msg", "s:")).toEqual([]);
+  });
+
+  it("orders numeric sequences after the ten-digit padding is exceeded", async () => {
+    const storage = new FaultStorage();
+    await storage.set("sessions:msg", "s:9999999999", { role: "user", content: "older" });
+    await storage.set("sessions:msg", "s:10000000000", { role: "user", content: "newer" });
+    const manager = new IncrementalSessionManager(storage, { snapshotFrequency: 100 });
+    await manager.appendMessage("s", { role: "user", content: "next" });
+    expect((await manager.getHistory("s")).map((message) => message.content)).toEqual(["older", "newer", "next"]);
+  });
+
   it("isolates reads, snapshots and deletion for session IDs sharing a colon prefix", async () => {
     const mgr = new IncrementalSessionManager(new InMemoryStorage(), { snapshotFrequency: 100 });
     await mgr.appendMessage("parent", { role: "user", content: "parent value" });

@@ -89,6 +89,31 @@ async function consume(source: Agent, options: Parameters<Agent["stream"]>[1] = 
 }
 
 describe("streaming handoff", () => {
+  it.each([false, true])("forwards the target's incomplete outcome, stream=%s", async (stream) => {
+    const target = agent({
+      name: "length-target",
+      model: model({ ...response("Partial target"), finishReason: "length" }),
+    });
+    const source = agent({
+      name: "length-source",
+      model: model(response(null, [transfer("length-target")])),
+      handoff: { targets: [{ agent: target, description: "Fixture specialist" }] },
+    });
+    let output: RunOutput | undefined;
+    if (stream) {
+      source.eventBus.on("run.complete", (event) => {
+        if (event.output.agentName === source.name) output = event.output;
+      });
+      await consume(source);
+    } else output = await source.run("help", scopes);
+    expect(output).toMatchObject({
+      status: "stopped",
+      text: "Partial target",
+      partial: true,
+      providerFinishReason: "length",
+      reason: { code: "provider_length" },
+    });
+  });
   it("keeps target chunks live, canonical source/target batches and per-model costs", async () => {
     const entered = wait(),
       release = wait();

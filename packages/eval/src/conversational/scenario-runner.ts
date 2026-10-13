@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { Agent, ModelProvider, RunOutput } from "@agentium/core";
+import type { ModelProvider, RunOutput } from "@agentium/core";
 import { evaluateCase, positive, successful, validateScore, validateScorers } from "../case-lifecycle.js";
-import type { Scorer, ScorerResult } from "../types.js";
+import type { EvalTarget, Scorer, ScorerResult } from "../types.js";
 import { SyntheticUser } from "./synthetic-user.js";
 import { scoreTrajectory } from "./trajectory-scorer.js";
 import type { ConversationEvalResult, ConversationScenario, ConversationTurn } from "./types.js";
@@ -9,7 +9,7 @@ import type { ConversationEvalResult, ConversationScenario, ConversationTurn } f
 export class ConversationRunner {
   constructor(private defaultModel: ModelProvider) {}
   async run(
-    agent: Agent,
+    agent: EvalTarget,
     scenario: ConversationScenario,
     scorers?: Scorer[],
     options: { timeoutMs?: number; signal?: AbortSignal } = {},
@@ -61,6 +61,7 @@ export class ConversationRunner {
             scores[scorer.name] = {
               score: 0,
               pass: false,
+              status: "infrastructure_error",
               reason: error instanceof Error ? error.message : String(error),
             };
           }
@@ -76,8 +77,8 @@ export class ConversationRunner {
     return { ...result, turns: [...turns], trajectoryMatch, turnCount: turns.filter((t) => t.role === "user").length };
   }
   async runComparison(
-    agentA: Agent,
-    agentB: Agent,
+    agentA: EvalTarget,
+    agentB: EvalTarget,
     scenario: ConversationScenario,
     scorers?: Scorer[],
     options: { timeoutMs?: number; signal?: AbortSignal } = {},

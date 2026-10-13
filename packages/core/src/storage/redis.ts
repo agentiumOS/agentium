@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import type { StorageDriver } from "./driver.js";
+import { decodeKeySegment, encodeKeySegment } from "./key-codec.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -11,18 +12,33 @@ export interface RedisStorageConfig {
   url?: string;
   keyPrefix?: string;
   ttl?: number;
+  /** Defaults to legacy; tuple-v1 requires explicit migration and never reads legacy keys. */
+  keyEncoding?: "legacy" | "tuple-v1";
+}
+
+interface RedisClient {
+  ping(): Promise<unknown>;
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<unknown>;
+  setex(key: string, ttl: number, value: string): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+  scan(cursor: string, match: string, pattern: string, count: string, size: number): Promise<[string, string[]]>;
+  mget(...keys: string[]): Promise<Array<string | null>>;
+  quit(): Promise<unknown>;
 }
 
 export class RedisStorage implements StorageDriver {
-  private client: any;
+  private client: RedisClient;
   private keyPrefix: string;
   private ttl: number | null;
+  private keyEncoding: "legacy" | "tuple-v1";
 
   constructor(config: RedisStorageConfig = {}) {
     this.keyPrefix = config.keyPrefix ?? "agentium";
     this.ttl = config.ttl ?? null;
+    this.keyEncoding = config.keyEncoding ?? "legacy";
 
-    let Redis: any;
+    let Redis: new (...args: unknown[]) => RedisClient;
     try {
       Redis = _require("ioredis");
     } catch {
@@ -42,11 +58,18 @@ export class RedisStorage implements StorageDriver {
   }
 
   private makeKey(namespace: string, key: string): string {
-    return `${this.keyPrefix}:${namespace}:${key}`;
+    const segment = this.keyEncoding === "tuple-v1" ? encodeKeySegment(key) : key;
+    return `${this.makeNamespacePrefix(namespace)}${segment}`;
+  }
+
+  private makeNamespacePrefix(namespace: string): string {
+    return this.keyEncoding === "tuple-v1"
+      ? `agkv1:${encodeKeySegment(this.keyPrefix)}:${encodeKeySegment(namespace)}:`
+      : `${this.keyPrefix}:${namespace}:`;
   }
 
   private makeScanPattern(namespace: string, prefix?: string): string {
-    return prefix ? `${this.keyPrefix}:${namespace}:${prefix}*` : `${this.keyPrefix}:${namespace}:*`;
+    return `${this.makeKey(namespace, prefix ?? "")}*`;
   }
 
   async initialize(): Promise<void> {
@@ -75,7 +98,7 @@ export class RedisStorage implements StorageDriver {
 
   async list<T>(namespace: string, prefix?: string): Promise<Array<{ key: string; value: T }>> {
     const pattern = this.makeScanPattern(namespace, prefix);
-    const nsPrefix = `${this.keyPrefix}:${namespace}:`;
+    const nsPrefix = this.makeNamespacePrefix(namespace);
     const results: Array<{ key: string; value: T }> = [];
 
     let cursor = "0";
@@ -86,10 +109,13 @@ export class RedisStorage implements StorageDriver {
       if (keys.length > 0) {
         const values = await this.client.mget(...keys);
         for (let i = 0; i < keys.length; i++) {
-          if (values[i] !== null) {
+          const key = keys[i];
+          const raw = values[i];
+          if (key !== undefined && raw !== null && raw !== undefined) {
+            const segment = key.slice(nsPrefix.length);
             results.push({
-              key: (keys[i] as string).slice(nsPrefix.length),
-              value: JSON.parse(values[i] as string) as T,
+              key: this.keyEncoding === "tuple-v1" ? decodeKeySegment(segment) : segment,
+              value: JSON.parse(raw) as T,
             });
           }
         }

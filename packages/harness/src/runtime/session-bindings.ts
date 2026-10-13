@@ -5,6 +5,9 @@ export interface HarnessIdentity {
   tenantId: string;
 }
 export interface HarnessSessionSnapshot {
+  /** Derived summaries are bound to the exact host-attested continuity scope. */
+  taskSummaries?: Record<string, import("./task-summary.js").TaskSummaryRecord>;
+  memoryScope?: import("./recall.js").RecallScope;
   /** Canonical records held by the host archive, in archival order. */
   archivedHistory?: import("./history.js").HistoryArchiveReference[];
   conversations?: Record<string, ChatMessage[]>;
@@ -14,9 +17,11 @@ export interface HarnessSessionSnapshot {
   replayable: boolean;
 }
 export interface HarnessSessionLease {
+  /** Remote stores preload this snapshot during acquire. */
   read(): HarnessSessionSnapshot;
-  commit(snapshot: Omit<HarnessSessionSnapshot, "revision">): void;
-  release(): void;
+  /** A rejection can mean acknowledgement was lost after the write applied. */
+  commit(snapshot: Omit<HarnessSessionSnapshot, "revision">): void | Promise<void>;
+  release(): void | Promise<void>;
 }
 export class HarnessSessionConflict extends Error {
   readonly code = "session_conflict";

@@ -52,6 +52,10 @@ export interface ExecutionServices {
     context?: RunContext,
   ): AsyncGenerator<StreamChunk>;
   runOwned<T>(operation: () => Promise<T>): Promise<T>;
+  /** Observe every already-settled result before cancellation or control hooks stop
+   * batch processing. This callback records evidence only and must tolerate abort.
+   */
+  observeToolSettlements?(results: readonly ToolCallResult[], context?: RunContext): Promise<void>;
   observeTool(result: ToolCallResult, context?: RunContext): Promise<void>;
   dispatchEffect<T>(
     name: string,

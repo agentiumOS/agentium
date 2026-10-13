@@ -1,5 +1,6 @@
 import type { Agent } from "../agent/agent.js";
 import type { RunContext } from "../agent/run-context.js";
+import type { RunOpts, RunOutput } from "../agent/types.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { StorageDriver } from "../storage/driver.js";
 
@@ -25,6 +26,8 @@ export interface ConditionStep<TState> {
 export interface ParallelStep<TState> {
   name: string;
   parallel: StepDef<TState>[];
+  /** Later declarations win collisions by default; error rejects conflicting owned keys. */
+  merge?: "declaration_order" | "error";
 }
 
 export interface WorkflowConfig<TState extends Record<string, unknown> = Record<string, unknown>> {
@@ -34,19 +37,26 @@ export interface WorkflowConfig<TState extends Record<string, unknown> = Record<
   initialState: TState;
   steps: StepDef<TState>[];
   storage?: StorageDriver;
+  /** Ordinary errors are collected by default; stop skips later serial work. */
+  failurePolicy?: "continue" | "stop";
+  /** Supply together with validateCheckpointState to enable versioned continuation. */
+  definitionVersion?: string;
+  validateCheckpointState?: (value: unknown) => TState;
   retryPolicy?: { maxRetries: number; backoffMs: number };
   eventBus?: EventBus;
   /** Auto-register this workflow in the global registry. Default: true. Set false to opt out. */
   register?: boolean;
   /**
-   * Enable time-travel: automatically checkpoint state after each step so the
-   * workflow can be replayed or forked from any point.
+   * Save state after each top-level step. Continuation reruns later effects;
+   * checkpoints do not provide recorded playback or exactly-once execution.
    */
   checkpointStore?: import("./checkpoints.js").WorkflowCheckpointStore<TState>;
 }
 
 export interface WorkflowResult<TState> {
   costs?: import("../cost/accounting-types.js").RunCostSnapshot;
+  status?: "completed" | "failed";
+  reason?: { code: "workflow_step_failed"; message: string };
   state: TState;
   stepResults: StepResult[];
 }
@@ -55,5 +65,10 @@ export interface StepResult {
   stepName: string;
   status: "done" | "error" | "skipped";
   error?: string;
+  /** Partial child output is evidence and never a successful named state patch. */
+  output?: { text: string; status: RunOutput["status"]; reason?: RunOutput["reason"] };
   durationMs: number;
 }
+
+/** Caller-owned identity, policy and dependencies for a fresh continuation run. */
+export type WorkflowContinuationOptions = RunOpts;

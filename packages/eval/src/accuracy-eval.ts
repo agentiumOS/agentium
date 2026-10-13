@@ -1,9 +1,9 @@
-import type { Agent, ModelProvider } from "@agentium/core";
+import type { ModelProvider } from "@agentium/core";
 import { AgentJudgeEval } from "./agent-judge-eval.js";
-import type { EvalCase, Reporter } from "./types.js";
+import type { EvalCase, EvalTarget, Reporter } from "./types.js";
 export interface AccuracyEvalConfig {
   name: string;
-  agent: Agent;
+  agent: EvalTarget;
   cases: EvalCase[];
   judge: ModelProvider;
   threshold?: number;

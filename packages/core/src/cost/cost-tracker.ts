@@ -201,6 +201,7 @@ export class CostTracker {
     scope: AccountingScope & { attemptId?: string; currency?: string },
     bound?: string,
   ): Promise<BudgetDecision>;
+  /** @deprecated Legacy local budget check. Throws after canonical accounting; use the ledger overload. */
   checkBudget(runId: string, sessionId?: string, userId?: string): void;
   checkBudget(
     runId: string | (AccountingScope & { attemptId?: string; currency?: string }),
@@ -223,6 +224,7 @@ export class CostTracker {
           reservationId: undefined,
         };
       })();
+    this.assertLegacyBudgetRead();
     if (!this.budget) return;
 
     const mode = this.budget.onBudgetExceeded ?? "throw";
@@ -331,6 +333,7 @@ export class CostTracker {
   /**
    * Check budget using in-progress (cumulative) usage without persisting an entry.
    * Called during multi-roundtrip runs (e.g. tool calling) to enforce limits mid-run.
+   * @deprecated Legacy local usage only. Canonical callers use asynchronous ledger admission.
    */
   checkInProgressBudget(
     modelId: string,
@@ -339,6 +342,7 @@ export class CostTracker {
     sessionId?: string,
     userId?: string,
   ): boolean {
+    this.assertLegacyBudgetRead();
     if (!this.budget || this.budget.onBudgetExceeded === "warn") return false;
 
     const inProgressCost = this.calculateBreakdown(modelId, cumulativeUsage).total;
@@ -371,8 +375,9 @@ export class CostTracker {
     return false;
   }
 
-  /** @deprecated Use checkInProgressBudget for mid-run checks. This now delegates to it. */
+  /** @deprecated Legacy local usage only. Canonical callers use asynchronous ledger admission. */
   isBudgetExceeded(runId: string, sessionId?: string, userId?: string): boolean {
+    this.assertLegacyBudgetRead();
     if (!this.budget || this.budget.onBudgetExceeded === "warn") return false;
 
     if (this.budget.maxCostPerRun !== undefined) {
@@ -402,7 +407,9 @@ export class CostTracker {
     return false;
   }
 
+  /** @deprecated Legacy local allowance only; queryRunUsage observes canonical usage without reserving budget. */
   estimateRemaining(runId: string): { costRemaining: number | null; tokensRemaining: number | null } {
+    this.assertLegacyBudgetRead();
     if (!this.budget) return { costRemaining: null, tokensRemaining: null };
 
     const runEntries = this.legacyTotals.filter((e) => e.runId === runId);
@@ -413,6 +420,13 @@ export class CostTracker {
       costRemaining: this.budget.maxCostPerRun != null ? this.budget.maxCostPerRun - runCost : null,
       tokensRemaining: this.budget.maxTokensPerRun != null ? this.budget.maxTokensPerRun - runTokens : null,
     };
+  }
+
+  private assertLegacyBudgetRead(): void {
+    if (this.canonicalUsed)
+      throw new IncompleteCostError(
+        "Canonical accounting requires ledger budget decisions; synchronous legacy budget reads are incomplete",
+      );
   }
 
   getEntries(): readonly CostEntry[] {

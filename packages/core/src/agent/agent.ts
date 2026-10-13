@@ -38,8 +38,8 @@ import { ToolRouter } from "../tools/tool-router.js";
 import type { ToolDef } from "../tools/types.js";
 import { countTokens } from "../utils/token-counter.js";
 import type { WebhookManager } from "../webhooks/webhook-manager.js";
-import { RunCancelledError } from "./errors.js";
-import { LLMLoop } from "./llm-loop.js";
+import { AgentLifecycleError, MemoryDrainError, RunCancelledError } from "./errors.js";
+import { LLMLoop, LoopCancelledError, type LoopStreamOutcome, ModelProtocolError } from "./llm-loop.js";
 import { ReflectionManager } from "./reflection.js";
 import { RunContext } from "./run-context.js";
 import {
@@ -49,7 +49,7 @@ import {
   serializeAgentConfig,
 } from "./serialization.js";
 import { createTaskTool, type SubagentSpec, spawnSubagent } from "./subagent.js";
-import type { AgentConfig, LoopHooks, RunMetrics, RunOpts, RunOutput } from "./types.js";
+import type { AgentCloseOptions, AgentConfig, LoopHooks, RunMetrics, RunOpts, RunOutput } from "./types.js";
 
 const policyComponents = new WeakMap<
   import("../tools/execution-policy.js").ExecutionPolicy,
@@ -88,6 +88,10 @@ export class Agent {
   private toolRouter: ToolRouter | null = null;
   private skillsInitPromise: Promise<void> | null = null;
   private ownedCostTracker: CostTracker | undefined;
+  private lifecycle: "open" | "closing" | "closed" = "open";
+  private activeOperations = 0;
+  private closePromise: Promise<void> | undefined;
+  private closedResources = new Set<"accounting" | "approval" | "webhooks" | "storage">();
 
   get tools() {
     return this.config.tools ?? [];
@@ -559,18 +563,82 @@ export class Agent {
     return new Agent(config);
   }
 
-  async close(options: { closeStorage?: boolean } = {}): Promise<void> {
-    await this.ownedCostTracker?.close();
-    if (this.ownsApprovalService) this.approvalService?.close();
-    if (this.webhookManager) {
-      this.webhookManager.detach(this.eventBus);
+  close(options: AgentCloseOptions = {}): Promise<void> {
+    if (this.lifecycle === "closed") return Promise.resolve();
+    if (this.closePromise) return this.closePromise;
+    if (this.activeOperations > 0) return Promise.reject(new AgentLifecycleError("AGENT_BUSY"));
+    this.lifecycle = "closing";
+    const closing = this.closeOwnedResources(options);
+    this.closePromise = closing;
+    // Both handlers acknowledge the same owned attempt; a failed drain/teardown
+    // keeps admission closed while allowing another explicit close attempt.
+    void closing.then(
+      () => {
+        if (this.closePromise === closing) this.closePromise = undefined;
+      },
+      () => {
+        if (this.closePromise === closing) this.closePromise = undefined;
+      },
+    );
+    return closing;
+  }
+
+  private async closeOwnedResources(options: AgentCloseOptions): Promise<void> {
+    // Constructor-owned asynchronous initialization can attach resources after
+    // construction; let it settle before marking those resources disposed.
+    await this.readyPromise;
+    if (this.memoryManager) {
+      const result = await this.memoryManager.drain({ timeoutMs: 30_000, ...options.memoryDrain });
+      if (result.status !== "drained") throw new MemoryDrainError(result);
     }
-    if (options.closeStorage !== false && this.config.memory?.storage) {
-      const storage = this.config.memory.storage;
-      if (typeof (storage as any).close === "function") {
-        await (storage as any).close();
+    const failures: unknown[] = [];
+    const dispose = async (
+      key: "accounting" | "approval" | "webhooks" | "storage",
+      action: () => void | Promise<void>,
+    ) => {
+      if (this.closedResources.has(key)) return;
+      try {
+        await action();
+        this.closedResources.add(key);
+      } catch (error) {
+        failures.push(error);
       }
+    };
+    await dispose("accounting", () => this.ownedCostTracker?.close());
+    await dispose("approval", () => {
+      if (this.ownsApprovalService) this.approvalService?.close();
+    });
+    await dispose("webhooks", () => {
+      this.webhookManager?.detach(this.eventBus);
+    });
+    if (options.closeStorage !== false) {
+      await dispose("storage", () => this.config.memory?.storage?.close());
     }
+    if (failures.length) {
+      const primary = failures[0];
+      if (primary instanceof Error && failures.length > 1) {
+        // Bounded classifications retain the first error without exposing source data.
+        try {
+          Object.defineProperty(primary, "cleanupDiagnostics", {
+            value: failures.slice(1, 4).map(() => "agent_resource_close_failed"),
+            configurable: true,
+          });
+        } catch {
+          /* A frozen host error still remains the primary failure. */
+        }
+      }
+      throw primary;
+    }
+    this.lifecycle = "closed";
+  }
+
+  private acquireOperation(): () => void {
+    if (this.lifecycle !== "open")
+      throw new AgentLifecycleError(this.lifecycle === "closed" ? "AGENT_CLOSED" : "AGENT_CLOSING");
+    this.activeOperations++;
+    return () => {
+      this.activeOperations--;
+    };
   }
 
   private async currentRunUsage(runId: string, tenantId?: string): Promise<import("../models/types.js").TokenUsage> {
@@ -602,6 +670,15 @@ export class Agent {
   }
 
   async run(input: MessageContent, opts?: RunOpts): Promise<RunOutput> {
+    const release = this.acquireOperation();
+    try {
+      return await this.runWithAccounting(input, opts);
+    } finally {
+      release();
+    }
+  }
+
+  private async runWithAccounting(input: MessageContent, opts?: RunOpts): Promise<RunOutput> {
     opts = this.normalizeControlledRun(opts);
     const parent = getAccountingContext();
     const tracker = parent?.tracker ?? this.config.costTracker ?? this.ownedCostTracker;
@@ -645,7 +722,9 @@ export class Agent {
   private async runAccounted(input: MessageContent, opts?: RunOpts): Promise<RunOutput> {
     opts = this.normalizeControlledRun(opts);
     this.validateControlledRun(opts);
+    opts?.signal?.throwIfAborted();
     await this.readyPromise;
+    opts?.signal?.throwIfAborted();
     const startTime = Date.now();
     const sessionId = opts?.sessionId ?? this.config.sessionId ?? uuidv4();
     const userId =
@@ -653,12 +732,14 @@ export class Agent {
     const inputText = typeof input === "string" ? input : getTextContent(input);
 
     await this.ensureSkillsLoaded();
+    opts?.signal?.throwIfAborted();
 
     // Resolve dependencies
     let resolvedDeps: Record<string, string> = {};
     const mergedDeps = { ...(this.config.dependencies ?? {}), ...(opts?.dependencies ?? {}) };
     if (Object.keys(mergedDeps).length > 0) {
       resolvedDeps = await resolveDependencies(mergedDeps);
+      opts?.signal?.throwIfAborted();
     }
 
     // Semantic cache check
@@ -669,7 +750,8 @@ export class Agent {
       !opts?.ephemeral
     ) {
       const hit = await this.semanticCache.lookup(inputText, this.name, sessionId);
-      if (hit) {
+      opts?.signal?.throwIfAborted();
+      if (hit && this.isReusableCacheResult(hit.output)) {
         this.eventBus.emit("cache.hit", {
           agentName: this.name,
           input: inputText,
@@ -693,6 +775,7 @@ export class Agent {
           durationMs,
           metrics: this.buildMetrics({ ...hit.output, usage }, durationMs),
         };
+        opts?.signal?.throwIfAborted();
         if (this.config.guardrails?.output) {
           let guardrailFailed = false;
           const ctx = new RunContext({
@@ -708,6 +791,7 @@ export class Agent {
           });
           for (const guardrail of this.config.guardrails.output) {
             const result = await guardrail.validate(cachedOutput, ctx);
+            opts?.signal?.throwIfAborted();
             if (!result.pass) {
               guardrailFailed = true;
               break;
@@ -783,6 +867,7 @@ export class Agent {
 
     const transcript: ChatMessage[] = [];
     let processedInput = input;
+    let candidateOutput: RunOutput | undefined;
     let persistedMessages = 0;
     const persistHandoffTranscript = async () => {
       if (
@@ -818,11 +903,13 @@ export class Agent {
 
       if (this.config.hooks?.beforeRun) {
         await this.config.hooks.beforeRun(ctx);
+        if (ctx.signal?.aborted) throw new RunCancelledError();
       }
 
       if (this.config.guardrails?.input) {
         for (const guardrail of this.config.guardrails.input) {
           const result = await guardrail.validate(input, ctx);
+          if (ctx.signal?.aborted) throw new RunCancelledError();
           if (!result.pass) {
             throw new Error(`Input guardrail "${guardrail.name}" blocked: ${result.reason}`);
           }
@@ -841,12 +928,16 @@ export class Agent {
 
       const messages = await this.buildMessages(processedInput, session, ctx, inputText);
       ctx.executionServices?.recordConversation(ctx.runId, [{ role: "user", content: processedInput }]);
+      if (ctx.signal?.aborted) throw new RunCancelledError();
       const output = await runLoop.run(messages, ctx, opts?.apiKey, transcript);
+      candidateOutput = output;
+      if (ctx.signal?.aborted) throw new RunCancelledError();
 
       // Reflection: LLM-as-critic pass over the output, with bounded revision.
-      if (this.reflectionManager && !getHandoffControl(output)) {
+      if (this.reflectionManager && output.status !== "stopped" && !getHandoffControl(output)) {
         const maxReflections = this.config.reflection?.maxReflections ?? 1;
         let critique = await this.reflectionManager.critiqueOutput(output, inputText, messages);
+        if (ctx.signal?.aborted) throw new RunCancelledError();
         this.eventBus.emit("reflection.critique", {
           runId: ctx.runId,
           pass: critique.pass,
@@ -867,7 +958,12 @@ export class Agent {
           const revised = await runLoop.run(revisionMessages, ctx, opts?.apiKey, transcript);
 
           output.text = revised.text;
-          if (revised.structured !== undefined) output.structured = revised.structured;
+          output.structured = revised.structured;
+          output.status = revised.status;
+          output.providerFinishReason = revised.providerFinishReason;
+          output.partial = revised.partial;
+          output.reason = revised.reason;
+          output.publicMessages = [...(output.publicMessages ?? []), ...(revised.publicMessages ?? [])];
           output.toolCalls = [...output.toolCalls, ...revised.toolCalls];
           output.usage = {
             ...output.usage,
@@ -880,8 +976,10 @@ export class Agent {
             setHandoffControl(output, transfer);
             break;
           }
+          if (revised.status && revised.status !== "completed") break;
 
           critique = await this.reflectionManager.critiqueOutput(output, inputText, messages);
+          if (ctx.signal?.aborted) throw new RunCancelledError();
           this.eventBus.emit("reflection.critique", {
             runId: ctx.runId,
             pass: critique.pass,
@@ -938,6 +1036,7 @@ export class Agent {
         if (output.text) transcript.push({ role: "assistant", content: output.text });
       }
 
+      if (ctx.signal?.aborted) throw new RunCancelledError();
       const durationMs = Date.now() - startTime;
       output.durationMs = durationMs;
       output.runId = ctx.runId;
@@ -954,12 +1053,14 @@ export class Agent {
       if (this.config.guardrails?.output) {
         for (const guardrail of this.config.guardrails.output) {
           const result = await guardrail.validate(output, ctx);
+          if (ctx.signal?.aborted) throw new RunCancelledError();
           if (!result.pass) {
             throw new Error(`Output guardrail "${guardrail.name}" blocked: ${result.reason}`);
           }
         }
       }
 
+      if (ctx.signal?.aborted) throw new RunCancelledError();
       const newMessages: ChatMessage[] = [{ role: "user", content: processedInput }, ...transcript];
       output.newMessages = structuredClone(newMessages);
 
@@ -983,6 +1084,7 @@ export class Agent {
 
       if (this.config.hooks?.afterRun) {
         await this.config.hooks.afterRun(ctx, output);
+        if (ctx.signal?.aborted) throw new RunCancelledError();
       }
 
       if (output.thinking) {
@@ -992,6 +1094,7 @@ export class Agent {
 
       const costScope = getAccountingContext();
       if (costScope) output.costs = await getRunCostSnapshot(costScope);
+      if (ctx.signal?.aborted) throw new RunCancelledError();
       this.eventBus.emit("run.complete", {
         runId: ctx.runId,
         output,
@@ -1000,6 +1103,7 @@ export class Agent {
       // Semantic cache store (fire-and-forget)
       if (
         this.semanticCache &&
+        this.isReusableCacheResult(output) &&
         this.config.model.providerId !== "openai-decisions" &&
         !opts?.executionServices &&
         !opts?.ephemeral
@@ -1042,7 +1146,12 @@ export class Agent {
                 totalTokens: 0,
                 accounting: unknownUsage("accounting_unavailable"),
               };
-            }) ?? Promise.resolve({ promptTokens: 0, completionTokens: 0, totalTokens: 0 })),
+            }) ??
+            Promise.resolve(
+              error instanceof LoopCancelledError
+                ? error.usage
+                : (candidateOutput?.usage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
+            )),
           status: "cancelled",
           runId: ctx.runId,
           agentName: this.name,
@@ -1074,6 +1183,15 @@ export class Agent {
   }
 
   async *stream(input: MessageContent, opts?: RunOpts): AsyncGenerator<StreamChunk> {
+    const release = this.acquireOperation();
+    try {
+      yield* this.streamWithAccounting(input, opts);
+    } finally {
+      release();
+    }
+  }
+
+  private async *streamWithAccounting(input: MessageContent, opts?: RunOpts): AsyncGenerator<StreamChunk> {
     opts = this.normalizeControlledRun(opts);
     const parent = getAccountingContext();
     const tracker = parent?.tracker ?? this.config.costTracker ?? this.ownedCostTracker;
@@ -1142,7 +1260,9 @@ export class Agent {
   private async *streamAccounted(input: MessageContent, opts?: RunOpts): AsyncGenerator<StreamChunk> {
     opts = this.normalizeControlledRun(opts);
     this.validateControlledRun(opts);
+    opts?.signal?.throwIfAborted();
     await this.readyPromise;
+    opts?.signal?.throwIfAborted();
     const streamStartTime = Date.now();
     const sessionId = opts?.sessionId ?? this.config.sessionId ?? uuidv4();
     const userId =
@@ -1150,6 +1270,7 @@ export class Agent {
     const inputText = typeof input === "string" ? input : getTextContent(input);
 
     await this.ensureSkillsLoaded();
+    opts?.signal?.throwIfAborted();
 
     // Semantic cache check for streaming
     if (
@@ -1159,17 +1280,22 @@ export class Agent {
       !opts?.ephemeral
     ) {
       const hit = await this.semanticCache.lookup(inputText, this.name, sessionId);
-      if (hit) {
+      opts?.signal?.throwIfAborted();
+      if (hit && this.isReusableCacheResult(hit.output)) {
         this.eventBus.emit("cache.hit", {
           agentName: this.name,
           input: inputText,
           cachedId: hit.id,
         });
+        opts?.signal?.throwIfAborted();
         yield { type: "text", text: hit.output.text };
+        opts?.signal?.throwIfAborted();
+        const usage = await this.currentRunUsage(opts?.runId ?? uuidv4(), opts?.tenantId);
+        opts?.signal?.throwIfAborted();
         yield {
           type: "finish",
           finishReason: "stop",
-          usage: await this.currentRunUsage(opts?.runId ?? uuidv4(), opts?.tenantId),
+          usage,
         };
         return;
       }
@@ -1243,10 +1369,7 @@ export class Agent {
     let streamMessages: ChatMessage[] = [];
     let delegated: HandoffResult | undefined;
     const streamToolCalls: import("../tools/types.js").ToolCallResult[] = [];
-    const streamOutcome: {
-      status: "completed" | "stopped";
-      publicMessages?: import("../models/public-messages.js").PublicMessage[];
-    } = { status: "completed" };
+    const streamOutcome: LoopStreamOutcome = { status: "completed" };
     let streamUsage: import("../models/types.js").TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let decisions: RunOutput["decisions"];
     const recordChunk = (chunk: StreamChunk) => {
@@ -1300,8 +1423,10 @@ export class Agent {
     try {
       if (ctx.signal?.aborted) throw new RunCancelledError();
       await this.config.hooks?.beforeRun?.(ctx);
+      ctx.signal?.throwIfAborted();
       for (const guardrail of this.config.guardrails?.input ?? []) {
         const result = await guardrail.validate(input, ctx);
+        ctx.signal?.throwIfAborted();
         if (!result.pass) throw new Error(`Input guardrail "${guardrail.name}" blocked: ${result.reason}`);
       }
 
@@ -1309,6 +1434,7 @@ export class Agent {
       const messages = await this.buildMessages(input, session, ctx, inputText, !inheritedStream?.continuation);
       streamMessages = messages;
       ctx.executionServices?.recordConversation(ctx.runId, [{ role: "user", content: input }]);
+      ctx.signal?.throwIfAborted();
       for await (const chunk of runLoop.stream(
         messages,
         ctx,
@@ -1319,6 +1445,7 @@ export class Agent {
         opts?.publicMessageEvents ?? false,
       )) {
         recordChunk(chunk);
+        ctx.signal?.throwIfAborted();
         yield chunk;
       }
       const transfer = getHandoffControl(streamOutcome);
@@ -1354,7 +1481,12 @@ export class Agent {
         }
         if (!delegated) throw new Error("Handoff stream ended without a result");
         streamToolCalls.push(...delegated.toolCalls);
-        if (delegated.status === "stopped") streamOutcome.status = "stopped";
+        Object.assign(streamOutcome, {
+          status: delegated.status ?? "completed",
+          partial: delegated.partial,
+          reason: delegated.reason,
+          providerFinishReason: delegated.providerFinishReason,
+        });
       }
       ctx.signal?.throwIfAborted();
       const durationMs = Date.now() - streamStartTime;
@@ -1373,6 +1505,9 @@ export class Agent {
         model: this.config.model.modelId,
         modelProvider: this.config.model.providerId,
         status: streamOutcome.status,
+        ...(streamOutcome.providerFinishReason ? { providerFinishReason: streamOutcome.providerFinishReason } : {}),
+        ...(streamOutcome.partial !== undefined ? { partial: streamOutcome.partial } : {}),
+        ...(streamOutcome.reason ? { reason: streamOutcome.reason } : {}),
         createdAt: streamStartTime,
         messages: [...streamMessages, ...transcript],
         newMessages: structuredClone(additions),
@@ -1389,6 +1524,7 @@ export class Agent {
         Object.assign(streamOutput, { handoffChain: delegated.handoffChain, finalAgent: delegated.finalAgent });
       for (const guardrail of this.config.guardrails?.output ?? []) {
         const result = await guardrail.validate(streamOutput, ctx);
+        ctx.signal?.throwIfAborted();
         if (!result.pass) throw new Error(`Output guardrail "${guardrail.name}" blocked: ${result.reason}`);
       }
       ctx.signal?.throwIfAborted();
@@ -1403,6 +1539,7 @@ export class Agent {
       ctx.signal?.throwIfAborted();
       const costScope = getAccountingContext();
       if (costScope) streamOutput.costs = await getRunCostSnapshot(costScope);
+      ctx.signal?.throwIfAborted();
       inheritedStream?.complete(streamOutput);
       completed = true;
       terminalEmitted = true;
@@ -1413,19 +1550,26 @@ export class Agent {
         !opts?.executionServices &&
         !opts?.ephemeral
       ) {
-        this.semanticCache.store(inputText, streamOutput, this.name, sessionId).catch((error: unknown) => {
-          this.logger.warn(`Cache store failed: ${error instanceof Error ? error.message : "Unknown error"}`);
-        });
+        if (this.isReusableCacheResult(streamOutput))
+          this.semanticCache.store(inputText, streamOutput, this.name, sessionId).catch((error: unknown) => {
+            this.logger.warn(`Cache store failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+          });
       }
     } catch (error) {
       await persistSettledHandoff();
-      const err = error instanceof Error ? error : new Error(String(error));
+      const err =
+        error instanceof ModelProtocolError
+          ? new ModelProtocolError(fullText, streamUsage, streamToolCalls, error.code)
+          : error instanceof Error
+            ? error
+            : new Error(String(error));
       await this.config.hooks?.onError?.(ctx, err);
       terminalEmitted = true;
       this.eventBus.emit("run.error", {
         runId: ctx.runId,
         error: err,
         status: ctx.signal?.aborted || error instanceof RunCancelledError ? "cancelled" : "failed",
+        ...(err instanceof ModelProtocolError ? { output: err.output } : {}),
         costs: getAccountingContext() ? await getRunCostSnapshot(getAccountingContext()!) : undefined,
       });
       throw err;
@@ -1464,12 +1608,10 @@ export class Agent {
       systemContent = applyTemplates(systemContent, ctx.dependencies);
     }
 
-    if (this.memoryManager && !ctx.ephemeral) {
-      const memoryContext = await this.memoryManager.buildContext(session.sessionId, ctx.userId, inputText, this.name);
-      if (memoryContext) {
-        systemContent = systemContent ? `${systemContent}\n\n${memoryContext}` : memoryContext;
-      }
-    }
+    const memoryContext =
+      this.memoryManager && !ctx.ephemeral
+        ? await this.memoryManager.buildContext(session.sessionId, ctx.userId, inputText, this.name)
+        : "";
 
     if (this.skillManager) {
       const skillInstructions = await this.skillManager.getInstructions();
@@ -1500,6 +1642,13 @@ export class Agent {
     if (systemContent) {
       messages.push({ role: "system", content: systemContent });
     }
+    if (memoryContext) {
+      messages.push({
+        role: "user",
+        content: memoryContext,
+        providerExtras: { memoryContext: { version: 1, trust: "source" } },
+      });
+    }
 
     const maxMessages = this.memoryManager?.getMaxMessages() ?? 20;
     let history = ctx.externalHistory ? [...ctx.externalHistory] : (session.messages ?? []);
@@ -1509,7 +1658,12 @@ export class Agent {
 
     const maxTokens = this.memoryManager?.getMaxTokens();
     if (maxTokens) {
-      history = this.trimHistoryByTokens(history, systemContent, input, maxTokens);
+      history = this.trimHistoryByTokens(
+        history,
+        [systemContent, memoryContext].filter(Boolean).join("\n\n"),
+        input,
+        maxTokens,
+      );
     }
 
     messages.push(...history);
@@ -1522,6 +1676,14 @@ export class Agent {
     });
 
     return messages;
+  }
+
+  private isReusableCacheResult(output: RunOutput): boolean {
+    return (
+      (output.status === undefined || output.status === "completed") &&
+      !output.partial &&
+      (output.providerFinishReason === undefined || output.providerFinishReason === "stop")
+    );
   }
 
   private collectTools(config: AgentConfig): ToolDef[] {

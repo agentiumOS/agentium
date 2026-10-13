@@ -1,4 +1,5 @@
 import type { StorageDriver } from "./driver.js";
+import { encodeScopeNamespace } from "./key-codec.js";
 
 export interface StorageScope {
   /** Tenant / organization identifier. */
@@ -7,9 +8,17 @@ export interface StorageScope {
   userId?: string;
 }
 
+export interface ScopedStorageOptions {
+  /** Legacy defaults preserve existing records. Select tuple-v1 for unrestricted shared-storage identities. */
+  keyEncoding?: "legacy" | "tuple-v1";
+  /** Defaults to true. Borrowed wrappers should pass false so close leaves the inner driver open. */
+  ownsInner?: boolean;
+}
+
 /**
  * Wraps any `StorageDriver` and namespaces every key by tenant / user, providing
- * multi-tenant isolation without requiring per-driver changes.
+ * scope namespaces without requiring per-driver changes. Legacy encoding can
+ * collide for unrestricted IDs; tuple-v1 requires an explicit persisted migration.
  *
  * Namespace transformation:
  *   "sessions" + scope { tenantId: "acme", userId: "u1" }
@@ -19,9 +28,11 @@ export class ScopedStorage implements StorageDriver {
   constructor(
     private readonly inner: StorageDriver,
     private readonly scope: StorageScope,
+    private readonly options: ScopedStorageOptions = {},
   ) {}
 
   private ns(namespace: string): string {
+    if (this.options.keyEncoding === "tuple-v1") return encodeScopeNamespace(namespace, this.scope);
     const parts: string[] = [];
     if (this.scope.tenantId) parts.push(`tenant:${this.scope.tenantId}`);
     if (this.scope.userId) parts.push(`user:${this.scope.userId}`);
@@ -30,6 +41,7 @@ export class ScopedStorage implements StorageDriver {
   }
 
   initialize(): Promise<void> {
+    // Initialization is forwarded even when borrowed; the inner driver owns idempotency.
     return this.inner.initialize?.() ?? Promise.resolve();
   }
 
@@ -50,6 +62,6 @@ export class ScopedStorage implements StorageDriver {
   }
 
   close(): Promise<void> {
-    return this.inner.close();
+    return this.options.ownsInner === false ? Promise.resolve() : this.inner.close();
   }
 }

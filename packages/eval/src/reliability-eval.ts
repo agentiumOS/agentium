@@ -1,9 +1,8 @@
-import type { Agent } from "@agentium/core";
 import { EvalInterruption, runCases, scoresPass, successful, validateConfig } from "./case-lifecycle.js";
-import type { EvalCase, Reporter, ScorerResult } from "./types.js";
+import type { EvalCase, EvalTarget, Reporter, ScorerResult } from "./types.js";
 export interface ReliabilityEvalConfig {
   name: string;
-  agent: Agent;
+  agent: EvalTarget;
   cases: Array<EvalCase & { expectedTools?: string[]; shouldError?: boolean }>;
   threshold?: number;
   timeoutMs?: number;

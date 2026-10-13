@@ -1,9 +1,9 @@
-import { type Agent, getTextContent, type ModelProvider } from "@agentium/core";
+import { getTextContent, type ModelProvider } from "@agentium/core";
 import { EvalSuite } from "./suite.js";
-import type { EvalCase, Reporter, Scorer } from "./types.js";
+import type { EvalCase, EvalTarget, Reporter, Scorer } from "./types.js";
 export interface AgentJudgeEvalConfig {
   name: string;
-  agent: Agent;
+  agent: EvalTarget;
   cases: EvalCase[];
   judge: ModelProvider;
   criteria: string[];

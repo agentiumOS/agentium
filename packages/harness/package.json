@@ -49,7 +49,8 @@
   },
   "files": [
     "dist",
-    "CONVERSATIONAL-RUNS.md"
+    "CONVERSATIONAL-RUNS.md",
+    "DEPENDABILITY.md"
   ],
   "scripts": {
     "build": "tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs",

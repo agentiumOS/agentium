@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { InputRequest, PublicMessageEvent, TokenUsage } from "@agentium/core";
+import type { InputRequest, PublicMessageEvent, TokenUsage, ToolCallResult } from "@agentium/core";
+import type { CompletionDecision } from "./controller.js";
 
 /** Terminal result status. awaiting_input is legacy-only; new live waits use RunHandle.state. */
 export type HarnessStatus = "completed" | "failed" | "cancelled" | "stopped" | "awaiting_input";
@@ -14,11 +15,14 @@ export interface HarnessResult {
   structured?: unknown;
   artifacts?: readonly { id: string; mimeType?: string }[];
   reason?: HarnessReason;
+  partial?: boolean;
+  providerFinishReason?: string;
   usage: TokenUsage;
   runId: string;
   sessionId: string;
   finalCursor: number;
   cleanupDiagnostics?: readonly string[];
+  completion?: { policyId: string; revision: number; decision: CompletionDecision };
 }
 export type HarnessEventPayload =
   | PublicMessageEvent
@@ -33,9 +37,23 @@ export type HarnessEventPayload =
   | { type: "input.received"; inputId: string; mode: "steer" | "follow_up" }
   | { type: "input.applied"; inputId: string; mode: "steer" | "follow_up" }
   | { type: "model.complete"; providerId: string; modelId: string; usage: TokenUsage }
-  | { type: "tool.complete"; toolName: string; toolCallId: string; denied: boolean }
+  | {
+      type: "tool.complete";
+      toolName: string;
+      toolCallId: string;
+      denied: boolean;
+      outcome?: "succeeded" | "failed" | "denied" | "cancelled";
+      denial?: ToolCallResult["denial"];
+    }
   | { type: "control"; operation: "cancel" | "follow_up" | "steer" | "replace"; reason?: string }
-  | { type: "completion"; action: string; reason: string }
+  | {
+      type: "completion";
+      action: string;
+      reason: string;
+      policyId?: string;
+      revision?: number;
+      evidence?: readonly string[];
+    }
   | { type: "run.terminal"; result: HarnessResult };
 export interface HarnessEvent {
   schemaVersion: 1;

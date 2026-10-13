@@ -1,7 +1,41 @@
 import { describe, expect, it } from "vitest";
 import { CostTracker, IncompleteCostError, LegacyUsageError } from "../cost-tracker.js";
+import { fixtureRecord } from "./fixtures.js";
 
 describe("CostTracker", () => {
+  it.each([undefined, { maxCostPerRun: 100, maxTokensPerRun: 100000 }])(
+    "rejects legacy budget reads after canonical measurements (budget=%s)",
+    async (budget) => {
+      const tracker = new CostTracker({ budget });
+      await tracker.recordUsage(fixtureRecord());
+      const usage = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
+      expect(() => tracker.checkBudget("run-1")).toThrow(IncompleteCostError);
+      expect(() => tracker.checkInProgressBudget("fixture-model", usage, "run-1")).toThrow(IncompleteCostError);
+      expect(() => tracker.isBudgetExceeded("run-1")).toThrow(IncompleteCostError);
+      expect(() => tracker.estimateRemaining("run-1")).toThrow(IncompleteCostError);
+      expect(await tracker.queryRunUsage({ tenantId: "test", runId: "run-1" })).toMatchObject({ totalTokens: 15500 });
+    },
+  );
+
+  it("preserves legacy budget allowance and in-progress checks", () => {
+    const tracker = new CostTracker({
+      pricing: { fixture: { promptPer1k: 1, completionPer1k: 1 } },
+      budget: { maxCostPerRun: 1, maxTokensPerRun: 1000 },
+    });
+    tracker.track({
+      runId: "run",
+      modelId: "fixture",
+      agentName: "agent",
+      usage: { promptTokens: 100, completionTokens: 0, totalTokens: 100 },
+    });
+    expect(() => tracker.checkBudget("run")).not.toThrow();
+    expect(tracker.isBudgetExceeded("run")).toBe(false);
+    expect(tracker.estimateRemaining("run")).toEqual({ costRemaining: 0.9, tokensRemaining: 900 });
+    expect(
+      tracker.checkInProgressBudget("fixture", { promptTokens: 900, completionTokens: 0, totalTokens: 900 }, "run"),
+    ).toBe(true);
+  });
+
   it("tracks a cost entry with calculated cost", () => {
     const tracker = new CostTracker();
     const entry = tracker.track({

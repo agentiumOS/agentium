@@ -79,7 +79,9 @@
   },
   "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "src/storage/README.md",
+    "src/workflow/README.md"
   ],
   "scripts": {
     "build": "tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs",

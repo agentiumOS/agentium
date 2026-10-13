@@ -1,3 +1,22 @@
+import type { MemoryDrainResult } from "../memory/memory-manager.js";
+
+/** A local Agent lifecycle admission failure; close never cancels admitted work. */
+export class AgentLifecycleError extends Error {
+  constructor(readonly code: "AGENT_BUSY" | "AGENT_CLOSING" | "AGENT_CLOSED") {
+    super(code);
+    this.name = "AgentLifecycleError";
+  }
+}
+
+/** Waiting ended while owned memory operations may still be writing. */
+export class MemoryDrainError extends Error {
+  readonly code = "MEMORY_DRAIN_INCOMPLETE";
+  constructor(readonly result: MemoryDrainResult) {
+    super(`Memory drain ${result.status}: ${result.pending} operations pending`);
+    this.name = "MemoryDrainError";
+  }
+}
+
 export class RunCancelledError extends Error {
   constructor(message = "Run was cancelled via AbortSignal") {
     super(message);

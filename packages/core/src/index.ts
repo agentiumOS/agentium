@@ -32,13 +32,19 @@ export {
   type ComputerUseAgentConfig,
   type ComputerUseRunOutput,
 } from "./agent/computer-use-agent.js";
-export { DrainController, RunCancelledError, RunDrainedError } from "./agent/errors.js";
+export {
+  AgentLifecycleError,
+  DrainController,
+  MemoryDrainError,
+  RunCancelledError,
+  RunDrainedError,
+} from "./agent/errors.js";
 export type { ExecutionServices } from "./agent/execution-services.js";
 export type { ExternalAgentConfig } from "./agent/external-agent.js";
 export { defineExternalAgent } from "./agent/external-agent.js";
 // Utils
 export { AgentFactory, type FactoryContext, TeamFactory, WorkflowFactory } from "./agent/factory.js";
-export { LLMLoop } from "./agent/llm-loop.js";
+export { LLMLoop, ModelProtocolError } from "./agent/llm-loop.js";
 export { RunContext } from "./agent/run-context.js";
 export {
   SandboxAgent,
@@ -53,6 +59,7 @@ export { buildAgentConfigFromSerialized, serializeAgentConfig } from "./agent/se
 export type { SpawnSubagentOptions, SubagentSpec } from "./agent/subagent.js";
 export { createTaskTool, spawnSubagent } from "./agent/subagent.js";
 export type {
+  AgentCloseOptions,
   AgentConfig,
   AgentHooks,
   ContextCompactorConfig,
@@ -225,7 +232,12 @@ export type {
   UserFactsConfig,
   UserProfileConfig,
 } from "./memory/memory-config.js";
-export { MemoryManager } from "./memory/memory-manager.js";
+export {
+  type MemoryDrainOptions,
+  type MemoryDrainResult,
+  MemoryManager,
+  type RememberResult,
+} from "./memory/memory-manager.js";
 // Memory — Scopes
 export type { MemoryScope } from "./memory/scopes.js";
 export { isAncestor, resolveScope, scopeMatches } from "./memory/scopes.js";
@@ -396,7 +408,7 @@ export { MySQLStorage } from "./storage/mysql.js";
 export { PostgresStorage } from "./storage/postgres.js";
 export type { RedisStorageConfig } from "./storage/redis.js";
 export { RedisStorage } from "./storage/redis.js";
-export { ScopedStorage, type StorageScope } from "./storage/scoped.js";
+export { ScopedStorage, type ScopedStorageOptions, type StorageScope } from "./storage/scoped.js";
 export { SqliteStorage } from "./storage/sqlite.js";
 // Team
 export { Team } from "./team/team.js";
@@ -536,6 +548,7 @@ export {
   type WorkflowCheckpoint,
   type WorkflowCheckpointStore,
 } from "./workflow/checkpoints.js";
+export { WorkflowCancellationError, WorkflowCheckpointError, WorkflowMergeConflict } from "./workflow/errors.js";
 // Workflow
 export type {
   AgentStep,
@@ -545,6 +558,7 @@ export type {
   StepDef,
   StepResult,
   WorkflowConfig,
+  WorkflowContinuationOptions,
   WorkflowResult,
 } from "./workflow/types.js";
 export { Workflow } from "./workflow/workflow.js";

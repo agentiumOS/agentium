@@ -1,3 +1,9 @@
+export type { ContinuityContextPolicyOptions, IncrementalTaskSummaryPolicyOptions } from "./continuity-policies.js";
+export {
+  continuityContextPolicy,
+  currentSessionRecallPolicy,
+  incrementalTaskSummaryPolicy,
+} from "./continuity-policies.js";
 export type { Ability, AbilityDefinition, AbilityDescription } from "./definition.js";
 export {
   defineAbility,
@@ -12,8 +18,15 @@ export { agentDriver, teamDriver, workflowDriver } from "./drivers.js";
 export { requestInputTool } from "./input-tool.js";
 export type { MCPResourceClient, MCPResourceGrant, MCPResourcesOptions } from "./mcp-resources.js";
 export { mcpResources } from "./mcp-resources.js";
-export type { ReflectionPolicyOptions, SummaryContextPolicyOptions } from "./policies.js";
-export { reflectionPolicy, summaryContextPolicy } from "./policies.js";
+export type {
+  CompletionCandidate,
+  CompletionVerification,
+  CompletionVerifier,
+  ReflectionPolicyOptions,
+  SummaryContextPolicyOptions,
+  VerifiedCompletionPolicyOptions,
+} from "./policies.js";
+export { reflectionPolicy, summaryContextPolicy, verifiedCompletionPolicy } from "./policies.js";
 export type {
   BaseOptions,
   FileContextOptions,
@@ -39,6 +52,8 @@ export type {
   CompletionPolicy,
   ContextPolicy,
   ContextProjection,
+  EvidenceExcerpt,
+  EvidenceReference,
   ExecutionDriver,
   HarnessBudgets,
   HarnessContextBudget,
@@ -78,12 +93,28 @@ export type {
   LocalAbilityUse,
   ModelRoleBinding,
   PromptFragment,
+  RecallBudget,
+  RecallCandidate,
+  RecallDecision,
+  RecallDiagnostic,
+  RecallOperationLimits,
+  RecallPolicy,
+  RecallReadResult,
+  RecallResult,
+  RecallScope,
+  RecallSession,
+  RecallStore,
   ResolvedHarness,
   RunHandle,
   ScopedResource,
   SessionResourceLease,
   StepController,
   StepOverrides,
+  TaskSummaryConfig,
+  TaskSummaryCoverage,
+  TaskSummaryDraft,
+  TaskSummaryPolicy,
+  TaskSummaryRecord,
 } from "./runtime/index.js";
 export {
   HarnessBudgetError,
