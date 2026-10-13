@@ -1,0 +1,591 @@
+{
+  "fixtureVersion": "execution-graphs-comparison-v1",
+  "model": "task-keyed-offline-v1",
+  "budgets": {
+    "maxModelCalls": 16,
+    "maxToolCalls": 16,
+    "maxTokens": 128,
+    "maxRevisions": 0
+  },
+  "agentLimits": {
+    "maxToolRoundtrips": 4,
+    "maxTokens": 4
+  },
+  "graphMaxConcurrency": 2,
+  "declaredUsagePerModelCall": {
+    "promptTokens": 2,
+    "completionTokens": 1,
+    "totalTokens": 3
+  },
+  "conditions": "Identical task manifests, provider implementation, primitive tool, host grants, budgets, and per-Agent limits; isolated state per condition",
+  "limits": "One deterministic run per condition/case. Local wall time is diagnostic overhead with zero simulated provider latency. Existing loop may issue concurrent tools. No live model quality, variability, billing, production latency, or speedup claim.",
+  "decision": "covered exact outcomes pass",
+  "results": [
+    {
+      "caseId": "chain-v1",
+      "condition": "loop",
+      "correctness": true,
+      "status": "completed",
+      "expected": "2",
+      "normalizedOutput": "2",
+      "rawOutput": "2",
+      "modelCalls": 4,
+      "toolAdmissions": 3,
+      "tokens": 12,
+      "unknownUsageCalls": 0,
+      "reservedModelCalls": 0,
+      "reservedTokens": 0,
+      "observationCoverage": "complete",
+      "localWallTimeMs": 66.38258400000007,
+      "peakConcurrentPrimitiveTasks": 1,
+      "dependencyViolations": 0,
+      "duplicateEffects": 0,
+      "effects": [
+        {
+          "task": "A",
+          "prerequisites": [],
+          "value": 2
+        },
+        {
+          "task": "B",
+          "prerequisites": [
+            "A"
+          ],
+          "value": 2
+        },
+        {
+          "task": "C",
+          "prerequisites": [
+            "B"
+          ],
+          "value": 2
+        }
+      ],
+      "modelRequests": [
+        {
+          "target": "loop",
+          "completed": [],
+          "requested": [
+            "A"
+          ]
+        },
+        {
+          "target": "loop",
+          "completed": [
+            "A"
+          ],
+          "requested": [
+            "B"
+          ]
+        },
+        {
+          "target": "loop",
+          "completed": [
+            "A",
+            "B"
+          ],
+          "requested": [
+            "C"
+          ]
+        },
+        {
+          "target": "loop",
+          "completed": [
+            "A",
+            "B",
+            "C"
+          ],
+          "requested": []
+        }
+      ],
+      "cost": {
+        "providerChargesUSD": 0,
+        "productionCostUSD": null
+      }
+    },
+    {
+      "caseId": "chain-v1",
+      "condition": "graph",
+      "correctness": true,
+      "status": "completed",
+      "expected": "2",
+      "normalizedOutput": "2",
+      "rawOutput": "{\"A_output\":\"2\",\"B_output\":\"2\",\"C_output\":\"2\"}",
+      "modelCalls": 6,
+      "toolAdmissions": 3,
+      "tokens": 18,
+      "unknownUsageCalls": 0,
+      "reservedModelCalls": 0,
+      "reservedTokens": 0,
+      "observationCoverage": "complete",
+      "localWallTimeMs": 3.607833000000028,
+      "peakConcurrentPrimitiveTasks": 1,
+      "dependencyViolations": 0,
+      "duplicateEffects": 0,
+      "effects": [
+        {
+          "task": "A",
+          "prerequisites": [],
+          "value": 2
+        },
+        {
+          "task": "B",
+          "prerequisites": [
+            "A"
+          ],
+          "value": 2
+        },
+        {
+          "task": "C",
+          "prerequisites": [
+            "B"
+          ],
+          "value": 2
+        }
+      ],
+      "modelRequests": [
+        {
+          "target": "A",
+          "completed": [],
+          "requested": [
+            "A"
+          ]
+        },
+        {
+          "target": "A",
+          "completed": [
+            "A"
+          ],
+          "requested": []
+        },
+        {
+          "target": "B",
+          "completed": [],
+          "requested": [
+            "B"
+          ]
+        },
+        {
+          "target": "B",
+          "completed": [
+            "B"
+          ],
+          "requested": []
+        },
+        {
+          "target": "C",
+          "completed": [],
+          "requested": [
+            "C"
+          ]
+        },
+        {
+          "target": "C",
+          "completed": [
+            "C"
+          ],
+          "requested": []
+        }
+      ],
+      "cost": {
+        "providerChargesUSD": 0,
+        "productionCostUSD": null
+      }
+    },
+    {
+      "caseId": "fan-out-v1",
+      "condition": "loop",
+      "correctness": true,
+      "status": "completed",
+      "expected": "5",
+      "normalizedOutput": "5",
+      "rawOutput": "5",
+      "modelCalls": 3,
+      "toolAdmissions": 3,
+      "tokens": 9,
+      "unknownUsageCalls": 0,
+      "reservedModelCalls": 0,
+      "reservedTokens": 0,
+      "observationCoverage": "complete",
+      "localWallTimeMs": 1.3614999999999782,
+      "peakConcurrentPrimitiveTasks": 2,
+      "dependencyViolations": 0,
+      "duplicateEffects": 0,
+      "effects": [
+        {
+          "task": "A",
+          "prerequisites": [],
+          "value": 2
+        },
+        {
+          "task": "B",
+          "prerequisites": [],
+          "value": 3
+        },
+        {
+          "task": "C",
+          "prerequisites": [
+            "A",
+            "B"
+          ],
+          "value": 5
+        }
+      ],
+      "modelRequests": [
+        {
+          "target": "loop",
+          "completed": [],
+          "requested": [
+            "A",
+            "B"
+          ]
+        },
+        {
+          "target": "loop",
+          "completed": [
+            "A",
+            "B"
+          ],
+          "requested": [
+            "C"
+          ]
+        },
+        {
+          "target": "loop",
+          "completed": [
+            "A",
+            "B",
+            "C"
+          ],
+          "requested": []
+        }
+      ],
+      "cost": {
+        "providerChargesUSD": 0,
+        "productionCostUSD": null
+      }
+    },
+    {
+      "caseId": "fan-out-v1",
+      "condition": "graph",
+      "correctness": true,
+      "status": "completed",
+      "expected": "5",
+      "normalizedOutput": "5",
+      "rawOutput": "{\"A_output\":\"2\",\"B_output\":\"3\",\"C_output\":\"5\"}",
+      "modelCalls": 6,
+      "toolAdmissions": 3,
+      "tokens": 18,
+      "unknownUsageCalls": 0,
+      "reservedModelCalls": 0,
+      "reservedTokens": 0,
+      "observationCoverage": "complete",
+      "localWallTimeMs": 28.37587499999995,
+      "peakConcurrentPrimitiveTasks": 1,
+      "dependencyViolations": 0,
+      "duplicateEffects": 0,
+      "effects": [
+        {
+          "task": "A",
+          "prerequisites": [],
+          "value": 2
+        },
+        {
+          "task": "B",
+          "prerequisites": [],
+          "value": 3
+        },
+        {
+          "task": "C",
+          "prerequisites": [
+            "A",
+            "B"
+          ],
+          "value": 5
+        }
+      ],
+      "modelRequests": [
+        {
+          "target": "A",
+          "completed": [],
+          "requested": [
+            "A"
+          ]
+        },
+        {
+          "target": "B",
+          "completed": [],
+          "requested": [
+            "B"
+          ]
+        },
+        {
+          "target": "A",
+          "completed": [
+            "A"
+          ],
+          "requested": []
+        },
+        {
+          "target": "B",
+          "completed": [
+            "B"
+          ],
+          "requested": []
+        },
+        {
+          "target": "C",
+          "completed": [],
+          "requested": [
+            "C"
+          ]
+        },
+        {
+          "target": "C",
+          "completed": [
+            "C"
+          ],
+          "requested": []
+        }
+      ],
+      "cost": {
+        "providerChargesUSD": 0,
+        "productionCostUSD": null
+      }
+    },
+    {
+      "caseId": "cross-dependency-v1",
+      "condition": "loop",
+      "correctness": true,
+      "status": "completed",
+      "expected": "7",
+      "normalizedOutput": "7",
+      "rawOutput": "7",
+      "modelCalls": 4,
+      "toolAdmissions": 5,
+      "tokens": 12,
+      "unknownUsageCalls": 0,
+      "reservedModelCalls": 0,
+      "reservedTokens": 0,
+      "observationCoverage": "complete",
+      "localWallTimeMs": 7.278957999999989,
+      "peakConcurrentPrimitiveTasks": 2,
+      "dependencyViolations": 0,
+      "duplicateEffects": 0,
+      "effects": [
+        {
+          "task": "A",
+          "prerequisites": [],
+          "value": 2
+        },
+        {
+          "task": "B",
+          "prerequisites": [],
+          "value": 3
+        },
+        {
+          "task": "C",
+          "prerequisites": [
+            "A"
+          ],
+          "value": 2
+        },
+        {
+          "task": "D",
+          "prerequisites": [
+            "A",
+            "B"
+          ],
+          "value": 5
+        },
+        {
+          "task": "E",
+          "prerequisites": [
+            "C",
+            "D"
+          ],
+          "value": 7
+        }
+      ],
+      "modelRequests": [
+        {
+          "target": "loop",
+          "completed": [],
+          "requested": [
+            "A",
+            "B"
+          ]
+        },
+        {
+          "target": "loop",
+          "completed": [
+            "A",
+            "B"
+          ],
+          "requested": [
+            "C",
+            "D"
+          ]
+        },
+        {
+          "target": "loop",
+          "completed": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "requested": [
+            "E"
+          ]
+        },
+        {
+          "target": "loop",
+          "completed": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E"
+          ],
+          "requested": []
+        }
+      ],
+      "cost": {
+        "providerChargesUSD": 0,
+        "productionCostUSD": null
+      }
+    },
+    {
+      "caseId": "cross-dependency-v1",
+      "condition": "graph",
+      "correctness": true,
+      "status": "completed",
+      "expected": "7",
+      "normalizedOutput": "7",
+      "rawOutput": "{\"A_output\":\"2\",\"B_output\":\"3\",\"C_output\":\"2\",\"D_output\":\"5\",\"E_output\":\"7\"}",
+      "modelCalls": 10,
+      "toolAdmissions": 5,
+      "tokens": 30,
+      "unknownUsageCalls": 0,
+      "reservedModelCalls": 0,
+      "reservedTokens": 0,
+      "observationCoverage": "complete",
+      "localWallTimeMs": 4.218792000000008,
+      "peakConcurrentPrimitiveTasks": 1,
+      "dependencyViolations": 0,
+      "duplicateEffects": 0,
+      "effects": [
+        {
+          "task": "A",
+          "prerequisites": [],
+          "value": 2
+        },
+        {
+          "task": "B",
+          "prerequisites": [],
+          "value": 3
+        },
+        {
+          "task": "C",
+          "prerequisites": [
+            "A"
+          ],
+          "value": 2
+        },
+        {
+          "task": "D",
+          "prerequisites": [
+            "A",
+            "B"
+          ],
+          "value": 5
+        },
+        {
+          "task": "E",
+          "prerequisites": [
+            "C",
+            "D"
+          ],
+          "value": 7
+        }
+      ],
+      "modelRequests": [
+        {
+          "target": "A",
+          "completed": [],
+          "requested": [
+            "A"
+          ]
+        },
+        {
+          "target": "B",
+          "completed": [],
+          "requested": [
+            "B"
+          ]
+        },
+        {
+          "target": "A",
+          "completed": [
+            "A"
+          ],
+          "requested": []
+        },
+        {
+          "target": "B",
+          "completed": [
+            "B"
+          ],
+          "requested": []
+        },
+        {
+          "target": "C",
+          "completed": [],
+          "requested": [
+            "C"
+          ]
+        },
+        {
+          "target": "D",
+          "completed": [],
+          "requested": [
+            "D"
+          ]
+        },
+        {
+          "target": "C",
+          "completed": [
+            "C"
+          ],
+          "requested": []
+        },
+        {
+          "target": "D",
+          "completed": [
+            "D"
+          ],
+          "requested": []
+        },
+        {
+          "target": "E",
+          "completed": [],
+          "requested": [
+            "E"
+          ]
+        },
+        {
+          "target": "E",
+          "completed": [
+            "E"
+          ],
+          "requested": []
+        }
+      ],
+      "cost": {
+        "providerChargesUSD": 0,
+        "productionCostUSD": null
+      }
+    }
+  ]
+}

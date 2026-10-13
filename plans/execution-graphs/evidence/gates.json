@@ -1,0 +1,97 @@
+{
+  "checked_source_revision": "0fd732cda0fbf40472288e5b445f243149abeb1b",
+  "source_input_fingerprint_sha256": "fa19e233967e4ba395be0b0e26b3fba3136399358e01d3c2e1ed930a1bfb5d8c",
+  "gates": [
+    {
+      "command": "npm run build",
+      "exit_code": 0,
+      "evidence": "final-build.log",
+      "result": "all workspaces built"
+    },
+    {
+      "command": "npm test",
+      "exit_code": 0,
+      "evidence": "final-tests.log",
+      "result": {
+        "files_passed": 251,
+        "files_skipped": 10,
+        "tests_passed": 2818,
+        "tests_skipped": 29
+      }
+    },
+    {
+      "command": "npm run test:package",
+      "exit_code": 0,
+      "evidence": "final-packages.log",
+      "result": {
+        "files_passed": 2,
+        "tests_passed": 4
+      }
+    },
+    {
+      "command": "npx tsc -p packages/<workspace>/tsconfig.json --noEmit --pretty false",
+      "workspaces": [
+        "core",
+        "harness",
+        "transport",
+        "queue",
+        "browser",
+        "eval",
+        "observability",
+        "admin",
+        "edge",
+        "cli"
+      ],
+      "exit_code": 0,
+      "evidence": "final-types.log"
+    },
+    {
+      "command": "npx biome ci .",
+      "exit_code": 0,
+      "evidence": "final-repository-biome.log",
+      "result": {
+        "files_checked": 724
+      }
+    },
+    {
+      "command": "node --test scripts/release-lock.test.mjs scripts/cjs-declarations.test.mjs",
+      "exit_code": 0,
+      "evidence": "final-metadata.log",
+      "result": {
+        "tests_passed": 4
+      },
+      "note": "Executed before final source revision; checked metadata inputs unchanged."
+    },
+    {
+      "command": "npx tsc -p .superpowers/sdd/2026-10-13-execution-graphs/guide-types/tsconfig.json --pretty false",
+      "exit_code": 0,
+      "evidence": "final-guide-types.log",
+      "result": "3 documented examples compile strictly; extracted inputs retained as example-*.ts.txt and guide-tsconfig.json"
+    },
+    {
+      "command": "npx tsc --noEmit --strict --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --types node scripts/compare-execution-graphs.ts",
+      "exit_code": 0,
+      "evidence": "final-script-types.log"
+    },
+    {
+      "command": "npx tsx scripts/compare-execution-graphs.ts",
+      "exit_code": 0,
+      "evidence": "final-comparison.json",
+      "result": {
+        "condition_executions": 6,
+        "correct": 6,
+        "failed_or_infrastructure": 0
+      }
+    },
+    {
+      "command": "npx vitest run packages/core/src/workflow/__tests__ packages/harness/src/__tests__/execution-graphs.test.ts packages/harness/src/runtime/__tests__/controlled-effect-budget.test.ts",
+      "exit_code": 0,
+      "evidence": "identity-green.log",
+      "result": {
+        "files_passed": 8,
+        "tests_passed": 141
+      }
+    }
+  ],
+  "scope": "Local macOS Node 22.23.1/npm 10.9.8. No Node 24/Linux/remote CI, live provider, database, native SDK, sandbox or OTel integration matrix claimed."
+}

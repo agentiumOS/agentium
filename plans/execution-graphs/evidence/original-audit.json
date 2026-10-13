@@ -1,0 +1,7 @@
+{
+  "captured_paths": 797,
+  "changed_since_task_start": 78,
+  "original_branch": "main",
+  "original_head": "c5f9b5249d299f5d2d39b74c87b83f0da7c15570",
+  "note": "This task executed all edits/builds/tests in the managed worktree. Changes by concurrent original-checkout work are not imported or reset."
+}

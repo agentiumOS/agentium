@@ -1,0 +1,20 @@
+import { Workflow } from "@agentium/core";
+
+const repair = new Workflow({
+  name: "bounded-repair", register: false,
+  initialState: { attempts: 0, verified: false },
+  steps: [{
+    name: "repair", maxIterations: 2,
+    while: (state) => !state.verified,
+    repeat: [{
+      name: "episode",
+      graph: (state) => [{
+        id: state.attempts === 0 ? "first-try" : "repair-try",
+        step: {
+          name: "check",
+          run: async (input) => ({ attempts: input.attempts + 1, verified: input.attempts === 1 }),
+        },
+      }],
+    }],
+  }],
+});

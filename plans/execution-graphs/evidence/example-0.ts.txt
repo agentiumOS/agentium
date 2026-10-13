@@ -1,0 +1,21 @@
+import { Workflow, type GraphStep } from "@agentium/core";
+
+type BuildState = { left: number; right: number; total: number };
+const graph: GraphStep<BuildState> = {
+  name: "calculate",
+  maxConcurrency: 2,
+  graph: [
+    { id: "left", step: { name: "readLeft", run: async () => ({ left: 2 }) } },
+    { id: "right", step: { name: "readRight", run: async () => ({ right: 3 }) } },
+    {
+      id: "sum",
+      inputsFrom: ["left", "right"],
+      step: { name: "sum", run: async (state) => ({ total: state.left + state.right }) },
+    },
+  ],
+};
+const calculation = new Workflow({
+  name: "calculation", register: false,
+  initialState: { left: 0, right: 0, total: 0 }, steps: [graph],
+});
+const result = await calculation.run(); // total = 5

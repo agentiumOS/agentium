@@ -1,0 +1,8 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+
+ Test Files  2 passed (2)
+      Tests  14 passed (14)
+   Start at  07:58:20
+   Duration  602ms (transform 591ms, setup 0ms, import 846ms, tests 93ms, environment 0ms)

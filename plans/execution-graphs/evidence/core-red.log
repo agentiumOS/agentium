@@ -1,0 +1,329 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts (14 tests | 14 failed) 21ms
+     × joins dependency data before downstream work and preserves ordered overwrites 4ms
+     × replans at each bounded episode and succeeds when the predicate becomes false at the cap 0ms
+     × reports repeat exhaustion through the Workflow reason and stops later work with stop policy 1ms
+     × stops a repair body failure without resetting it into another attempt 0ms
+     × rejects invalid repeat bound 0 before effects 2ms
+     × rejects invalid repeat bound -1 before effects 1ms
+     × rejects invalid repeat bound 1.5 before effects 1ms
+     × rejects invalid repeat bound Infinity before effects 2ms
+     × rejects invalid repeat bound 9007199254740992 before effects 2ms
+     × honors cancellation during a synchronous factory before new effects 1ms
+     × honors cancellation during a synchronous predicate before new effects 0ms
+     × isolates duplicate Agent names by graph node and repeat iteration without changing output keys 0ms
+     × continues a saved complete graph boundary without executing its node effects again 4ms
+     × rejects an incomparable strict join before saving or running downstream effects 1ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 14 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > joins dependency data before downstream work and preserves ordered overwrites
+AssertionError: expected 'failed' to be 'completed' // Object.is equality
+
+Expected: "completed"
+Received: "failed"
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:37:27
+     35|     };
+     36|     const result = await workflow([graph]).run();
+     37|     expect(result.status).toBe("completed");
+       |                           ^
+     38|     expect(result.state).toEqual({ count: 2, checked: true, output: "u…
+     39|     expect(observed).toEqual([{ count: 1, checked: false }]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/14]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > replans at each bounded episode and succeeds when the predicate becomes false at the cap
+AssertionError: expected 'failed' to be 'completed' // Object.is equality
+
+Expected: "completed"
+Received: "failed"
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:71:27
+     69|     };
+     70|     const result = await workflow([repeat]).run();
+     71|     expect(result.status).toBe("completed");
+       |                           ^
+     72|     expect(result.state).toEqual({ count: 2, checked: true });
+     73|     expect(plans).toEqual([0, 1]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/14]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > reports repeat exhaustion through the Workflow reason and stops later work with stop policy
+AssertionError: expected +0 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 0
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:94:21
+     92|     });
+     93|     const result = await wf.run();
+     94|     expect(effects).toBe(2);
+       |                     ^
+     95|     expect(result).toMatchObject({ status: "failed", reason: { code: "…
+     96|     expect(result.stepResults[0]).toMatchObject({ status: "error", rea…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/14]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > stops a repair body failure without resetting it into another attempt
+AssertionError: expected "vi.fn()" to be called 1 times, but got 0 times
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:107:20
+    105|     }]).run();
+    106|     expect(result.status).toBe("failed");
+    107|     expect(effect).toHaveBeenCalledTimes(1);
+       |                    ^
+    108|     expect(result.stepResults.find((row) => row.stepName === "effect")…
+    109|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/14]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > rejects invalid repeat bound 0 before effects
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > rejects invalid repeat bound -1 before effects
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > rejects invalid repeat bound 1.5 before effects
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > rejects invalid repeat bound Infinity before effects
+AssertionError: promise resolved "{ state: { count: +0, …(1) }, …(3) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "reason": {
++     "code": "workflow_step_failed",
++     "message": "One or more Workflow steps failed",
++   },
++   "state": {
++     "checked": false,
++     "count": 0,
++   },
++   "status": "failed",
++   "stepResults": [
++     {
++       "durationMs": 0,
++       "error": "step.run is not a function",
++       "status": "error",
++       "stepName": "repair",
++     },
++   ],
+  }
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:115:15
+    113|     await expect(workflow([{
+    114|       name: "repair", repeat: [{ name: "effect", run: effect }], while…
+    115|     }]).run()).rejects.toMatchObject({ code: "workflow_definition_inva…
+       |               ^
+    116|     expect(effect).not.toHaveBeenCalled();
+    117|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/14]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > rejects invalid repeat bound 9007199254740992 before effects
+AssertionError: promise resolved "{ state: { count: +0, …(1) }, …(3) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "reason": {
++     "code": "workflow_step_failed",
++     "message": "One or more Workflow steps failed",
++   },
++   "state": {
++     "checked": false,
++     "count": 0,
++   },
++   "status": "failed",
++   "stepResults": [
++     {
++       "durationMs": 1,
++       "error": "step.run is not a function",
++       "status": "error",
++       "stepName": "repair",
++     },
++   ],
+  }
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:115:15
+    113|     await expect(workflow([{
+    114|       name: "repair", repeat: [{ name: "effect", run: effect }], while…
+    115|     }]).run()).rejects.toMatchObject({ code: "workflow_definition_inva…
+       |               ^
+    116|     expect(effect).not.toHaveBeenCalled();
+    117|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/14]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > honors cancellation during a synchronous factory before new effects
+AssertionError: promise resolved "{ state: { count: +0, …(1) }, …(3) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "reason": {
++     "code": "workflow_step_failed",
++     "message": "One or more Workflow steps failed",
++   },
++   "state": {
++     "checked": false,
++     "count": 0,
++   },
++   "status": "failed",
++   "stepResults": [
++     {
++       "durationMs": 0,
++       "error": "step.run is not a function",
++       "status": "error",
++       "stepName": "graph",
++     },
++   ],
+  }
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:125:70
+    123|       ? { name: "graph", graph: () => { controller.abort(new Error("ca…
+    124|       : { name: "repeat", maxIterations: 2, while: () => { controller.…
+    125|     await expect(workflow([step]).run({ signal: controller.signal })).…
+       |                                                                      ^
+    126|     expect(effect).not.toHaveBeenCalled();
+    127|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/14]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > honors cancellation during a synchronous predicate before new effects
+AssertionError: promise resolved "{ state: { count: +0, …(1) }, …(3) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "reason": {
++     "code": "workflow_step_failed",
++     "message": "One or more Workflow steps failed",
++   },
++   "state": {
++     "checked": false,
++     "count": 0,
++   },
++   "status": "failed",
++   "stepResults": [
++     {
++       "durationMs": 0,
++       "error": "step.run is not a function",
++       "status": "error",
++       "stepName": "repeat",
++     },
++   ],
+  }
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:125:70
+    123|       ? { name: "graph", graph: () => { controller.abort(new Error("ca…
+    124|       : { name: "repeat", maxIterations: 2, while: () => { controller.…
+    125|     await expect(workflow([step]).run({ signal: controller.signal })).…
+       |                                                                      ^
+    126|     expect(effect).not.toHaveBeenCalled();
+    127|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/14]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > isolates duplicate Agent names by graph node and repeat iteration without changing output keys
+AssertionError: expected undefined to be 'checked' // Object.is equality
+
+- Expected:
+"checked"
+
++ Received:
+undefined
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:145:38
+    143|     });
+    144|     const result = await wf.run({ sessionId: "root", tenantId: "tenant…
+    145|     expect(result.state.same_output).toBe("checked");
+       |                                      ^
+    146|     expect(new Set(contexts.map((opts) => opts.sessionId)).size).toBe(…
+    147|     expect(contexts.map((opts) => opts.sessionId)).toEqual([
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/14]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > continues a saved complete graph boundary without executing its node effects again
+AssertionError: expected { count: +0, checked: true } to deeply equal { count: 1, checked: true }
+
+- Expected
++ Received
+
+  {
+    "checked": true,
+-   "count": 1,
++   "count": 0,
+  }
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:174:28
+    172|     if (!cp) throw new Error("Missing graph checkpoint");
+    173|     const restored = await wf.continueFromCheckpoint(cp.id);
+    174|     expect(restored.state).toEqual({ count: 1, checked: true });
+       |                            ^
+    175|     expect(writes).toBe(1);
+    176|     expect(later).toBe(2);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/14]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > rejects an incomparable strict join before saving or running downstream effects
+AssertionError: promise resolved "{ state: { count: +0, …(1) }, …(4) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "reason": {
++     "code": "workflow_step_failed",
++     "message": "One or more Workflow steps failed",
++   },
++   "runId": "conflicting",
++   "state": {
++     "checked": false,
++     "count": 0,
++   },
++   "status": "failed",
++   "stepResults": [
++     {
++       "durationMs": 0,
++       "error": "step.run is not a function",
++       "status": "error",
++       "stepName": "graph",
++     },
++     {
++       "durationMs": 0,
++       "status": "done",
++       "stepName": "after",
++     },
++   ],
+  }
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:190:66
+    188|       { name: "after", run: after },
+    189|     ] });
+    190|     await expect(wf.runWithCheckpoints({ runId: "conflicting" })).reje…
+       |                                                                  ^
+    191|     expect(await store.listForRun("conflicting")).toEqual([]);
+    192|     expect(after).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/14]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  14 failed (14)
+   Start at  07:49:18
+   Duration  306ms (transform 95ms, setup 0ms, import 162ms, tests 21ms, environment 0ms)

@@ -1,0 +1,79 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts (19 tests | 3 failed | 16 skipped) 7ms
+     × captures a repeat's admission bound before a predicate can mutate its definition 4ms
+     × retains completed iteration state and evidence when the next predicate throws 0ms
+     × scopes a nested blocked result once while preserving the missing-data failure 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > captures a repeat's admission bound before a predicate can mutate its definition
+AssertionError: expected 3 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 3
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:27:21
+     25|     };
+     26|     const result = await workflow([repeat]).run();
+     27|     expect(effects).toBe(1);
+       |                     ^
+     28|     expect(result).toMatchObject({ status: "failed", reason: { code: "…
+     29|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > retains completed iteration state and evidence when the next predicate throws
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:39:32
+     37|     }]).run();
+     38|     expect(effects).toBe(1);
+     39|     expect(result.state.count).toBe(1);
+       |                                ^
+     40|     expect(result.status).toBe("failed");
+     41|     expect(result.stepResults.map((row) => [row.stepName, row.status])…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  packages/core/src/workflow/__tests__/execution-graphs.test.ts > execution graph Workflow integration > scopes a nested blocked result once while preserving the missing-data failure
+AssertionError: expected { stepName: 'consumer', …(4) } to match object { status: 'skipped', …(2) }
+(2 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "executionPath": "outer/container/inner/missing/consumer",
++   "executionPath": "outer/outer/container/inner/missing/consumer",
+    "reason": {
+      "code": "workflow_dependency_blocked",
+    },
+    "status": "skipped",
+  }
+
+ ❯ packages/core/src/workflow/__tests__/execution-graphs.test.ts:57:75
+     55|     expect(result.status).toBe("failed");
+     56|     expect(consumer).not.toHaveBeenCalled();
+     57|     expect(result.stepResults.find((row) => row.stepName === "consumer…
+       |                                                                           ^
+     58|       status: "skipped", executionPath: "outer/container/inner/missing…
+     59|     });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 16 skipped (19)
+   Start at  08:07:05
+   Duration  301ms (transform 112ms, setup 0ms, import 180ms, tests 7ms, environment 0ms)

@@ -1,0 +1,34 @@
+TAP version 13
+# Subtest: rewrites only local module specifiers in CJS declarations
+ok 1 - rewrites only local module specifiers in CJS declarations
+  ---
+  duration_ms: 5.349084
+  type: 'test'
+  ...
+# Subtest: emits a full CJS type graph without changing ESM declarations
+ok 2 - emits a full CJS type graph without changing ESM declarations
+  ---
+  duration_ms: 19.392959
+  type: 'test'
+  ...
+# Subtest: every workspace exposes distinct ESM and CommonJS declaration conditions
+ok 3 - every workspace exposes distinct ESM and CommonJS declaration conditions
+  ---
+  duration_ms: 5.56425
+  type: 'test'
+  ...
+# Subtest: release metadata follows workspace versions without re-resolving native dependencies
+ok 4 - release metadata follows workspace versions without re-resolving native dependencies
+  ---
+  duration_ms: 1.720166
+  type: 'test'
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 416.91175

@@ -1,0 +1,12 @@
+
+> agentium@4.8.2 test
+> vitest run
+
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+
+ Test Files  251 passed | 10 skipped (261)
+      Tests  2818 passed | 29 skipped (2847)
+   Start at  08:15:33
+   Duration  24.57s (transform 13.04s, setup 0ms, import 67.17s, tests 70.91s, environment 69ms)

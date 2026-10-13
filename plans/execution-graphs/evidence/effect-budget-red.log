@@ -1,0 +1,31 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/controlled-effect-budget.test.ts (4 tests | 2 failed) 22ms
+     × executes one granted operation with exactly one remaining tool admission 20ms
+     × executes one granted operation with exactly one remaining tool admission 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/controlled-effect-budget.test.ts > single admission through dispatch > executes one granted operation with exactly one remaining tool admission
+ FAIL  packages/harness/src/runtime/__tests__/controlled-effect-budget.test.ts > single admission through dispatchEffect > executes one granted operation with exactly one remaining tool admission
+AssertionError: expected 'failed' to be 'completed' // Object.is equality
+
+Expected: "completed"
+Received: "failed"
+
+ ❯ packages/harness/src/runtime/__tests__/controlled-effect-budget.test.ts:29:27
+     27|     });
+     28|     const result = await runtime.run("apply", start);
+     29|     expect(result.status).toBe("completed");
+       |                           ^
+     30|     expect(result.text).toBe("applied");
+     31|     expect(effects).toBe(1);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 2 passed (4)
+   Start at  07:58:08
+   Duration  658ms (transform 364ms, setup 0ms, import 510ms, tests 22ms, environment 0ms)
