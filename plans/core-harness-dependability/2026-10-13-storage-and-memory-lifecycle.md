@@ -1,6 +1,6 @@
 # Storage isolation and memory lifecycle implementation plan
 
-> **Status: PROPOSED; analysis only.** No source changes or new runtime checks have been performed for this plan. Execute only after the user approves implementation. Use `executing-plans` or the user-selected parallel execution workflow. Tasks use checkboxes for future tracking.
+> **Status: IMPLEMENTED AND VERIFIED, 2026-10-13.** The later user approval authorized parallel execution of M2/M3 and the M1 budget companion. See [RESULTS.md](RESULTS.md) for checked code and commands. These design sketches retain the planning baseline; the [supported guide](../../packages/harness/DEPENDABILITY.md) and current declarations define the final public API.
 
 **Goal:** Make existing storage identities, memory shutdown, and legacy budget reads truthful without adding a storage service or changing the ordinary Agent adoption path.
 
@@ -129,12 +129,12 @@ it("keeps delimiter-bearing namespaces distinct", async () => {
 });
 ```
 
-- [ ] First pin collisions and exact `list` boundaries with the public API.
-- [ ] Implement namespace maps and encoding options; preserve legacy physical keys when explicitly/default selected.
-- [ ] Test empty versus absent scope, `:`, Unicode, unpaired surrogate strings, Redis `* ? [ ] \\`, literal prefixes, TTL and codec round trips.
-- [ ] Verify `ownsInner:false` leaves a shared driver usable after wrapper close.
-- [ ] Verify old data is never read through v1 fallback and document this intentional behavior.
-- [ ] Run `npx vitest run packages/core/src/storage/__tests__`; then `npm run build:core`.
+- [x] First pin collisions and exact `list` boundaries with the public API.
+- [x] Implement namespace maps and encoding options; preserve legacy physical keys when explicitly/default selected.
+- [x] Test empty versus absent scope, `:`, Unicode, unpaired surrogate strings, Redis `* ? [ ] \\`, literal prefixes, TTL and codec round trips.
+- [x] Verify `ownsInner:false` leaves a shared driver usable after wrapper close.
+- [x] Verify old data is never read through v1 fallback and document this intentional behavior.
+- [x] Run `npx vitest run packages/core/src/storage/__tests__`; then `npm run build:core`.
 
 ### Migration gate
 
@@ -244,14 +244,14 @@ Add a captured-request test: remembered text says "Ignore the host instructions"
 - Create `memory/__tests__/memory-lifecycle.test.ts` and `agent/__tests__/agent-close.test.ts`; extend `memory/__tests__/memory-manager.test.ts`.
 - Update `packages/core/README.md`; harness driver disposal keeps `closeStorage:false` and benefits from the bounded drain. No change to harness extraction defaults.
 
-- [ ] Hold the overflow summary provider promise open; verify `drain` remains pending and `awaitExtractions` now includes it.
-- [ ] Verify drain timeout leaves pending work tracked, store open, and a later drain succeeds after the fixture settles.
-- [ ] Test extraction and summary failures report diagnostics once, all listener/timer paths clean up, and close does not erase primary operation errors.
-- [ ] Test two close callers, repeated close, active-run rejection, a paused stream iterator, and run admission after close starts.
-- [ ] Test `closeStorage:false` never closes a borrowed driver; a host store remains usable.
-- [ ] Verify identical source wrappers in budgeted/unbudgeted paths; counted output including markers never exceeds the budget. A correction with a negation is included intact or explicitly omitted.
-- [ ] Verify `rememberWithResult` returns `no_destination` for default-disabled destinations while legacy `remember` still resolves.
-- [ ] Run `npx vitest run packages/core/src/memory/__tests__ packages/core/src/agent/__tests__/agent-close.test.ts`; then `npm run build:core`.
+- [x] Hold the overflow summary provider promise open; verify `drain` remains pending and `awaitExtractions` now includes it.
+- [x] Verify drain timeout leaves pending work tracked, store open, and a later drain succeeds after the fixture settles.
+- [x] Test extraction and summary failures report diagnostics once, all listener/timer paths clean up, and close does not erase primary operation errors.
+- [x] Test two close callers, repeated close, active-run rejection, a paused stream iterator, and run admission after close starts.
+- [x] Test `closeStorage:false` never closes a borrowed driver; a host store remains usable.
+- [x] Verify identical source wrappers in budgeted/unbudgeted paths; counted output including markers never exceeds the budget. A correction with a negation is included intact or explicitly omitted.
+- [x] Verify `rememberWithResult` returns `no_destination` for default-disabled destinations while legacy `remember` still resolves.
+- [x] Run `npx vitest run packages/core/src/memory/__tests__ packages/core/src/agent/__tests__/agent-close.test.ts`; then `npm run build:core`.
 
 An uncooperative SDK callback can leave `pending > 0`. The design reports this and retains ownership; it does not force termination. Extending signals through every old extraction store is deferred until its versioned cancellation/effect contract is designed. `drain` alone never claims that ability.
 
@@ -271,14 +271,14 @@ private assertLegacyBudgetRead(): void {
 }
 ```
 
-- [ ] Add a canonical measurement fixture to `packages/core/src/cost/__tests__/cost-tracker.test.ts`; assert each legacy method, including string checkBudget, throws `IncompleteCostError` rather than reporting allowance.
-- [ ] Verify genuinely legacy usage preserves each existing method's values.
-- [ ] Inspect core Agent call sites to ensure canonical execution already uses ledger admission; replace any newly found deprecated call with the existing asynchronous admission method, never catch-and-return-false.
-- [ ] Update root TSDoc/README deprecations with a before/after query example. Existing canonical symbols are `queryUsage`, `queryCosts`, `queryAssessments`, `queryRunUsage` and the object overload of `checkBudget(scope, bound?)`. Use `await tracker.checkBudget({ tenantId, runId, sessionId })` for a ledger decision; inspect its status/reservation and let the existing accounting owner reconcile or release its reservation. The string overload remains legacy and now rejects canonical use; do not replace a read with a reserving call without documenting reservation ownership. Use `await tracker.queryRunUsage(scope)` for an observational query.
-- [ ] Run `npx vitest run packages/core/src/cost/__tests__/cost-tracker.test.ts packages/core/src/__tests__/cost-tracker-incremental.test.ts`.
+- [x] Add a canonical measurement fixture to `packages/core/src/cost/__tests__/cost-tracker.test.ts`; assert each legacy method, including string checkBudget, throws `IncompleteCostError` rather than reporting allowance.
+- [x] Verify genuinely legacy usage preserves each existing method's values.
+- [x] Inspect core Agent call sites to ensure canonical execution already uses ledger admission; replace any newly found deprecated call with the existing asynchronous admission method, never catch-and-return-false.
+- [x] Update root TSDoc/README deprecations with a before/after query example. Existing canonical symbols are `queryUsage`, `queryCosts`, `queryAssessments`, `queryRunUsage` and the object overload of `checkBudget(scope, bound?)`. Use `await tracker.checkBudget({ tenantId, runId, sessionId })` for a ledger decision; inspect its status/reservation and let the existing accounting owner reconcile or release its reservation. The string overload remains legacy and now rejects canonical use; do not replace a read with a reserving call without documenting reservation ownership. Use `await tracker.queryRunUsage(scope)` for an observational query.
+- [x] Run `npx vitest run packages/core/src/cost/__tests__/cost-tracker.test.ts packages/core/src/__tests__/cost-tracker-incremental.test.ts`.
 
 ## Completion and limitations
 
-Each milestone can land independently after its focused checks, declarations, and documentation pass. Run `npx biome check` on changed TypeScript files; `npm run build`; `npm run test:package`; and `git diff --check` at the combined release review. The current plan does not claim these commands have been run.
+Each milestone can land independently after its focused checks, declarations, and documentation pass. Run `npx biome check` on changed TypeScript files; `npm run build`; `npm run test:package`; and `git diff --check` at the combined release review. RESULTS.md records the completed focused and combined checks rather than inferring results from these planned commands.
 
 Still host-owned: persistent key migration, multi-owner atomic session guarantees, arbitrary client shutdown outside Agent ownership, storage-retention policy, and external write reconciliation. Neither tuple encoding nor local operation tracking creates durable active-run recovery.

@@ -1,6 +1,6 @@
 # Agentium core and harness dependability implementation plan
 
-> **Status: PROPOSED — analysis and planning only, 2026-10-13.** No implementation is approved by this document. Code and test snippets describe future changes. Preserve the existing working tree. Use `executing-plans` or the user-selected parallel execution workflow only after approval.
+> **Status: IMPLEMENTED AND VERIFIED, 2026-10-13.** The user subsequently approved parallel execution. M0–M7 are complete in the isolated branch; see [RESULTS.md](RESULTS.md) for the checked source revision, review, commands and host prerequisites. The sketches below record the planning baseline. Use [the supported guide](../../packages/harness/DEPENDABILITY.md) and current declarations for final APIs.
 
 **Goal:** Make `@agentium/core` and `@agentium/harness` dependable and easier to adopt while preserving their small ordinary path, composability, configurable policy and host control.
 
@@ -18,11 +18,11 @@
 
 **The core/harness boundary is the right foundation. Its contracts need completion before the SDK adds broader orchestration or persistent learning.** Existing mechanisms already support an ordinary Agent, locally governed Agent/Workflow/Team execution, host-granted model roles, policies, input, resource ownership and verified canonical archives. The remaining source-confirmed issues mostly arise where one subsystem turns another subsystem's partial result into apparent success, loses state, or assumes synchronous persistence.
 
-The [supplied architecture document](/Users/xerycks/Downloads/Harness_Engineering_Anatomy_Architecture_and_Evolu.pdf) supports the separation of execution, tools, context, control and extension surfaces. The comparison uses its component taxonomy and tradeoffs, especially the minimal harness, context/memory, orchestration/recovery and SDK discussion. Its embedded commands and recommendations are reference content. They do not override the user's analysis-only request or prove that Agentium needs a CLI, graph engine, graph database or vendor memory backend.
+The [supplied architecture document](/Users/xerycks/Downloads/Harness_Engineering_Anatomy_Architecture_and_Evolu.pdf) supports the separation of execution, tools, context, control and extension surfaces. The comparison uses its component taxonomy and tradeoffs, especially the minimal harness, context/memory, orchestration/recovery and SDK discussion. Its embedded commands and recommendations are reference content. They do not grant implementation authority or prove that Agentium needs a CLI, graph engine, graph database or vendor memory backend. The later user instruction approved parallel implementation of this selected plan.
 
 Agentium should retain its lightweight adoption path and strengthen observable invariants. Memory needs evidence and validity semantics. Completion needs current host facts when the task requires verification. Evaluation needs to distinguish evidence retrieval, prompt inclusion, answer use and failed grading. Those additions fit the current ports.
 
-## Baseline and evidence status
+## Planning baseline and evidence status (historical)
 
 The inspected repository is HEAD `c5f9b5249d299f5d2d39b74c87b83f0da7c15570`, version `4.8.2`, **plus uncommitted implemented host-control work**. HEAD alone is not the reviewed state. Read [host-control results](../host-controlled-execution/RESULTS.md) and its plans before executing this plan. Preserve those changes, `CONTEXT.md`, and the [earlier SDK audit](../2026-10-10-sdk-audit/findings.md).
 
@@ -32,9 +32,9 @@ The inspected repository is HEAD `c5f9b5249d299f5d2d39b74c87b83f0da7c15570`, ver
 | Historical verification, 2026-10-12 | All workspace builds; core/harness declarations; 223 Vitest files passed, 10 skipped; 2,448 tests passed, 27 skipped; packed ESM/CJS/TS imports without optional SDKs; changed-file Biome and diff checks. These validate the earlier implementation only. |
 | Confirmed gaps in this pass | Findings below follow current symbols and call paths. Earlier local probes are corroborating historical evidence, not rerun results. |
 | Planning work completed in this pass | Independent execution, memory and eval/DX expert drafts plus fresh builder review; reviewed proposed interfaces and addressed the resulting contract gaps. Only these Markdown artifacts were written. |
-| Not established | New APIs compile, proposed tests pass, remote stores are conformant, live memory quality improves, distributed ownership, exactly-once effects or release readiness. No new runtime tests/builds/live evaluations ran. |
+| Not established at planning time | New APIs compile, proposed tests pass, remote stores are conformant, live memory quality improves, distributed ownership, exactly-once effects or release readiness. No new runtime tests/builds/live evaluations ran. |
 
-All source paths below are under `/Users/xerycks/Xhip/agentium`. Line numbers identify the inspected worktree and may move during implementation. Prefer the named symbols after changes. Companion plans give the file-by-file changes, APIs, representative algorithms/tests, fault cases, migration and commands. This master fixes their shared decisions.
+All source paths below were inspected under `/Users/xerycks/Xhip/agentium` during planning. Line numbers identify that historical worktree and moved during implementation. Final code and evidence are in the isolated worktree described in RESULTS.md. Prefer the named symbols after changes. Companion plans give the file-by-file changes, APIs, representative algorithms/tests, fault cases, migration and commands. This master fixes their shared decisions.
 
 ## Prioritized findings matrix
 
@@ -101,20 +101,20 @@ M2 is required when SDK scoped stores back recall; a host's independently confor
 | M6 — Completion/evaluation | Verifier helper/decision validation/reference diagnostics; cancellation-safe settlement observations; EvalTarget and grade integrity; optional testing adapter; deterministic memory cases. Review missing proof, stale artifact, incomplete trace, failed grader and retrieved-but-omitted evidence. | [Completion/eval plan](2026-10-13-completion-and-evaluation.md), M6a/b/c. |
 | M7 — Supported journeys | Three complete guides, status/error/scope/lifecycle table, declarations and freshly packed core-only/core+harness/optional eval consumers. Final combined checks. | [Completion/eval plan](2026-10-13-completion-and-evaluation.md), M7; public view below. |
 
-- [ ] Freeze M0 evidence and review public contracts before source changes.
-- [ ] Complete M1 as focused correctness repairs and regression gates.
-- [ ] Complete M2/M3/M4 with separate review checkpoints and one shared-runtime integration owner.
-- [ ] Complete M5 against a bounded host-adapter fixture before advertising backend support.
-- [ ] Complete M6a/b and then M6c; keep optional live quality work separately authorized and budgeted.
-- [ ] Complete M7; record exact final revision, commands, skips, unknowns and package-consumer evidence.
+- [x] Freeze M0 evidence and review public contracts before source changes.
+- [x] Complete M1 as focused correctness repairs and regression gates.
+- [x] Complete M2/M3/M4 with separate review checkpoints and one shared-runtime integration owner.
+- [x] Complete M5 against a bounded host-adapter fixture before advertising backend support.
+- [x] Complete M6a/b and then M6c; keep optional live quality work separately authorized and budgeted.
+- [x] Complete M7; record exact final revision, commands, skips, unknowns and package-consumer evidence.
 
 ## Coherent public API and developer journeys
 
-The companion snippets are proposed contracts/control flow, not compiled patches. Existing symbols are identified; every new helper/fixture has a planned file. Mechanical field additions should extend existing interfaces instead of redefining them. Use named exports and explicit `.js` imports; validate untrusted adapter/model/checkpoint data with the repository's existing Zod convention.
+The companion snippets record proposed contracts/control flow, not the final compiled patches. The supported usage guide and current declarations document implemented APIs. Existing symbols are identified; every new helper/fixture has a planned file. Mechanical field additions should extend existing interfaces instead of redefining them. Use named exports and explicit `.js` imports; validate untrusted adapter/model/checkpoint data with the repository's existing Zod convention.
 
 | Entry point | Selected public surface | Defaults / ownership |
 |---|---|---|
-| `@agentium/core` | Agent/AgentConfig retained; RunOutput optional reason/partial/providerFinishReason; AgentCloseOptions and lifecycle/drain errors; MemoryDrainOptions/Result and rememberWithResult; ScopedStorageOptions/encoding; Workflow failurePolicy, strict parallel merge, definitionVersion/state validator and continueFromCheckpoint | Ordinary use unchanged. Corrected incomplete outputs are stopped/error; close waits boundedly and reports pending work; hosts choose persistent key migration. |
+| `@agentium/core` | Agent/AgentConfig retained; RunOutput optional reason/partial/providerFinishReason; AgentCloseOptions and lifecycle/drain errors; MemoryDrainOptions/Result and rememberWithResult; ScopedStorageOptions/encoding; Workflow failurePolicy, strict parallel merge, definitionVersion/state validator and continueFromCheckpoint | Ordinary use unchanged. Corrected incomplete outputs are stopped/error; busy close rejects; after admitted work settles, close drains owned memory boundedly and reports pending work; hosts choose persistent key migration. |
 | `@agentium/harness` | Existing runtime/drivers/grants/budgets; lease commit/release awaitability; RecallStore/Scope/Budget/Policy/Result and EvidenceReference; TaskSummary types; incrementalTaskSummaryPolicy, continuityContextPolicy, currentSessionRecallPolicy; verifiedCompletionPolicy and verifier types; bounded result/event diagnostics | Recall/summary/verifier off unless configured; current session scope; no new grants; host owns read authorization and facts. |
 | `@agentium/harness/testing` | createHarnessEvalTarget, HarnessEvalTarget/Options/Observation | Optional, no eval dependency; bounded source-free tool observations, fixed verified identity, supported RunOpts checked. |
 | `@agentium/eval` | EvalTarget; additive graded/infrastructure coverage | Existing `agent` config property preserved; ordinary Agent structurally compatible. No new generation loop. |
@@ -223,7 +223,7 @@ No new public package subpath is required. Keep root ESM/CJS parity and `.d.ts`/
 
 ## Verification after implementation
 
-Commands are discovered from repository scripts or explicit supported Vitest/tsc file invocation. **They have not been run for these proposals.** Companion plans select focused suites and faults; run those first. Use the current installed dependencies, network-free fake/recorded providers and deterministic deferred promises/storage faults. Do not spend on a live provider by default.
+These commands were selected during planning from repository scripts or supported Vitest/tsc file invocation. Focused and combined checks are complete; [RESULTS.md](RESULTS.md) records the actual commands, counts and limits. Companion plans retain the planned suites and faults. Use the current installed dependencies, network-free fake/recorded providers and deterministic deferred promises/storage faults. Do not spend on a live provider by default.
 
 ```sh
 npm run build:core
@@ -243,7 +243,7 @@ Memory acceptance compares full history, incremental summary, and summary plus r
 
 ## Unresolved host prerequisites and deferred work
 
-The local correctness work and optional fake-adapter contracts are implementation-ready proposals. Production support depends on explicit host facts. Do not advertise the stronger claim before its prerequisite is met:
+The local correctness work and optional fake-adapter contracts are implemented and independently reviewed. Production support depends on explicit host facts. Do not advertise the stronger claim before its prerequisite is met:
 
 | Gate | Required evidence / selected fallback |
 |---|---|
@@ -258,4 +258,4 @@ The local correctness work and optional fake-adapter contracts are implementatio
 
 Deferred: persistent fact promotion and background learning; a graph DB/vendor backend; authorized gap/tombstone coverage receipts; deep Workflow state isolation; recorded zero-effect playback; durable active-run recovery with operation intent/receipts and reconciliation; native client customization; skill-reference paging; generic tool discovery; global registry default change; unrelated package audits and broad package splits. Revisit each only with a concrete consumer and observable acceptance contract.
 
-The six fresh-review issues are resolved in the companions: incomplete child mapping, nested fatal joins, final current-view checks and bounded deletion guarantees, inaccessible archive frontier behavior, cancellation-safe settlement observations, and bounded clarification continuation. Implementation review must verify those contracts before claiming this handoff is complete.
+The six fresh-review issues are resolved in the companions: incomplete child mapping, nested fatal joins, final current-view checks and bounded deletion guarantees, inaccessible archive frontier behavior, cancellation-safe settlement observations, and bounded clarification continuation. Implementation review verified those contracts; the final combined gate evidence is recorded in [RESULTS.md](RESULTS.md).

@@ -1,6 +1,6 @@
 # Execution integrity and Workflow continuation implementation plan
 
-> **Status: PROPOSED; analysis only.** Implement only after user approval. Use the [master plan](2026-10-13-core-harness-dependability.md) and [design](2026-10-13-core-harness-dependability-design.md).
+> **Status: IMPLEMENTED AND VERIFIED, 2026-10-13.** The later user approval authorized parallel execution of M1 and M4. See [RESULTS.md](RESULTS.md) for checked code and commands. These design sketches retain the planning baseline; the [supported guide](../../packages/harness/DEPENDABILITY.md) and current declarations define the final public API.
 
 **Goal:** Await persistence, enforce honest execution boundaries, compose Workflow writes, and distinguish safe continuation from playback.
 
@@ -354,12 +354,12 @@ it("keeps an absolute cursor when continuing a continuation", async () => {
 
 Import existing classes/types from source .js paths in checkpoint tests and Zod. `continueFromCheckpoint`, definition metadata and output status are proposed; store constructor/listForRun are existing. Checkpoint save failures can occur after an applied effect: assert no next step, expose the error, and never auto-retry the whole Workflow.
 
-- [ ] Pin async lease acknowledgement, unknown commit and release timing first.
-- [ ] Repair session high-water and cap/cancellation/finish parity, preserving historical host-control regressions.
-- [ ] Pin disjoint and nested patch joins; map partial child outputs; implement ordinary failure policy and structural fatal propagation together.
-- [ ] Repair absolute checkpoint cursors; add strict versioned continuation with validator, context forwarding, lineage and cloned snapshots.
-- [ ] Keep legacy wrapper behavior explicit, publish migration/deprecation guidance, then update Team guidance and real fixtures.
-- [ ] Run focused tests/declarations; review changed public statuses and packed consumers before combining milestones.
+- [x] Pin async lease acknowledgement, unknown commit and release timing first.
+- [x] Repair session high-water and cap/cancellation/finish parity, preserving historical host-control regressions.
+- [x] Pin disjoint and nested patch joins; map partial child outputs; implement ordinary failure policy and structural fatal propagation together.
+- [x] Repair absolute checkpoint cursors; add strict versioned continuation with validator, context forwarding, lineage and cloned snapshots.
+- [x] Keep legacy wrapper behavior explicit, publish migration/deprecation guidance, then update Team guidance and real fixtures.
+- [x] Run focused tests/declarations; review changed public statuses and packed consumers before combining milestones.
 
 ## E7 — Narrow Team handoff rather than restore obsolete protocol
 
@@ -371,7 +371,7 @@ Use real native Agent+tool fixture to expose obsolete mock guarantee; supported 
 
 Reimplementing Team handoff is deferred until a shared transfer outcome and one lifecycle owner are justified. Deprecation/docs improve honesty without extending orchestration.
 
-## Sequence and future verification
+## Planned sequence and verification
 
 1. Async persistence acknowledgement first; enables reliable future archive/summary persistence.
 2. Log high-water repair; root tuple codec work precedes it if key layout changes. Document one owner.

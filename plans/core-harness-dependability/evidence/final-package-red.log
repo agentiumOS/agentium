@@ -1,0 +1,41 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/__tests__/package-consumption.test.ts (3 tests | 2 failed | 1 skipped) 5969ms
+   × consumes packed core+harness via ESM, CommonJS and public TypeScript without optional SDKs (eval=false) 3030ms
+   × runs an ordinary packed core Agent without harness, eval or provider SDKs 2938ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/__tests__/package-consumption.test.ts > consumes packed core+harness via ESM, CommonJS and public TypeScript without optional SDKs (eval=false)
+Error: ENOENT: no such file or directory, open '/var/folders/m9/hfv9hbdn26s724glwswg4_v80000gn/T/agentium-packed-harness-64gVjt/node_modules/@agentium/harness/DEPENDABILITY.md'
+ ❯ assertGuideLinks packages/harness/src/__tests__/package-consumption.test.ts:28:15
+     26|       const linkedPath = resolve(dirname(path), target);
+     27|       expect(linkedPath.startsWith(`${packageDirectory}${sep}`)).toBe(…
+     28|       expect((await readFile(linkedPath, "utf8")).trim()).not.toBe("");
+       |               ^
+     29|     }
+     30|   }
+ ❯ packages/harness/src/__tests__/package-consumption.test.ts:99:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  packages/harness/src/__tests__/package-consumption.test.ts > runs an ordinary packed core Agent without harness, eval or provider SDKs
+Error: ENOENT: no such file or directory, open '/var/folders/m9/hfv9hbdn26s724glwswg4_v80000gn/T/agentium-packed-core-only-UctLii/node_modules/@agentium/core/src/storage/README.md'
+ ❯ assertGuideLinks packages/harness/src/__tests__/package-consumption.test.ts:28:15
+     26|       const linkedPath = resolve(dirname(path), target);
+     27|       expect(linkedPath.startsWith(`${packageDirectory}${sep}`)).toBe(…
+     28|       expect((await readFile(linkedPath, "utf8")).trim()).not.toBe("");
+       |               ^
+     29|     }
+     30|   }
+ ❯ assertCoreGuides packages/harness/src/__tests__/package-consumption.test.ts:34:3
+ ❯ packages/harness/src/__tests__/package-consumption.test.ts:364:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 skipped (3)
+   Start at  07:04:14
+   Duration  6.09s (transform 15ms, setup 0ms, import 22ms, tests 5.97s, environment 0ms)

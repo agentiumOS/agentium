@@ -1,8 +1,8 @@
-# Agentium core and harness dependability — proposed design
+# Agentium core and harness dependability — selected design and planning baseline
 
-**Status:** Review draft, 2026-10-13. This document and its implementation plans are proposals, not approved or implemented changes. The user requested analysis/planning only, with parallel expert review. Existing working-tree changes are preserved.
+**Status:** Implemented and independently reviewed, 2026-10-13, after the user approved parallel execution. This document retains the selected design and original planning evidence. [RESULTS.md](RESULTS.md) records final code, checks, deviations and host prerequisites; the supported usage guide and current declarations define final APIs.
 
-**Repository baseline:** HEAD `c5f9b5249d299f5d2d39b74c87b83f0da7c15570`, package version `4.8.2`, plus the already implemented uncommitted host-controlled execution work. Read its [results](../host-controlled-execution/RESULTS.md) before implementing anything below. The findings in [the earlier SDK audit](../2026-10-10-sdk-audit/findings.md) are leads, not a second implementation specification; some are repaired or narrowed here.
+**Repository baseline:** HEAD `c5f9b5249d299f5d2d39b74c87b83f0da7c15570`, package version `4.8.2`, plus the already implemented uncommitted host-controlled execution work. The implementation preserved that work; its [results](../host-controlled-execution/RESULTS.md) describe the historical baseline. The findings in [the earlier SDK audit](../2026-10-10-sdk-audit/findings.md) are leads, not a second implementation specification; some are repaired or narrowed here.
 
 ## Purpose and architecture verdict
 
@@ -104,4 +104,4 @@ Persistent fact promotion/storage adapters, durable active-run checkpoints and e
 
 Use current Vitest fixtures and deterministic failure injection before implementation; proposed tests must first fail for the intended public behavior. The plan includes commands from repository scripts. Previous checks on 2026-10-12 passed 2,448 tests (27 skipped), all workspace builds, core/harness declaration checks and package consumption. Those are historical baseline evidence; they do not validate proposed APIs or later source changes.
 
-No new test/build/evaluation suite is run as part of this planning task. No live provider spend, external effects, migrations, publication, or source changes are authorized. Later release review records exact revision, commands, skips/unknowns and packed artifact compatibility. Fixture tests prove covered invariants; model-quality claims require the separately bounded evaluation protocol.
+No new test/build/evaluation suite ran during the original planning task. The later user instruction authorized the selected implementation and local contract checks. Live provider spend, production effects, migrations and publication remain outside scope. RESULTS.md records the checked source revision, commands, skips/unknowns and packed compatibility; release readiness remains a separate review. Fixture tests prove covered invariants; model-quality claims require the separately bounded evaluation protocol.

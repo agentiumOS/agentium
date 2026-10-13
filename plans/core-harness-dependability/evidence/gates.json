@@ -1,0 +1,89 @@
+{
+  "source_commit": "be98a75699f3651e4992dbcb9b6b29acaa513a8b",
+  "baseline_commit": "531013327a0f7136b4eb8446ff1b302bf6f9ca51",
+  "source_manifest_sha256": "e868adfb4e03bebc9645299944bc400df044f8e5e5404a71e62e21e0d855e082",
+  "recorded_at_utc": "2026-10-13T01:46:34.520680+00:00",
+  "environment": {
+    "node": "v22.23.1",
+    "npm": "10.9.8",
+    "vitest": "4.1.11"
+  },
+  "checks": [
+    {
+      "name": "workspace build",
+      "command": "npm run build",
+      "exit_code": 0,
+      "log": "final-workspace-build.log"
+    },
+    {
+      "name": "default full suite",
+      "command": "npx --no-install vitest run --maxWorkers=4",
+      "exit_code": 0,
+      "files_passed": 247,
+      "files_skipped": 10,
+      "tests_passed": 2739,
+      "tests_skipped": 29,
+      "log": "final-full-tests.log"
+    },
+    {
+      "name": "packed consumers",
+      "command": "npm run test:package",
+      "exit_code": 0,
+      "files_passed": 2,
+      "tests_passed": 4,
+      "log": "final-packed-consumers.log"
+    },
+    {
+      "name": "core full source/test types",
+      "command": "npx --no-install tsc -p packages/core/tsconfig.json --noEmit --pretty false",
+      "exit_code": 0,
+      "log": "final-core-types.log"
+    },
+    {
+      "name": "harness full source/test types",
+      "command": "npx --no-install tsc -p packages/harness/tsconfig.json --noEmit --pretty false",
+      "exit_code": 0,
+      "log": "final-harness-types.log"
+    },
+    {
+      "name": "eval full source/test types",
+      "command": "npx --no-install tsc -p packages/eval/tsconfig.json --noEmit --pretty false",
+      "exit_code": 0,
+      "log": "final-eval-types.log"
+    },
+    {
+      "name": "guide examples",
+      "command": "npx --no-install tsc --noEmit --strict --skipLibCheck --module NodeNext --moduleResolution NodeNext --target ES2022 --types node .superpowers/sdd/2026-10-13-core-harness-dependability/journey-1.ts .superpowers/sdd/2026-10-13-core-harness-dependability/journey-2.ts .superpowers/sdd/2026-10-13-core-harness-dependability/journey-3.ts",
+      "exit_code": 0,
+      "examples": 3,
+      "examples_match_current_guide": true,
+      "log": "final-guide-types.log"
+    },
+    {
+      "name": "changed source Biome",
+      "command": "npx --no-install biome check <the 90 changed supported TS/JS/JSON paths>",
+      "exit_code": 0,
+      "paths_selected": 90,
+      "files_checked": 89,
+      "note": "Configured exclusions respected. Result captured in parent tool output: Checked 89 files in 103ms. No fixes applied."
+    },
+    {
+      "name": "source whitespace",
+      "command": "git diff --check",
+      "exit_code": 0
+    }
+  ],
+  "independent_review": {
+    "disposition": "approved",
+    "remaining_actionable_findings": 0,
+    "report": "final-review.md"
+  },
+  "original_checkout_audit": {
+    "checked_captured_paths": 790,
+    "differing_captured_paths": 9,
+    "disposition": "observed separate concurrent edits; preserved without import or reset",
+    "report": "original-preservation.json",
+    "observed_at_utc": "2026-10-13T01:49:19.414675+00:00"
+  },
+  "log_retention": "trailing whitespace and terminal blank lines normalized; diagnostic text/counts retained"
+}

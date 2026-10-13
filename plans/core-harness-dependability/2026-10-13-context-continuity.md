@@ -1,6 +1,6 @@
 # Bounded recall and incremental task-summary implementation plan
 
-> **Status: PROPOSED; analysis only.** Use the [master plan](2026-10-13-core-harness-dependability.md) and [design](2026-10-13-core-harness-dependability-design.md). Implementation requires user approval.
+> **Status: IMPLEMENTED AND VERIFIED, 2026-10-13.** The later user approval authorized parallel execution of M5 phase 1; phase 2 persistent facts remain deferred. See [RESULTS.md](RESULTS.md) for checked code and commands. These design sketches retain the planning baseline; the [supported guide](../../packages/harness/DEPENDABILITY.md) and current declarations define the final public API.
 
 **Goal:** Preserve useful task evidence across archival while exposing partial coverage, stale sources and bounded resource use.
 
@@ -12,7 +12,7 @@
 
 ## M5 — Outcome and evidence
 
-Deliver opt-in, bounded recall of source evidence at task-model call boundaries and an incremental task summary with explicit archive coverage. Preserve the core model/tool loop. Preserve canonical transcripts separately from derived summaries and later persistent claims. Storage, access decisions, indexing, sharing, retention, and deletion remain host-owned. No implementation or verification command was run for this proposal.
+Deliver opt-in, bounded recall of source evidence at task-model call boundaries and an incremental task summary with explicit archive coverage. Preserve the core model/tool loop. Preserve canonical transcripts separately from derived summaries and later persistent claims. Storage, access decisions, indexing, sharing, retention, and deletion remain host-owned. No implementation or verification command ran when this proposal was created. Phase 1 is now implemented and verified; later persistent-fact semantics remain deferred.
 
 Observed integration facts (repository-relative paths below):
 
@@ -344,7 +344,7 @@ Specify conceptual scoped claim records before exporting or storing them:
 
 Repeated summaries, similarity, or model confidence do not verify claims. Latest recording time does not resolve authority or environment scope. “Contains PostgreSQL configuration” remains an inferred observation and cannot become “All deployments require PostgreSQL.” Promotion runs only at host-authorized completion/correction triggers, outside automatic pre-call recall, with idempotency and host-owned retention. Episodes are separate bounded experience records, not generalized requirements.
 
-## Meaningful verification plan (not run)
+## Verification scenarios from the planning baseline
 
 New focused tests: `packages/harness/src/runtime/__tests__/bounded-recall.test.ts`, `task-summary.test.ts`, and `continuity-context.test.ts`. Reuse repository Vitest/provider fixtures and assert captured model requests/adapter source reads, not merely helper return shapes.
 
@@ -416,14 +416,14 @@ Select the narrow initial behavior: an unavailable/revoked group stops contiguou
 
 ### Concrete files and implementation checkpoints
 
-- [ ] Create `packages/harness/src/runtime/recall.ts`: proposed types, Zod response validation, one bounded discover/read/validate coordinator. Normalize adapter failure codes without leaking forbidden IDs/raw errors. Keep cancellation as cancellation.
-- [ ] Create `runtime/task-summary.ts`: record validation, evidence ID mapping, exact contiguous coverage, per-conversation lineage and invalidation. No background model work here.
-- [ ] Update `runtime/driver.ts`: stage archives in retain; run continuity only after task admission in shared prepare; bounded clarification; final validity checks and snapshot handling. Track recall close in existing owned cleanup.
-- [ ] Update `runtime/session-bindings.ts`, `context-policy.ts`, `types.ts` and existing construction validation for optional fields. Pass recall/summary through `projectHarnessContext` explicitly; do not rely on casts or mutable global state.
-- [ ] Update `policies.ts` with the two proposed factories and default current-session policy. Add the listed runtime/root exports to `runtime/index.ts` and `src/index.ts`.
-- [ ] Add the three tests plus `runtime/__tests__/fixtures/continuity-fixture.ts`. The fixture must implement the declared bounded store, numeric archive group map, invalidation epoch and conditional publication mode. Assert physical source reads, captured model requests and canonical snapshots.
-- [ ] Update harness README with a complete optional adapter journey, explicit bounds, read-fence versus atomic publication guarantee, unavailable coverage and task-token admission limitation.
-- [ ] Review public types against the final host adapter fixture, then run focused tests/declarations/packed consumers. No mandatory backend or source cache.
+- [x] Create `packages/harness/src/runtime/recall.ts`: proposed types, Zod response validation, one bounded discover/read/validate coordinator. Normalize adapter failure codes without leaking forbidden IDs/raw errors. Keep cancellation as cancellation.
+- [x] Create `runtime/task-summary.ts`: record validation, evidence ID mapping, exact contiguous coverage, per-conversation lineage and invalidation. No background model work here.
+- [x] Update `runtime/driver.ts`: stage archives in retain; run continuity only after task admission in shared prepare; bounded clarification; final validity checks and snapshot handling. Track recall close in existing owned cleanup.
+- [x] Update `runtime/session-bindings.ts`, `context-policy.ts`, `types.ts` and existing construction validation for optional fields. Pass recall/summary through `projectHarnessContext` explicitly; do not rely on casts or mutable global state.
+- [x] Add `continuity-policies.ts` with the two selected factories and default current-session policy. Add the listed runtime/root exports to `runtime/index.ts` and `src/index.ts`.
+- [x] Add the three tests plus `runtime/__tests__/fixtures/continuity-fixture.ts`. The fixture must implement the declared bounded store, numeric archive group map, invalidation epoch and conditional publication mode. Assert physical source reads, captured model requests and canonical snapshots.
+- [x] Update harness README with a complete optional adapter journey, explicit bounds, read-fence versus atomic publication guarantee, unavailable coverage and task-token admission limitation.
+- [x] Review public types against the final host adapter fixture, then run focused tests/declarations/packed consumers. No mandatory backend or source cache.
 
 ## Decisions needing host requirements, not another abstraction
 

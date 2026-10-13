@@ -1,0 +1,73 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/core/src/agent/__tests__/publication-cancellation.test.ts (2 tests | 2 failed) 6ms
+     × suppresses raw text after cancellation at the last public delta and reports the failed message 5ms
+     × suppresses raw finish after cancellation at the last completed message and preserves settled usage 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/core/src/agent/__tests__/publication-cancellation.test.ts > direct loop publication cancellation > suppresses raw text after cancellation at the last public delta and reports the failed message
+AssertionError: expected { value: { type: 'text', …(1) }, …(1) } to match object { value: { …(2) } }
+(2 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "value": {
+-     "event": {
+-       "reason": "cancelled",
+-       "type": "message.failed",
+-     },
+-     "type": "public_message",
++     "type": "text",
+    },
+  }
+
+ ❯ packages/core/src/agent/__tests__/publication-cancellation.test.ts:43:33
+     41|
+     42|     controller.abort();
+     43|     expect(await stream.next()).toMatchObject({
+       |                                 ^
+     44|       value: { type: "public_message", event: { type: "message.failed"…
+     45|     });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  packages/core/src/agent/__tests__/publication-cancellation.test.ts > direct loop publication cancellation > suppresses raw finish after cancellation at the last completed message and preserves settled usage
+AssertionError: promise resolved "{ …(2) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "done": false,
++   "value": {
++     "finishReason": "stop",
++     "type": "finish",
++     "usage": {
++       "completionTokens": 1,
++       "promptTokens": 2,
++       "totalTokens": 3,
++     },
++   },
+  }
+
+ ❯ packages/core/src/agent/__tests__/publication-cancellation.test.ts:64:32
+     62|
+     63|     controller.abort();
+     64|     await expect(stream.next()).rejects.toMatchObject({ name: "RunCanc…
+       |                                ^
+     65|     expect(messages.map((event) => event.type)).toEqual(["message.star…
+     66|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed (2)
+   Start at  07:03:46
+   Duration  239ms (transform 90ms, setup 0ms, import 144ms, tests 6ms, environment 0ms)

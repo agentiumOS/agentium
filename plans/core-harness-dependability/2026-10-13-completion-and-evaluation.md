@@ -1,6 +1,6 @@
 # Evidence-based completion, harness evaluation, and public journeys
 
-> **Status: PROPOSED; analysis only.** Use the [master plan](2026-10-13-core-harness-dependability.md) and [design](2026-10-13-core-harness-dependability-design.md). Implement only after approval.
+> **Status: IMPLEMENTED AND VERIFIED, 2026-10-13.** The later user approval authorized parallel execution of M6 and M7; the optional live pilot was not run. See [RESULTS.md](RESULTS.md) for checked code and commands. These design sketches retain the planning baseline; the [supported guide](../../packages/harness/DEPENDABILITY.md) and current declarations define the final public API.
 
 **Goal:** Accept completion from current host evidence, evaluate the actual harness, and publish simple supported journeys.
 
@@ -10,7 +10,7 @@
 
 **Global constraints / review focus:** Unknown verification cannot pass; tool settlement alone does not verify a task; missing observations/grades cannot become absence/success; respect existing session and cleanup ownership.
 
-No source files were changed and no new builds or tests were run for this review. Current source is the evidence; the checks in host-controlled-execution/RESULTS.md remain previously executed evidence for that implementation, not evidence for these proposals.
+At planning time, no source files changed and no new builds or tests ran. The earlier host-control results remain historical baseline evidence. Current implementation and its fresh checks are recorded in RESULTS.md.
 
 ## Verdict and findings
 
@@ -25,7 +25,7 @@ Retain the current execution ownership: core owns the ordinary Agent loop and pr
 | E5: Grading failures are conflated with bad answers | EvalSuite catches invalid/throwing scorers into score 0/pass false at suite.ts:25–35; evaluateCase catch at case-lifecycle.ts:165–175 loses completed output on later timeout | Memory/model comparisons can attribute judge infrastructure problems to the agent and lose inspectable output | Minimal dependent eval integrity repair; preserve legacy pass totals |
 | E6: Public consumption coverage is good but new journeys need it | Harness package test already packs core+harness and runs ESM, CJS, strict NodeNext .ts/.cts without optional SDKs; lines 15–205 | Source-only examples can hide missing declarations/exports | Extend existing packed fixture; no new dependencies |
 
-Existing audit F14 remains confirmed: structural target support has not yet been implemented. Do not duplicate existing host request controls, input parsers, budgets, capability types, history retention, or package test infrastructure. The completed package work already exports OpenAIConfig, AnthropicConfig, input validation, budget/history types, model control errors and ESM/CJS declarations; retain it. Defer unrelated packages, CLI/Edge/admin/queue audits, and vendor-backed benchmark claims.
+Audit F14 was confirmed at planning time. Structural target support is now implemented and verified. Do not duplicate existing host request controls, input parsers, budgets, capability types, history retention, or package test infrastructure. The completed package work already exports OpenAIConfig, AnthropicConfig, input validation, budget/history types, model control errors and ESM/CJS declarations; retain it. Defer unrelated packages, CLI/Edge/admin/queue audits, and vendor-backed benchmark claims.
 
 ## M6a: Optional deterministic completion verification
 
@@ -417,12 +417,12 @@ Public exports: verifier value/types in harness root; eval helper value/types on
 
 ## Sequence and commands
 
-- [ ] M6a: Pin unknown/fail/pass and stale artifact evidence; implement helper + common runtime decision validation + bounded event/result references.
-- [ ] M6b: Add settlement observation; widen eval target types; preserve completed output through grading timeout and report infrastructure denominators.
-- [ ] M6b: Add optional testing adapter, exact RunOpts checks, borrowed resource ownership and partial trace cases.
-- [ ] M6c: Add versioned network-free memory acceptance scenarios through the actual harness; separate retrieval/assembly/answer scores.
-- [ ] M7: Publish the three journeys and extend fresh packed consumers without adding eval to the lightweight path.
-- [ ] Run focused commands and final package gates after implementation; record live pilot only if separately authorized.
+- [x] M6a: Pin unknown/fail/pass and stale artifact evidence; implement helper + common runtime decision validation + bounded event/result references.
+- [x] M6b: Add settlement observation; widen eval target types; preserve completed output through grading timeout and report infrastructure denominators.
+- [x] M6b: Add optional testing adapter, exact RunOpts checks, borrowed resource ownership and partial trace cases.
+- [x] M6c: Add versioned network-free memory acceptance scenarios through the actual harness; separate retrieval/assembly/answer scores.
+- [x] M7: Publish the three journeys and extend fresh packed consumers without adding eval to the lightweight path.
+- [x] Run focused commands and final package gates after implementation; record live pilot only if separately authorized.
 
 A0: use the selected verifier result/error semantics above; implement cancellation-safe settlement observations and shared completion-decision validation. Evidence strings identify the current host record; when they cite recall, use EvidenceReference sourceId/revision/locator serialization rather than inventing another source schema. A1: implement helper/validation and unit tests. A2: attach bounded completion references and tool outcomes, runtime integration tests. Review point: completion can only accept actual matching host evidence; no authority/budget widened.
 

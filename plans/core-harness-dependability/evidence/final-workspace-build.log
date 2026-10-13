@@ -1,0 +1,354 @@
+
+> agentium@4.8.2 build
+> npm run build -w packages/core && npm run build -w packages/harness -w packages/transport -w packages/queue -w packages/browser -w packages/eval -w packages/observability -w packages/admin -w packages/edge -w packages/cli
+
+
+> @agentium/core@4.8.2 build
+> tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs
+
+ℹ tsdown v0.23.0 powered by rolldown v1.2.12
+ℹ config file: /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/tsdown.config.ts
+ℹ entry: src/index.ts, src/voice/index.ts, src/telephony/index.ts, src/tools/sandbox-worker.ts, src/toolkits/base.ts, src/toolkits/calculator.ts, src/toolkits/calendar.ts, src/toolkits/catalog.ts, src/toolkits/code-interpreter.ts, src/toolkits/discord.ts, src/toolkits/duckduckgo.ts, src/toolkits/filesystem.ts, src/toolkits/git.ts, src/toolkits/github.ts, src/toolkits/gmail.ts, src/toolkits/google-sheets.ts, src/toolkits/google-workspace.ts, src/toolkits/hackernews.ts, src/toolkits/http.ts, src/toolkits/image-generation.ts, src/toolkits/index.ts, src/toolkits/jev.ts, src/toolkits/jira.ts, src/toolkits/notion.ts, src/toolkits/pageindex.ts, src/toolkits/pdf.ts, src/toolkits/redis.ts, src/toolkits/s3.ts, src/toolkits/sandbox-daytona.ts, src/toolkits/sandbox-e2b.ts, src/toolkits/scraper.ts, src/toolkits/shell.ts, src/toolkits/slack.ts, src/toolkits/sql.ts, src/toolkits/stripe.ts, src/toolkits/telegram.ts, src/toolkits/websearch.ts, src/toolkits/whatsapp.ts, src/toolkits/wikipedia.ts, src/toolkits/youtube.ts
+ℹ target: node22.18
+ℹ tsconfig: tsconfig.json
+ℹ Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ Cleaning 1001 files
+ℹ [CJS] dist/index.cjs                       650.67 kB │ gzip: 145.79 kB
+ℹ [CJS] dist/voice/index.cjs                  55.19 kB │ gzip:  13.37 kB
+ℹ [CJS] dist/toolkits/catalog.cjs             22.33 kB │ gzip:   5.19 kB
+ℹ [CJS] dist/toolkits/pageindex.cjs            9.63 kB │ gzip:   3.12 kB
+ℹ [CJS] dist/toolkits/github.cjs               7.28 kB │ gzip:   2.22 kB
+ℹ [CJS] dist/toolkits/jira.cjs                 6.99 kB │ gzip:   2.27 kB
+ℹ [CJS] dist/toolkits/sandbox-daytona.cjs      6.65 kB │ gzip:   2.10 kB
+ℹ [CJS] dist/toolkits/sandbox-e2b.cjs          6.58 kB │ gzip:   2.11 kB
+ℹ [CJS] dist/toolkits/stripe.cjs               6.38 kB │ gzip:   1.77 kB
+ℹ [CJS] dist/toolkits/notion.cjs               6.33 kB │ gzip:   2.12 kB
+ℹ [CJS] dist/toolkits/s3.cjs                   6.24 kB │ gzip:   1.76 kB
+ℹ [CJS] dist/toolkits/calendar.cjs             6.18 kB │ gzip:   2.06 kB
+ℹ [CJS] dist/toolkits/duckduckgo.cjs           5.89 kB │ gzip:   1.76 kB
+ℹ [CJS] dist/toolkits/google-sheets.cjs        5.73 kB │ gzip:   1.70 kB
+ℹ [CJS] dist/toolkits/gmail.cjs                5.60 kB │ gzip:   1.99 kB
+ℹ [CJS] dist/toolkits/sql.cjs                  5.45 kB │ gzip:   1.90 kB
+ℹ [CJS] dist/toolkits/jev.cjs                  5.34 kB │ gzip:   1.83 kB
+ℹ [CJS] dist/toolkits/filesystem.cjs           5.07 kB │ gzip:   1.81 kB
+ℹ [CJS] dist/toolkits/image-generation.cjs     5.01 kB │ gzip:   1.66 kB
+ℹ [CJS] dist/toolkits/pdf.cjs                  4.97 kB │ gzip:   1.77 kB
+ℹ [CJS] dist/toolkits/discord.cjs              4.94 kB │ gzip:   1.53 kB
+ℹ [CJS] dist/toolkits/index.cjs                4.91 kB │ gzip:   0.93 kB
+ℹ [CJS] dist/toolkits/whatsapp.cjs             4.86 kB │ gzip:   1.70 kB
+ℹ [CJS] dist/toolkits/youtube.cjs              4.70 kB │ gzip:   1.97 kB
+ℹ [CJS] dist/toolkits/redis.cjs                4.55 kB │ gzip:   1.49 kB
+ℹ [CJS] dist/toolkits/git.cjs                  4.26 kB │ gzip:   1.51 kB
+ℹ [CJS] dist/toolkits/slack.cjs                4.02 kB │ gzip:   1.54 kB
+ℹ [CJS] dist/toolkits/code-interpreter.cjs     3.94 kB │ gzip:   1.57 kB
+ℹ [CJS] dist/toolkits/telegram.cjs             3.88 kB │ gzip:   1.38 kB
+ℹ [CJS] dist/toolkits/scraper.cjs              3.65 kB │ gzip:   1.61 kB
+ℹ [CJS] dist/toolkits/websearch.cjs            3.16 kB │ gzip:   1.27 kB
+ℹ [CJS] dist/toolkits/shell.cjs                3.05 kB │ gzip:   1.31 kB
+ℹ [CJS] dist/toolkits/wikipedia.cjs            2.92 kB │ gzip:   1.29 kB
+ℹ [CJS] dist/toolkits/hackernews.cjs           2.83 kB │ gzip:   1.25 kB
+ℹ [CJS] dist/toolkits/http.cjs                 2.79 kB │ gzip:   1.30 kB
+ℹ [CJS] dist/toolkits/calculator.cjs           2.79 kB │ gzip:   1.35 kB
+ℹ [CJS] dist/toolkits/google-workspace.cjs     2.74 kB │ gzip:   1.26 kB
+ℹ [CJS] dist/toolkits/base.cjs                 1.44 kB │ gzip:   0.74 kB
+ℹ [CJS] dist/telephony/index.cjs               0.83 kB │ gzip:   0.28 kB
+ℹ [CJS] dist/tools/sandbox-worker.cjs          0.51 kB │ gzip:   0.30 kB
+ℹ [CJS] dist/voice-agent-CecgqqUa.cjs        249.96 kB │ gzip:  61.73 kB
+ℹ [CJS] dist/operation-usage-WNJ3fAVR.cjs    113.53 kB │ gzip:  26.51 kB
+ℹ [CJS] dist/usage-normalizers-C0HT7wrJ.cjs   38.54 kB │ gzip:   8.94 kB
+ℹ [CJS] dist/telephony-BJ6JwrDo.cjs           33.89 kB │ gzip:   7.76 kB
+ℹ [CJS] dist/mcp-client-DLHImfn7.cjs          27.45 kB │ gzip:   7.19 kB
+ℹ [CJS] dist/jev-sdk-BcINRR-H.cjs              9.87 kB │ gzip:   2.88 kB
+ℹ [CJS] dist/path-safety-B6mNvGeN.cjs          3.99 kB │ gzip:   1.49 kB
+ℹ [CJS] dist/lifecycle-lA1SKrab.cjs            3.71 kB │ gzip:   1.31 kB
+ℹ [CJS] dist/schema-DJjXPbou.cjs               2.32 kB │ gzip:   0.81 kB
+ℹ [CJS] dist/types-szNkNxKv.cjs                0.66 kB │ gzip:   0.33 kB
+ℹ [CJS] 50 files, total: 1.38 MB
+[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/agent/agent.ts is dynamically imported by src/agent/subagent.ts but also statically imported by src/agent/factory.ts, src/index.ts, dynamic import will not move module into another chunk.
+
+[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/cache/semantic-cache.ts is dynamically imported by src/agent/agent.ts but also statically imported by src/index.ts, dynamic import will not move module into another chunk.
+
+[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/webhooks/webhook-manager.ts is dynamically imported by src/agent/agent.ts but also statically imported by src/index.ts, dynamic import will not move module into another chunk.
+
+✔ Build complete in 136ms
+ℹ [ESM] dist/index.js                       633.43 kB │ gzip: 144.99 kB
+ℹ [ESM] dist/voice/index.js                  53.84 kB │ gzip:  13.27 kB
+ℹ [ESM] dist/toolkits/catalog.js             21.06 kB │ gzip:   5.07 kB
+ℹ [ESM] dist/toolkits/pageindex.js            9.31 kB │ gzip:   3.05 kB
+ℹ [ESM] dist/toolkits/github.js               6.95 kB │ gzip:   2.15 kB
+ℹ [ESM] dist/toolkits/jira.js                 6.73 kB │ gzip:   2.21 kB
+ℹ [ESM] dist/toolkits/sandbox-daytona.js      6.30 kB │ gzip:   2.03 kB
+ℹ [ESM] dist/toolkits/sandbox-e2b.js          6.21 kB │ gzip:   2.05 kB
+ℹ [ESM] dist/toolkits/stripe.js               6.14 kB │ gzip:   1.69 kB
+ℹ [ESM] dist/toolkits/notion.js               6.09 kB │ gzip:   2.05 kB
+ℹ [ESM] dist/toolkits/s3.js                   5.97 kB │ gzip:   1.68 kB
+ℹ [ESM] dist/toolkits/calendar.js             5.92 kB │ gzip:   1.98 kB
+ℹ [ESM] dist/toolkits/duckduckgo.js           5.71 kB │ gzip:   1.69 kB
+ℹ [ESM] dist/toolkits/google-sheets.js        5.47 kB │ gzip:   1.62 kB
+ℹ [ESM] dist/toolkits/gmail.js                5.40 kB │ gzip:   1.90 kB
+ℹ [ESM] dist/toolkits/sql.js                  5.28 kB │ gzip:   1.82 kB
+ℹ [ESM] dist/toolkits/jev.js                  5.05 kB │ gzip:   1.76 kB
+ℹ [ESM] dist/toolkits/pdf.js                  4.78 kB │ gzip:   1.69 kB
+ℹ [ESM] dist/toolkits/image-generation.js     4.73 kB │ gzip:   1.58 kB
+ℹ [ESM] dist/toolkits/discord.js              4.71 kB │ gzip:   1.44 kB
+ℹ [ESM] dist/toolkits/whatsapp.js             4.66 kB │ gzip:   1.63 kB
+ℹ [ESM] dist/toolkits/youtube.js              4.53 kB │ gzip:   1.91 kB
+ℹ [ESM] dist/toolkits/filesystem.js           4.50 kB │ gzip:   1.68 kB
+ℹ [ESM] dist/toolkits/redis.js                4.31 kB │ gzip:   1.40 kB
+ℹ [ESM] dist/toolkits/git.js                  4.00 kB │ gzip:   1.43 kB
+ℹ [ESM] dist/toolkits/slack.js                3.81 kB │ gzip:   1.47 kB
+ℹ [ESM] dist/toolkits/telegram.js             3.64 kB │ gzip:   1.32 kB
+ℹ [ESM] dist/toolkits/code-interpreter.js     3.53 kB │ gzip:   1.44 kB
+ℹ [ESM] dist/toolkits/scraper.js              3.47 kB │ gzip:   1.54 kB
+ℹ [ESM] dist/toolkits/websearch.js            3.01 kB │ gzip:   1.20 kB
+ℹ [ESM] dist/toolkits/shell.js                2.86 kB │ gzip:   1.23 kB
+ℹ [ESM] dist/toolkits/wikipedia.js            2.75 kB │ gzip:   1.22 kB
+ℹ [ESM] dist/toolkits/hackernews.js           2.67 kB │ gzip:   1.18 kB
+ℹ [ESM] dist/toolkits/calculator.js           2.64 kB │ gzip:   1.29 kB
+ℹ [ESM] dist/toolkits/http.js                 2.62 kB │ gzip:   1.23 kB
+ℹ [ESM] dist/toolkits/google-workspace.js     2.59 kB │ gzip:   1.20 kB
+ℹ [ESM] dist/toolkits/index.js                2.46 kB │ gzip:   0.62 kB
+ℹ [ESM] dist/toolkits/base.js                 1.28 kB │ gzip:   0.68 kB
+ℹ [ESM] dist/telephony/index.js               0.55 kB │ gzip:   0.23 kB
+ℹ [ESM] dist/tools/sandbox-worker.js          0.53 kB │ gzip:   0.31 kB
+ℹ [ESM] dist/voice-agent-BsNTBTfW.js        241.59 kB │ gzip:  61.43 kB
+ℹ [ESM] dist/operation-usage-BFMXb-aP.js    110.05 kB │ gzip:  26.39 kB
+ℹ [ESM] dist/usage-normalizers-UlO3Ag9v.js   36.19 kB │ gzip:   8.82 kB
+ℹ [ESM] dist/telephony-B-NGacpe.js           32.85 kB │ gzip:   7.68 kB
+ℹ [ESM] dist/mcp-client-BEsxGicQ.js          27.02 kB │ gzip:   7.13 kB
+ℹ [ESM] dist/jev-sdk-dGvgHlH-.js              8.62 kB │ gzip:   2.78 kB
+ℹ [ESM] dist/path-safety-BIIN-sn1.js          3.35 kB │ gzip:   1.40 kB
+ℹ [ESM] dist/lifecycle-BHnCuwxv.js            3.18 kB │ gzip:   1.25 kB
+ℹ [ESM] dist/schema-Bp81CJFV.js               0.48 kB │ gzip:   0.22 kB
+ℹ [ESM] dist/types-WsnhQeJK.js                0.47 kB │ gzip:   0.28 kB
+ℹ [ESM] 50 files, total: 1.33 MB
+[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/agent/agent.ts is dynamically imported by src/agent/subagent.ts but also statically imported by src/agent/factory.ts, src/index.ts, dynamic import will not move module into another chunk.
+
+[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/cache/semantic-cache.ts is dynamically imported by src/agent/agent.ts but also statically imported by src/index.ts, dynamic import will not move module into another chunk.
+
+[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0msrc/webhooks/webhook-manager.ts is dynamically imported by src/agent/agent.ts but also statically imported by src/index.ts, dynamic import will not move module into another chunk.
+
+✔ Build complete in 137ms
+Generated 284 CommonJS declarations.
+
+> @agentium/harness@4.8.2 build
+> tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs
+
+ℹ tsdown v0.23.0 powered by rolldown v1.2.12
+ℹ config file: /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/tsdown.config.ts
+ℹ entry: src/index.ts, src/testing.ts
+ℹ target: node22.18
+ℹ tsconfig: tsconfig.json
+ℹ Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ Cleaning 98 files
+ℹ [ESM] dist/index.js                 61.38 kB │ gzip: 16.44 kB
+ℹ [ESM] dist/testing.js                8.38 kB │ gzip:  2.93 kB
+ℹ [ESM] dist/definition-B2dQY2op.js  160.67 kB │ gzip: 38.24 kB
+ℹ [ESM] 3 files, total: 230.43 kB
+✔ Build complete in 32ms
+ℹ [CJS] dist/index.cjs                 63.14 kB │ gzip: 16.45 kB
+ℹ [CJS] dist/testing.cjs                8.64 kB │ gzip:  2.97 kB
+ℹ [CJS] dist/definition-DxpS4fjA.cjs  164.66 kB │ gzip: 38.40 kB
+ℹ [CJS] 3 files, total: 236.44 kB
+✔ Build complete in 32ms
+Generated 30 CommonJS declarations.
+
+> @agentium/transport@4.8.2 build
+> tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs
+
+ℹ tsdown v0.23.0 powered by rolldown v1.2.12
+ℹ config file: /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/tsdown.config.ts
+ℹ entry: src/index.ts
+ℹ target: node22.18
+ℹ tsconfig: tsconfig.json
+ℹ Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ Cleaning 91 files
+ℹ [ESM] dist/index.js  153.19 kB │ gzip: 35.96 kB
+ℹ [ESM] 1 files, total: 153.19 kB
+✔ Build complete in 34ms
+ℹ [CJS] dist/index.cjs  154.91 kB │ gzip: 36.19 kB
+ℹ [CJS] 1 files, total: 154.91 kB
+✔ Build complete in 34ms
+Generated 28 CommonJS declarations.
+
+> @agentium/queue@4.8.2 build
+> tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs
+
+ℹ tsdown v0.23.0 powered by rolldown v1.2.12
+ℹ config file: /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/tsdown.config.ts
+ℹ entry: src/index.ts
+ℹ target: node22.18
+ℹ tsconfig: tsconfig.json
+ℹ Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ Cleaning 23 files
+ℹ [ESM] dist/index.js  18.33 kB │ gzip: 5.01 kB
+ℹ [ESM] 1 files, total: 18.33 kB
+ℹ [CJS] dist/index.cjs  18.82 kB │ gzip: 5.11 kB
+ℹ [CJS] 1 files, total: 18.82 kB
+✔ Build complete in 19ms
+✔ Build complete in 18ms
+Generated 7 CommonJS declarations.
+
+> @agentium/browser@4.8.2 build
+> tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs
+
+ℹ tsdown v0.23.0 powered by rolldown v1.2.12
+ℹ config file: /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/tsdown.config.ts
+ℹ entry: src/index.ts
+ℹ target: node22.18
+ℹ tsconfig: tsconfig.json
+ℹ Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ Cleaning 29 files
+ℹ [CJS] dist/index.cjs  104.80 kB │ gzip: 31.22 kB
+ℹ [CJS] 1 files, total: 104.80 kB
+✔ Build complete in 18ms
+ℹ [ESM] dist/index.js  104.22 kB │ gzip: 31.14 kB
+ℹ [ESM] 1 files, total: 104.22 kB
+✔ Build complete in 19ms
+Generated 9 CommonJS declarations.
+
+> @agentium/eval@4.8.2 build
+> tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs
+
+ℹ tsdown v0.23.0 powered by rolldown v1.2.12
+ℹ config file: /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/tsdown.config.ts
+ℹ entry: src/index.ts
+ℹ target: node22.18
+ℹ tsconfig: tsconfig.json
+ℹ Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ Cleaning 80 files
+ℹ [ESM] dist/index.js  32.02 kB │ gzip: 8.72 kB
+ℹ [ESM] 1 files, total: 32.02 kB
+ℹ [CJS] dist/index.cjs  32.64 kB │ gzip: 8.85 kB
+ℹ [CJS] 1 files, total: 32.64 kB
+✔ Build complete in 20ms
+✔ Build complete in 20ms
+Generated 25 CommonJS declarations.
+
+> @agentium/observability@4.8.2 build
+> tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs
+
+ℹ tsdown v0.23.0 powered by rolldown v1.2.12
+ℹ config file: /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/tsdown.config.ts
+ℹ entry: src/index.ts
+ℹ target: node22.18
+ℹ tsconfig: tsconfig.json
+ℹ Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ Cleaning 60 files
+ℹ [ESM] dist/index.js  66.08 kB │ gzip: 17.27 kB
+ℹ [ESM] 1 files, total: 66.08 kB
+✔ Build complete in 19ms
+ℹ [CJS] dist/index.cjs  66.57 kB │ gzip: 17.37 kB
+ℹ [CJS] 1 files, total: 66.57 kB
+✔ Build complete in 19ms
+Generated 19 CommonJS declarations.
+
+> @agentium/admin@4.8.2 build
+> tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs
+
+ℹ tsdown v0.23.0 powered by rolldown v1.2.12
+ℹ config file: /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/tsdown.config.ts
+ℹ entry: src/index.ts
+ℹ target: node22.18
+ℹ tsconfig: tsconfig.json
+ℹ Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ Cleaning 26 files
+ℹ [ESM] dist/index.js  33.44 kB │ gzip: 5.75 kB
+ℹ [ESM] 1 files, total: 33.44 kB
+ℹ [CJS] dist/index.cjs  34.31 kB │ gzip: 5.87 kB
+ℹ [CJS] 1 files, total: 34.31 kB
+✔ Build complete in 16ms
+✔ Build complete in 16ms
+Generated 8 CommonJS declarations.
+
+> @agentium/edge@4.8.2 build
+> tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs
+
+ℹ tsdown v0.23.0 powered by rolldown v1.2.12
+ℹ config file: /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/tsdown.config.ts
+ℹ entry: src/index.ts
+ℹ target: node22.18
+ℹ tsconfig: tsconfig.json
+ℹ Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ Cleaning 47 files
+ℹ [ESM] dist/index.js  61.65 kB │ gzip: 15.16 kB
+ℹ [ESM] 1 files, total: 61.65 kB
+✔ Build complete in 20ms
+ℹ [CJS] dist/index.cjs  64.38 kB │ gzip: 15.76 kB
+ℹ [CJS] 1 files, total: 64.38 kB
+✔ Build complete in 20ms
+Generated 14 CommonJS declarations.
+
+> @agentium/cli@4.8.2 build
+> tsdown --config ../../tsdown.config.ts && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --pretty false && node ../../scripts/cjs-declarations.mjs
+
+ℹ tsdown v0.23.0 powered by rolldown v1.2.12
+ℹ config file: /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/tsdown.config.ts
+ℹ entry: src/index.ts, src/bin.ts
+ℹ target: node22.18
+ℹ tsconfig: tsconfig.json
+ℹ Build start
+
+ WARN  We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+ℹ Cleaning 25 files
+ℹ [ESM] Granting execute permission to dist/bin.js
+ℹ [CJS] Granting execute permission to dist/bin.cjs
+ℹ [ESM] dist/bin.js              1.85 kB │ gzip: 0.85 kB
+ℹ [ESM] dist/index.js            0.18 kB │ gzip: 0.14 kB
+ℹ [ESM] dist/skills-D64aTj-T.js  8.77 kB │ gzip: 3.43 kB
+ℹ [ESM] 3 files, total: 10.79 kB
+ℹ [CJS] dist/bin.cjs              1.94 kB │ gzip: 0.86 kB
+ℹ [CJS] dist/index.cjs            0.33 kB │ gzip: 0.20 kB
+ℹ [CJS] dist/skills-DRsgBzFT.cjs  9.49 kB │ gzip: 3.53 kB
+ℹ [CJS] 3 files, total: 11.76 kB
+✔ Build complete in 16ms
+✔ Build complete in 16ms
+Generated 6 CommonJS declarations.

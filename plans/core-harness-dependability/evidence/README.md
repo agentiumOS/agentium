@@ -1,0 +1,13 @@
+# Dependability implementation evidence
+
+The checked implementation is source commit `be98a75699f3651e4992dbcb9b6b29acaa513a8b`, compared with supplied-state snapshot `531013327a0f7136b4eb8446ff1b302bf6f9ca51`. All 96 implementation files match the hashes in [final-source-state.json](final-source-state.json). The follow-up documentation commit updates plan status and preserves this evidence; it does not change package source or guides.
+
+[gates.json](gates.json) records actual final commands, exit codes, counts and environment. Compiler logs are empty because the completed commands produced no diagnostics. The guide compiler inputs were exact copies of the three current TypeScript fences in `packages/harness/DEPENDABILITY.md`; their scratch copies are transient. Reproduce by extracting those fences to `.ts` files inside this checkout and applying the recorded strict NodeNext command.
+
+[final-review.md](final-review.md) records the fresh whole-branch approval and scoped correction review. [core-review.md](core-review.md) and [continuity-eval-review.md](continuity-eval-review.md) preserve earlier independent findings and closure. [final-fixes-report.md](final-fixes-report.md) records intended red failures and focused green verification; final rebuilt package behavior is in [final-packed-consumers.log](final-packed-consumers.log). [decision-ledger.md](decision-ledger.md) preserves all eleven rulings in chronological order.
+
+The implementation reports are historical records of each slice and its then-current checks. Their scratch paths, line numbers and intermediate failures describe that point in the task; they are not final-state claims. Final gate logs and the source manifest take precedence for the combined result. Additional intermediate logs were transient; selected final repair red/green logs are preserved here. Retained logs remove trailing whitespace and terminal blank lines only; diagnostic text and reported counts are unchanged.
+
+[original-preservation.json](original-preservation.json) compares the 790 captured original paths with their initial hashes, including deleted-file sentinels. It records 9 differing paths at the recorded audit timestamp; the original work remains active and may change afterward. The original and worktree files have different inodes and contents; separate native-continuation/input-recovery changes were not imported or reset. This audit is a reconciliation notice, not a claim that the original checkout remained byte-identical or a verification of that concurrent work.
+
+No live provider quality, production backend conformance, distributed ownership, cross-store atomic revocation, physical effect interruption, migration or release-readiness claim follows from these records.

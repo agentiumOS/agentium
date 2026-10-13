@@ -1,0 +1,91 @@
+{
+  "checked_original_files": 790,
+  "changed_original_files": [
+    "packages/harness/src/runtime/budget.ts",
+    "packages/core/src/agent/agent.ts",
+    "packages/core/src/agent/execution-services.ts",
+    "packages/core/src/agent/llm-loop.ts",
+    "packages/core/src/index.ts",
+    "packages/harness/src/drivers.ts",
+    "packages/harness/src/index.ts",
+    "packages/harness/src/runtime/driver.ts",
+    "packages/harness/src/runtime/input.ts"
+  ],
+  "observed_at_utc": "2026-10-13T01:49:19.414675+00:00",
+  "audit_scope": "790 captured paths, including deleted-file sentinels; newly added paths were not inventoried",
+  "disposition": "preserved separate original changes without import/reset; implementation verification applies only to isolated worktree",
+  "changes": [
+    {
+      "path": "packages/harness/src/runtime/budget.ts",
+      "expected_original_sha256": "b1d0b07f7072465d4f4c31084f834177dbb127536fb63557fd4dab45b2f401f3",
+      "observed_original_sha256": "a7d38ba5128fd480ffa7dec3b2da15bec623baee1422b2d95e855e4828e27021",
+      "worktree_sha256": "b1d0b07f7072465d4f4c31084f834177dbb127536fb63557fd4dab45b2f401f3",
+      "original_inode": 226047222,
+      "worktree_inode": 226281810
+    },
+    {
+      "path": "packages/core/src/agent/agent.ts",
+      "expected_original_sha256": "57ff66d5602e51c515340877fd1646bd0560b2fbdf28d4045f9cf72ae38dde9f",
+      "observed_original_sha256": "906e5d8e8bb02e1cd75440c8a55e2b2be6a62c2b2a1b0687bed7a0b138a75b6c",
+      "worktree_sha256": "21ae9eb6aea0e6e0d0a733d709d9985345b6063b42cdd949f04d35c62a6ab6f0",
+      "original_inode": 222280662,
+      "worktree_inode": 226281769
+    },
+    {
+      "path": "packages/core/src/agent/execution-services.ts",
+      "expected_original_sha256": "49f3f4965076fff70dd88e80900a32ae0577461032abaf671652cfe1854e7f07",
+      "observed_original_sha256": "6dc29c458d3e98dfb2af7300dfb08eb963f6dad2746fbb92e27071e3c3b3d6cd",
+      "worktree_sha256": "cc5294b6ae4b422c9953fcbcba6cebee5d2e235450c4d3a21b359651546d2514",
+      "original_inode": 222280664,
+      "worktree_inode": 226281770
+    },
+    {
+      "path": "packages/core/src/agent/llm-loop.ts",
+      "expected_original_sha256": "1ce9397c3d1449c825bcfca07d5866be5018928aa188cd2638799fbc84962de2",
+      "observed_original_sha256": "0ea4704c1cf87560b0d59dc360dfedff3c54c47b4295efc15015728411d7bdac",
+      "worktree_sha256": "6225fde5c2cb27eac4d49b7871b0f26a7c382295f2ceea191e890c95389a3050",
+      "original_inode": 222280665,
+      "worktree_inode": 226281771
+    },
+    {
+      "path": "packages/core/src/index.ts",
+      "expected_original_sha256": "ab68ee919898c18e4c232c0e22edc306e07c31163b27f03857396fa498c696eb",
+      "observed_original_sha256": "2f645ec6af13e5efad8481865a3839ad569dc3a5be15c4f45fc96a74714ad5b8",
+      "worktree_sha256": "4cd9d5516282074f40e07d82cb1bbd144e720e0339bd610f00e84d1a522adf70",
+      "original_inode": 222280716,
+      "worktree_inode": 226281773
+    },
+    {
+      "path": "packages/harness/src/drivers.ts",
+      "expected_original_sha256": "e4853a330f816076d9b5c1ea1d35f9411db15af46eff243d18faaaa97704fee9",
+      "observed_original_sha256": "732a596cae689df305e612bd1dd534473a7a122a7123d0afc6c73a2946505e6a",
+      "worktree_sha256": "1fcc0f6fd97d1ae9d4d02009726b3e173c4486466438ace59a516a70eaea348a",
+      "original_inode": 222280798,
+      "worktree_inode": 226281082
+    },
+    {
+      "path": "packages/harness/src/index.ts",
+      "expected_original_sha256": "43386afb9918260b79160951a2a59779159999563a41b729e415236bea3ef3eb",
+      "observed_original_sha256": "3e0eff1fbc39e78209be18273fd864cc0b72703d1ddd0f14cdaf2882f482b596",
+      "worktree_sha256": "509a349129592953e7885e8f1b76868a32f874a435ff10d14ae14c223e6b4ae1",
+      "original_inode": 222280799,
+      "worktree_inode": 226281785
+    },
+    {
+      "path": "packages/harness/src/runtime/driver.ts",
+      "expected_original_sha256": "fc9c16bf77968870cad50e25997131266d00080dc060ecaf8463da35ce1dfe6c",
+      "observed_original_sha256": "65a80f413d78f24e1e90e4fd7850314528ca3ecead42d17f0613f2c9aa158aec",
+      "worktree_sha256": "54721718753f4e8185ddb6efc097ea78a643baf9e0b64ef4b9451a917900102c",
+      "original_inode": 222280803,
+      "worktree_inode": 226281787
+    },
+    {
+      "path": "packages/harness/src/runtime/input.ts",
+      "expected_original_sha256": "3c8f457daa0d36552df0db2d0c07f61684c22690693cc4b25e5f486c08c8477f",
+      "observed_original_sha256": "90f40226830e5d4d87079601f8602d88f7a6d950d33c482f30703ab6d9adf3d1",
+      "worktree_sha256": "3c8f457daa0d36552df0db2d0c07f61684c22690693cc4b25e5f486c08c8477f",
+      "original_inode": 222280805,
+      "worktree_inode": 226281790
+    }
+  ]
+}
