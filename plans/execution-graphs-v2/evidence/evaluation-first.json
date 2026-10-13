@@ -1,0 +1,388 @@
+{
+  "fixtureVersion": "agentium.graph.offline-paired/v1",
+  "providerId": "agentium/offline-graph-evaluation",
+  "modelId": "shared-canonical-policy/v1",
+  "createdAt": "2026-10-13T04:03:37.508Z",
+  "baseRevision": "e9551e3690bdf274fc66f82222851fe9d06d8e97",
+  "sourceDigests": {
+    "packages/harness/src/runtime/__tests__/execution-graph.evaluation.test.ts": "98c596369cd4de73fa9ac31a2a34f50b6937e5473d43e09aa7465fad4bd9ac34",
+    "packages/harness/src/runtime/execution-graph.ts": "e78076349e3c7c4032f43268306a390020d958fb73df353e518ef67627797797",
+    "packages/harness/src/runtime/execution-planner.ts": "c385cc7834b8f6b9b03a37d685d30cc8f51c9741d34abcc1dd27fa4ec870fb89",
+    "packages/harness/src/runtime/plan-stream.ts": "27c6b384e1776b88d9d302a968df3e6127fac4f9409cc5508f75772fa2570520",
+    "packages/harness/src/runtime/execution-proposal.ts": "11b58875348877a454f47e00b31264196835b18d8a5c8ccaec893abb49e8f50d",
+    "packages/harness/src/runtime/graph-recovery.ts": "72fdf2373302c618e31923b5da7922ad927447d06b17a90cc01ee66c02b66f55",
+    "packages/core/src/workflow/durable-graph.ts": "9d12345ed4220848164418d43fad6eb8825a5dcce90f0536f7f09c746cbe625d",
+    "packages/core/src/agent/root-execution.ts": "35b52866bb7320dc27969aa25831060852b027b32f5c26031b162c6b20e59594",
+    "packages/harness/src/runtime/budget.ts": "dc3f75731ef08868c5bcaad67477b667ea69e3815dcab62c25dd9dd56ae447ea",
+    "packages/harness/src/runtime/driver.ts": "413a30a90d5c6d11215ccbf7986d5e525d3f9d51009b56c682e83fbdd4003241"
+  },
+  "matchedBudgets": {
+    "maxModelCalls": 5,
+    "maxToolCalls": 6,
+    "maxTokens": 12000
+  },
+  "matchedRootLimits": {
+    "maxConcurrentWork": 2,
+    "maxExpandedNodes": 8,
+    "maxWorkAttempts": 12,
+    "maxPlanRevisions": 3
+  },
+  "repeatsPerCase": 1,
+  "plannedCases": 4,
+  "plannedModes": 3,
+  "measurements": [
+    {
+      "modelCalls": 3,
+      "tokens": 602,
+      "toolCalls": 3,
+      "addCalls": 1,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:left",
+        "read:right",
+        "add"
+      ],
+      "caseId": "parallel_sum",
+      "mode": "agent_loop",
+      "outcome": "completed",
+      "output": {
+        "value": 29
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 27.53862499999991,
+      "admittedModelCalls": 3,
+      "admittedToolCalls": 3,
+      "admittedTokens": 602,
+      "unknownUsageCalls": 0,
+      "failureEvidence": []
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 845,
+      "toolCalls": 3,
+      "addCalls": 1,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:left",
+        "read:right",
+        "add"
+      ],
+      "caseId": "parallel_sum",
+      "mode": "complete_dag",
+      "outcome": "completed",
+      "output": {
+        "left": {
+          "value": 11
+        },
+        "right": {
+          "value": 18
+        },
+        "sum": {
+          "value": 29
+        }
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 56.424833000000035,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 3,
+      "admittedTokens": 845,
+      "unknownUsageCalls": 0,
+      "failureEvidence": []
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 898,
+      "toolCalls": 3,
+      "addCalls": 1,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:left",
+        "read:right",
+        "add"
+      ],
+      "caseId": "parallel_sum",
+      "mode": "stream_dag",
+      "outcome": "completed",
+      "output": {
+        "left": {
+          "value": 11
+        },
+        "right": {
+          "value": 18
+        },
+        "sum": {
+          "value": 29
+        }
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 50.41412500000001,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 3,
+      "admittedTokens": 898,
+      "unknownUsageCalls": 0,
+      "failureEvidence": []
+    },
+    {
+      "modelCalls": 4,
+      "tokens": 807,
+      "toolCalls": 3,
+      "addCalls": 2,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:base",
+        "add",
+        "add"
+      ],
+      "caseId": "chained_sum",
+      "mode": "agent_loop",
+      "outcome": "completed",
+      "output": {
+        "value": 12
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 2.558416999999963,
+      "admittedModelCalls": 4,
+      "admittedToolCalls": 3,
+      "admittedTokens": 807,
+      "unknownUsageCalls": 0,
+      "failureEvidence": []
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 859,
+      "toolCalls": 3,
+      "addCalls": 2,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:base",
+        "add",
+        "add"
+      ],
+      "caseId": "chained_sum",
+      "mode": "complete_dag",
+      "outcome": "completed",
+      "output": {
+        "base": {
+          "value": 4
+        },
+        "plus_three": {
+          "value": 7
+        },
+        "sum": {
+          "value": 12
+        }
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 38.42829199999994,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 3,
+      "admittedTokens": 859,
+      "unknownUsageCalls": 0,
+      "failureEvidence": []
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 912,
+      "toolCalls": 3,
+      "addCalls": 2,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:base",
+        "add",
+        "add"
+      ],
+      "caseId": "chained_sum",
+      "mode": "stream_dag",
+      "outcome": "completed",
+      "output": {
+        "base": {
+          "value": 4
+        },
+        "plus_three": {
+          "value": 7
+        },
+        "sum": {
+          "value": 12
+        }
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 55.393749999999955,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 3,
+      "admittedTokens": 912,
+      "unknownUsageCalls": 0,
+      "failureEvidence": []
+    },
+    {
+      "modelCalls": 2,
+      "tokens": 292,
+      "toolCalls": 1,
+      "addCalls": 0,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:unavailable"
+      ],
+      "caseId": "failed_prerequisite",
+      "mode": "agent_loop",
+      "outcome": "completed",
+      "output": {
+        "status": "blocked"
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 1.205959000000007,
+      "admittedModelCalls": 2,
+      "admittedToolCalls": 1,
+      "admittedTokens": 292,
+      "unknownUsageCalls": 0,
+      "failureEvidence": []
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 817,
+      "toolCalls": 1,
+      "addCalls": 0,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:unavailable"
+      ],
+      "caseId": "failed_prerequisite",
+      "mode": "complete_dag",
+      "outcome": "failed",
+      "output": null,
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 21.68974999999989,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 1,
+      "admittedTokens": 817,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [
+        "Error: One or more Workflow steps failed",
+        "Error: Fixture source unavailable",
+        "Error: Fixture source unavailable"
+      ],
+      "failure": "One or more Workflow steps failed"
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 870,
+      "toolCalls": 1,
+      "addCalls": 0,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:unavailable"
+      ],
+      "caseId": "failed_prerequisite",
+      "mode": "stream_dag",
+      "outcome": "failed",
+      "output": null,
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 31.683583,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 1,
+      "admittedTokens": 870,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [
+        "Error: One or more Workflow steps failed",
+        "Error: Fixture source unavailable",
+        "Error: Fixture source unavailable"
+      ],
+      "failure": "One or more Workflow steps failed"
+    },
+    {
+      "modelCalls": 2,
+      "tokens": 331,
+      "toolCalls": 0,
+      "addCalls": 0,
+      "unsafeProposals": 1,
+      "unsafeEffects": 0,
+      "toolOrder": [],
+      "caseId": "unapproved_write",
+      "mode": "agent_loop",
+      "outcome": "completed",
+      "output": {
+        "status": "blocked"
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 1,
+      "admittedModelCalls": 2,
+      "admittedToolCalls": 0,
+      "admittedTokens": 331,
+      "unknownUsageCalls": 0,
+      "failureEvidence": []
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 788,
+      "toolCalls": 0,
+      "addCalls": 0,
+      "unsafeProposals": 1,
+      "unsafeEffects": 0,
+      "toolOrder": [],
+      "caseId": "unapproved_write",
+      "mode": "complete_dag",
+      "outcome": "running",
+      "output": null,
+      "correct": false,
+      "dependencyFailures": 0,
+      "wallTimeMs": 14.608834000000002,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 0,
+      "admittedTokens": 788,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [
+        "DurableRecoveryRequiredError: Execution planning interrupted; retained proposals and limits require bounded continuation"
+      ]
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 841,
+      "toolCalls": 0,
+      "addCalls": 0,
+      "unsafeProposals": 1,
+      "unsafeEffects": 0,
+      "toolOrder": [],
+      "caseId": "unapproved_write",
+      "mode": "stream_dag",
+      "outcome": "running",
+      "output": null,
+      "correct": false,
+      "dependencyFailures": 0,
+      "wallTimeMs": 12.276666000000091,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 0,
+      "admittedTokens": 1808,
+      "unknownUsageCalls": 1,
+      "failureEvidence": [
+        "DurableRecoveryRequiredError: Execution planning interrupted; retained proposals and limits require bounded continuation"
+      ]
+    }
+  ],
+  "paidCalls": 0,
+  "externalEffects": 0,
+  "labels": "Executable numeric outputs or appropriate refusal; no model judge.",
+  "limitations": [
+    "One deterministic offline policy renders a shared canonical fixture plan into the host protocol; this is runtime conformance, not live planning quality.",
+    "Tokens use the installed local tokenizer/fallback via countTokens and are synthetic provider-reported usage, not billed tokens.",
+    "Wall time includes local SDK, journaling, validation and process scheduling; no provider network latency is simulated.",
+    "Four paired cases and one repeat per mode do not establish statistical production performance."
+  ]
+}

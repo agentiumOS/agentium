@@ -1,0 +1,78 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/execution-planning.integration.test.ts (4 tests | 4 failed) 101ms
+     × corrects an invalid complete proposal before dispatch and records both proposals 90ms
+     × executes a committed prefix while streaming and supersedes only the pending dependent 3ms
+     × does not deadlock at capacity one while the planner owns its stream slot 2ms
+     × drains effect evidence but does not declare an interrupted committed prefix successful 4ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-planning.integration.test.ts > planned graph integration > corrects an invalid complete proposal before dispatch and records both proposals
+Error: Planner integration is pending
+ ❯ ExecutionGraphRuntime.episode packages/harness/src/runtime/execution-graph.ts:309:32
+    307|     ports: ReturnType<typeof createGraphRecoveryPorts>,
+    308|   ): Promise<DurableJSON> {
+    309|     if (program.planner) throw new Error("Planner integration is pendi…
+       |                                ^
+    310|     const validated = validateExecutionPlan(program.plan, this.options…
+    311|     const committed =
+ ❯ Object.start packages/harness/src/runtime/execution-graph.ts:254:37
+ ❯ packages/harness/src/runtime/driver.ts:1717:39
+ ❯ ExecutionGraphRuntime.execute packages/harness/src/runtime/execution-graph.ts:279:20
+ ❯ ExecutionGraphRuntime.run packages/harness/src/runtime/execution-graph.ts:205:5
+ ❯ packages/harness/src/runtime/__tests__/execution-planning.integration.test.ts:26:18
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-planning.integration.test.ts > planned graph integration > executes a committed prefix while streaming and supersedes only the pending dependent
+Error: Planner integration is pending
+ ❯ ExecutionGraphRuntime.episode packages/harness/src/runtime/execution-graph.ts:309:32
+    307|     ports: ReturnType<typeof createGraphRecoveryPorts>,
+    308|   ): Promise<DurableJSON> {
+    309|     if (program.planner) throw new Error("Planner integration is pendi…
+       |                                ^
+    310|     const validated = validateExecutionPlan(program.plan, this.options…
+    311|     const committed =
+ ❯ Object.start packages/harness/src/runtime/execution-graph.ts:254:37
+ ❯ packages/harness/src/runtime/driver.ts:1717:39
+ ❯ ExecutionGraphRuntime.execute packages/harness/src/runtime/execution-graph.ts:279:20
+ ❯ ExecutionGraphRuntime.run packages/harness/src/runtime/execution-graph.ts:205:5
+ ❯ packages/harness/src/runtime/__tests__/execution-planning.integration.test.ts:36:72
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-planning.integration.test.ts > planned graph integration > does not deadlock at capacity one while the planner owns its stream slot
+Error: Planner integration is pending
+ ❯ ExecutionGraphRuntime.episode packages/harness/src/runtime/execution-graph.ts:309:32
+    307|     ports: ReturnType<typeof createGraphRecoveryPorts>,
+    308|   ): Promise<DurableJSON> {
+    309|     if (program.planner) throw new Error("Planner integration is pendi…
+       |                                ^
+    310|     const validated = validateExecutionPlan(program.plan, this.options…
+    311|     const committed =
+ ❯ Object.start packages/harness/src/runtime/execution-graph.ts:254:37
+ ❯ packages/harness/src/runtime/driver.ts:1717:39
+ ❯ ExecutionGraphRuntime.execute packages/harness/src/runtime/execution-graph.ts:279:20
+ ❯ ExecutionGraphRuntime.run packages/harness/src/runtime/execution-graph.ts:205:5
+ ❯ packages/harness/src/runtime/__tests__/execution-planning.integration.test.ts:45:67
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-planning.integration.test.ts > planned graph integration > drains effect evidence but does not declare an interrupted committed prefix successful
+AssertionError: expected 'failed' to be 'running' // Object.is equality
+
+Expected: "running"
+Received: "failed"
+
+ ❯ packages/harness/src/runtime/__tests__/execution-planning.integration.test.ts:51:133
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed (4)
+   Start at  09:28:46
+   Duration  869ms (transform 442ms, setup 0ms, import 602ms, tests 101ms, environment 0ms)

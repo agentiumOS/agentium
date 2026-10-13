@@ -1,0 +1,850 @@
+{
+  "fixtureVersion": "agentium.graph.offline-paired/v1",
+  "providerId": "agentium/offline-graph-evaluation",
+  "modelId": "shared-canonical-policy/v1",
+  "createdAt": "2026-10-13T04:22:44.940Z",
+  "baseRevision": "e9551e3690bdf274fc66f82222851fe9d06d8e97",
+  "sourceDigests": {
+    "packages/harness/src/runtime/__tests__/execution-graph.evaluation.test.ts": "50eae9c4f19c789b91e9541857e639139cb285e27071f74884b6679cb4e3ba3f",
+    "packages/harness/src/runtime/execution-graph.ts": "5b9d20d374e7379b0b25742c1cb63f59ea3688fd9b802a41f15aab7f843f7826",
+    "packages/harness/src/runtime/execution-planner.ts": "23d63375dfca43cd67c3df3025bd4916df551707a2933e47fdfac589cee035cb",
+    "packages/harness/src/runtime/plan-stream.ts": "3ba3de0bc19794186d18f9b02e3510addffb0a2df984655ab68973579de526a6",
+    "packages/harness/src/runtime/execution-proposal.ts": "65c1823180ab1caa9d1279dfc5d182e93b4e024c1c8f81f0eec06e03e156d19a",
+    "packages/harness/src/runtime/graph-recovery.ts": "cea84209610f38c679bb3b16c083743f8f4ff55fd8e400539c7f0008fe242be0",
+    "packages/core/src/workflow/durable-graph.ts": "72ff52fbcfefcc24def2343b468f09bef917cfd7144b46957a0161e4605dcacc",
+    "packages/core/src/agent/root-execution.ts": "98798d695a1e07adfe4f3f1644a311f6b16cb5fb3c2f106b9ff3c9a0e0a64c9b",
+    "packages/harness/src/runtime/budget.ts": "dc3f75731ef08868c5bcaad67477b667ea69e3815dcab62c25dd9dd56ae447ea",
+    "packages/harness/src/runtime/driver.ts": "f116b278f500e4e0de1db8eda36c1e00abbdb4d83385c94bb3d2379bee8f57d1"
+  },
+  "matchedBudgets": {
+    "maxModelCalls": 5,
+    "maxToolCalls": 6,
+    "maxTokens": 12000
+  },
+  "matchedRootLimits": {
+    "maxConcurrentWork": 2,
+    "maxExpandedNodes": 8,
+    "maxWorkAttempts": 12,
+    "maxPlanRevisions": 3
+  },
+  "repeatsPerCase": 1,
+  "plannedCases": 4,
+  "plannedModes": 3,
+  "measurements": [
+    {
+      "modelCalls": 3,
+      "tokens": 956,
+      "toolCalls": 3,
+      "addCalls": 1,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:left",
+        "read:right",
+        "add"
+      ],
+      "caseId": "parallel_sum",
+      "mode": "agent_loop",
+      "outcome": "completed",
+      "output": {
+        "value": 29
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 25.398250000000075,
+      "admittedModelCalls": 3,
+      "admittedToolCalls": 3,
+      "admittedTokens": 956,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [],
+      "budgetEvidence": {
+        "tokens": {
+          "limit": 12000,
+          "used": 956,
+          "reserved": 0,
+          "remaining": 11044,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 11044
+        },
+        "modelCalls": {
+          "limit": 5,
+          "used": 3,
+          "reserved": 0,
+          "remaining": 2,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 2
+        },
+        "toolCalls": {
+          "limit": 6,
+          "used": 3,
+          "reserved": 0,
+          "remaining": 3,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 3
+        },
+        "unknownUsageCalls": 0
+      },
+      "rootEvidence": {
+        "active": 0,
+        "queued": 0,
+        "highWater": 2,
+        "expandedNodes": 0,
+        "workAttempts": 6,
+        "planRevisions": 0
+      }
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 894,
+      "toolCalls": 3,
+      "addCalls": 1,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:left",
+        "read:right",
+        "add"
+      ],
+      "caseId": "parallel_sum",
+      "mode": "complete_dag",
+      "outcome": "completed",
+      "output": {
+        "left": {
+          "value": 11
+        },
+        "right": {
+          "value": 18
+        },
+        "sum": {
+          "value": 29
+        }
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 72.69183399999997,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 3,
+      "admittedTokens": 894,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [],
+      "budgetEvidence": {
+        "activeCalls": 0,
+        "finishingCalls": 0,
+        "finishingTokens": 0,
+        "limits": {
+          "maxModelCalls": 5,
+          "maxTokens": 12000,
+          "maxToolCalls": 6
+        },
+        "pendingFinishingCalls": 0,
+        "pendingFinishingTokens": 0,
+        "reservedCalls": 0,
+        "reservedTokens": 0,
+        "schemaVersion": 1,
+        "toolAdmissionIds": [
+          "node:sha256:a8a5164e7db7bff54c57047d7ca5a7dfa44dd0b9132da7e20ea1f8c7a8c33cfe/operation",
+          "node:sha256:02b3dea2374db19c282cdaded9819a5c6c761088b77dc42505cf5d4396abab1f/operation",
+          "node:sha256:0a579d2433b768719d03a188442cc5fe822c1edb6cf04e4f822cf5ec04f63407/operation"
+        ],
+        "unknownUsageCalls": 0,
+        "usedCalls": 1,
+        "usedTokens": 894,
+        "usedTools": 3
+      },
+      "rootEvidence": {
+        "expandedIds": [
+          "node:sha256:a8a5164e7db7bff54c57047d7ca5a7dfa44dd0b9132da7e20ea1f8c7a8c33cfe",
+          "node:sha256:02b3dea2374db19c282cdaded9819a5c6c761088b77dc42505cf5d4396abab1f",
+          "node:sha256:0a579d2433b768719d03a188442cc5fe822c1edb6cf04e4f822cf5ec04f63407"
+        ],
+        "limits": {
+          "maxConcurrentWork": 2,
+          "maxExpandedNodes": 8,
+          "maxPlanRevisions": 3,
+          "maxWorkAttempts": 12
+        },
+        "revisionIds": [
+          "root/1/sha256:f24fa97a12ed49ec165db1d5c13a91badde3a3fd72db77c747d48596fcde5695"
+        ],
+        "schemaVersion": 1,
+        "workAttempts": 4
+      }
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 947,
+      "toolCalls": 3,
+      "addCalls": 1,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:left",
+        "read:right",
+        "add"
+      ],
+      "caseId": "parallel_sum",
+      "mode": "stream_dag",
+      "outcome": "completed",
+      "output": {
+        "left": {
+          "value": 11
+        },
+        "right": {
+          "value": 18
+        },
+        "sum": {
+          "value": 29
+        }
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 88.455334,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 3,
+      "admittedTokens": 947,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [],
+      "budgetEvidence": {
+        "activeCalls": 0,
+        "finishingCalls": 0,
+        "finishingTokens": 0,
+        "limits": {
+          "maxModelCalls": 5,
+          "maxTokens": 12000,
+          "maxToolCalls": 6
+        },
+        "pendingFinishingCalls": 0,
+        "pendingFinishingTokens": 0,
+        "reservedCalls": 0,
+        "reservedTokens": 0,
+        "schemaVersion": 1,
+        "toolAdmissionIds": [
+          "node:sha256:a8a5164e7db7bff54c57047d7ca5a7dfa44dd0b9132da7e20ea1f8c7a8c33cfe/operation",
+          "node:sha256:02b3dea2374db19c282cdaded9819a5c6c761088b77dc42505cf5d4396abab1f/operation",
+          "node:sha256:0a579d2433b768719d03a188442cc5fe822c1edb6cf04e4f822cf5ec04f63407/operation"
+        ],
+        "unknownUsageCalls": 0,
+        "usedCalls": 1,
+        "usedTokens": 947,
+        "usedTools": 3
+      },
+      "rootEvidence": {
+        "expandedIds": [
+          "node:sha256:a8a5164e7db7bff54c57047d7ca5a7dfa44dd0b9132da7e20ea1f8c7a8c33cfe",
+          "node:sha256:02b3dea2374db19c282cdaded9819a5c6c761088b77dc42505cf5d4396abab1f",
+          "node:sha256:0a579d2433b768719d03a188442cc5fe822c1edb6cf04e4f822cf5ec04f63407"
+        ],
+        "limits": {
+          "maxConcurrentWork": 2,
+          "maxExpandedNodes": 8,
+          "maxPlanRevisions": 3,
+          "maxWorkAttempts": 12
+        },
+        "revisionIds": [
+          "root/1/sha256:f24fa97a12ed49ec165db1d5c13a91badde3a3fd72db77c747d48596fcde5695"
+        ],
+        "schemaVersion": 1,
+        "workAttempts": 4
+      }
+    },
+    {
+      "modelCalls": 4,
+      "tokens": 1277,
+      "toolCalls": 3,
+      "addCalls": 2,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:base",
+        "add",
+        "add"
+      ],
+      "caseId": "chained_sum",
+      "mode": "agent_loop",
+      "outcome": "completed",
+      "output": {
+        "value": 12
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 2.5184169999999995,
+      "admittedModelCalls": 4,
+      "admittedToolCalls": 3,
+      "admittedTokens": 1277,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [],
+      "budgetEvidence": {
+        "tokens": {
+          "limit": 12000,
+          "used": 1277,
+          "reserved": 0,
+          "remaining": 10723,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 10723
+        },
+        "modelCalls": {
+          "limit": 5,
+          "used": 4,
+          "reserved": 0,
+          "remaining": 1,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 1
+        },
+        "toolCalls": {
+          "limit": 6,
+          "used": 3,
+          "reserved": 0,
+          "remaining": 3,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 3
+        },
+        "unknownUsageCalls": 0
+      },
+      "rootEvidence": {
+        "active": 0,
+        "queued": 0,
+        "highWater": 1,
+        "expandedNodes": 0,
+        "workAttempts": 7,
+        "planRevisions": 0
+      }
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 908,
+      "toolCalls": 3,
+      "addCalls": 2,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:base",
+        "add",
+        "add"
+      ],
+      "caseId": "chained_sum",
+      "mode": "complete_dag",
+      "outcome": "completed",
+      "output": {
+        "base": {
+          "value": 4
+        },
+        "plus_three": {
+          "value": 7
+        },
+        "sum": {
+          "value": 12
+        }
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 40.16179199999999,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 3,
+      "admittedTokens": 908,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [],
+      "budgetEvidence": {
+        "activeCalls": 0,
+        "finishingCalls": 0,
+        "finishingTokens": 0,
+        "limits": {
+          "maxModelCalls": 5,
+          "maxTokens": 12000,
+          "maxToolCalls": 6
+        },
+        "pendingFinishingCalls": 0,
+        "pendingFinishingTokens": 0,
+        "reservedCalls": 0,
+        "reservedTokens": 0,
+        "schemaVersion": 1,
+        "toolAdmissionIds": [
+          "node:sha256:67a7f20d4838a813eade29a0d5d4c17bf04af6e91cae6e97fe634d3724bffe6e/operation",
+          "node:sha256:05a2330200f0a31b3b756156891056636a3bdbbf9c86339cbc0c13fb474266da/operation",
+          "node:sha256:fec92fafcf9407248db612bc981e79517cd4892b39c5fc14409c3fc8d07e4326/operation"
+        ],
+        "unknownUsageCalls": 0,
+        "usedCalls": 1,
+        "usedTokens": 908,
+        "usedTools": 3
+      },
+      "rootEvidence": {
+        "expandedIds": [
+          "node:sha256:67a7f20d4838a813eade29a0d5d4c17bf04af6e91cae6e97fe634d3724bffe6e",
+          "node:sha256:05a2330200f0a31b3b756156891056636a3bdbbf9c86339cbc0c13fb474266da",
+          "node:sha256:fec92fafcf9407248db612bc981e79517cd4892b39c5fc14409c3fc8d07e4326"
+        ],
+        "limits": {
+          "maxConcurrentWork": 2,
+          "maxExpandedNodes": 8,
+          "maxPlanRevisions": 3,
+          "maxWorkAttempts": 12
+        },
+        "revisionIds": [
+          "root/1/sha256:c855dd4821946dcbb523cd5bb8d91451fd5d994a3abee410f92a00bd249b2f05"
+        ],
+        "schemaVersion": 1,
+        "workAttempts": 4
+      }
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 961,
+      "toolCalls": 3,
+      "addCalls": 2,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:base",
+        "add",
+        "add"
+      ],
+      "caseId": "chained_sum",
+      "mode": "stream_dag",
+      "outcome": "completed",
+      "output": {
+        "base": {
+          "value": 4
+        },
+        "plus_three": {
+          "value": 7
+        },
+        "sum": {
+          "value": 12
+        }
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 60.521290999999906,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 3,
+      "admittedTokens": 961,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [],
+      "budgetEvidence": {
+        "activeCalls": 0,
+        "finishingCalls": 0,
+        "finishingTokens": 0,
+        "limits": {
+          "maxModelCalls": 5,
+          "maxTokens": 12000,
+          "maxToolCalls": 6
+        },
+        "pendingFinishingCalls": 0,
+        "pendingFinishingTokens": 0,
+        "reservedCalls": 0,
+        "reservedTokens": 0,
+        "schemaVersion": 1,
+        "toolAdmissionIds": [
+          "node:sha256:67a7f20d4838a813eade29a0d5d4c17bf04af6e91cae6e97fe634d3724bffe6e/operation",
+          "node:sha256:05a2330200f0a31b3b756156891056636a3bdbbf9c86339cbc0c13fb474266da/operation",
+          "node:sha256:fec92fafcf9407248db612bc981e79517cd4892b39c5fc14409c3fc8d07e4326/operation"
+        ],
+        "unknownUsageCalls": 0,
+        "usedCalls": 1,
+        "usedTokens": 961,
+        "usedTools": 3
+      },
+      "rootEvidence": {
+        "expandedIds": [
+          "node:sha256:67a7f20d4838a813eade29a0d5d4c17bf04af6e91cae6e97fe634d3724bffe6e",
+          "node:sha256:05a2330200f0a31b3b756156891056636a3bdbbf9c86339cbc0c13fb474266da",
+          "node:sha256:fec92fafcf9407248db612bc981e79517cd4892b39c5fc14409c3fc8d07e4326"
+        ],
+        "limits": {
+          "maxConcurrentWork": 2,
+          "maxExpandedNodes": 8,
+          "maxPlanRevisions": 3,
+          "maxWorkAttempts": 12
+        },
+        "revisionIds": [
+          "root/1/sha256:c855dd4821946dcbb523cd5bb8d91451fd5d994a3abee410f92a00bd249b2f05"
+        ],
+        "schemaVersion": 1,
+        "workAttempts": 4
+      }
+    },
+    {
+      "modelCalls": 2,
+      "tokens": 527,
+      "toolCalls": 1,
+      "addCalls": 0,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:unavailable"
+      ],
+      "caseId": "failed_prerequisite",
+      "mode": "agent_loop",
+      "outcome": "completed",
+      "output": {
+        "status": "blocked"
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 1.830208999999968,
+      "admittedModelCalls": 2,
+      "admittedToolCalls": 1,
+      "admittedTokens": 527,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [],
+      "budgetEvidence": {
+        "tokens": {
+          "limit": 12000,
+          "used": 527,
+          "reserved": 0,
+          "remaining": 11473,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 11473
+        },
+        "modelCalls": {
+          "limit": 5,
+          "used": 2,
+          "reserved": 0,
+          "remaining": 3,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 3
+        },
+        "toolCalls": {
+          "limit": 6,
+          "used": 1,
+          "reserved": 0,
+          "remaining": 5,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 5
+        },
+        "unknownUsageCalls": 0
+      },
+      "rootEvidence": {
+        "active": 0,
+        "queued": 0,
+        "highWater": 1,
+        "expandedNodes": 0,
+        "workAttempts": 3,
+        "planRevisions": 0
+      }
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 866,
+      "toolCalls": 1,
+      "addCalls": 0,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:unavailable"
+      ],
+      "caseId": "failed_prerequisite",
+      "mode": "complete_dag",
+      "outcome": "failed",
+      "output": null,
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 28.358249999999998,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 1,
+      "admittedTokens": 866,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [
+        "Error: One or more Workflow steps failed",
+        "Error: Fixture source unavailable",
+        "Error: Fixture source unavailable"
+      ],
+      "budgetEvidence": {
+        "activeCalls": 0,
+        "finishingCalls": 0,
+        "finishingTokens": 0,
+        "limits": {
+          "maxModelCalls": 5,
+          "maxTokens": 12000,
+          "maxToolCalls": 6
+        },
+        "pendingFinishingCalls": 0,
+        "pendingFinishingTokens": 0,
+        "reservedCalls": 0,
+        "reservedTokens": 0,
+        "schemaVersion": 1,
+        "toolAdmissionIds": [
+          "node:sha256:166f0526f22e1366a6315fcad69fdf7bb91f4e89f1f29b80beb908699aaca6bc/operation"
+        ],
+        "unknownUsageCalls": 0,
+        "usedCalls": 1,
+        "usedTokens": 866,
+        "usedTools": 1
+      },
+      "rootEvidence": {
+        "expandedIds": [
+          "node:sha256:166f0526f22e1366a6315fcad69fdf7bb91f4e89f1f29b80beb908699aaca6bc",
+          "node:sha256:0dcb72a27e1f503b90a7dfa2a53cebb485b724fcef51ace8f971b5df43ba543d"
+        ],
+        "limits": {
+          "maxConcurrentWork": 2,
+          "maxExpandedNodes": 8,
+          "maxPlanRevisions": 3,
+          "maxWorkAttempts": 12
+        },
+        "revisionIds": [
+          "root/1/sha256:509da1566883f38515393c543668c1df1d3600dd0a2ff6eeb161e796c3b0e0ef"
+        ],
+        "schemaVersion": 1,
+        "workAttempts": 2
+      },
+      "failure": "One or more Workflow steps failed"
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 919,
+      "toolCalls": 1,
+      "addCalls": 0,
+      "unsafeProposals": 0,
+      "unsafeEffects": 0,
+      "toolOrder": [
+        "read:unavailable"
+      ],
+      "caseId": "failed_prerequisite",
+      "mode": "stream_dag",
+      "outcome": "failed",
+      "output": null,
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 32.791624999999954,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 1,
+      "admittedTokens": 919,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [
+        "Error: One or more Workflow steps failed",
+        "Error: Fixture source unavailable",
+        "Error: Fixture source unavailable"
+      ],
+      "budgetEvidence": {
+        "activeCalls": 0,
+        "finishingCalls": 0,
+        "finishingTokens": 0,
+        "limits": {
+          "maxModelCalls": 5,
+          "maxTokens": 12000,
+          "maxToolCalls": 6
+        },
+        "pendingFinishingCalls": 0,
+        "pendingFinishingTokens": 0,
+        "reservedCalls": 0,
+        "reservedTokens": 0,
+        "schemaVersion": 1,
+        "toolAdmissionIds": [
+          "node:sha256:166f0526f22e1366a6315fcad69fdf7bb91f4e89f1f29b80beb908699aaca6bc/operation"
+        ],
+        "unknownUsageCalls": 0,
+        "usedCalls": 1,
+        "usedTokens": 919,
+        "usedTools": 1
+      },
+      "rootEvidence": {
+        "expandedIds": [
+          "node:sha256:166f0526f22e1366a6315fcad69fdf7bb91f4e89f1f29b80beb908699aaca6bc",
+          "node:sha256:0dcb72a27e1f503b90a7dfa2a53cebb485b724fcef51ace8f971b5df43ba543d"
+        ],
+        "limits": {
+          "maxConcurrentWork": 2,
+          "maxExpandedNodes": 8,
+          "maxPlanRevisions": 3,
+          "maxWorkAttempts": 12
+        },
+        "revisionIds": [
+          "root/1/sha256:509da1566883f38515393c543668c1df1d3600dd0a2ff6eeb161e796c3b0e0ef"
+        ],
+        "schemaVersion": 1,
+        "workAttempts": 2
+      },
+      "failure": "One or more Workflow steps failed"
+    },
+    {
+      "modelCalls": 2,
+      "tokens": 566,
+      "toolCalls": 0,
+      "addCalls": 0,
+      "unsafeProposals": 1,
+      "unsafeEffects": 0,
+      "toolOrder": [],
+      "caseId": "unapproved_write",
+      "mode": "agent_loop",
+      "outcome": "completed",
+      "output": {
+        "status": "blocked"
+      },
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 1.0158749999999372,
+      "admittedModelCalls": 2,
+      "admittedToolCalls": 0,
+      "admittedTokens": 566,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [],
+      "budgetEvidence": {
+        "tokens": {
+          "limit": 12000,
+          "used": 566,
+          "reserved": 0,
+          "remaining": 11434,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 11434
+        },
+        "modelCalls": {
+          "limit": 5,
+          "used": 2,
+          "reserved": 0,
+          "remaining": 3,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 3
+        },
+        "toolCalls": {
+          "limit": 6,
+          "used": 0,
+          "reserved": 0,
+          "remaining": 6,
+          "finishingReserved": 0,
+          "ordinaryRemaining": 6
+        },
+        "unknownUsageCalls": 0
+      },
+      "rootEvidence": {
+        "active": 0,
+        "queued": 0,
+        "highWater": 1,
+        "expandedNodes": 0,
+        "workAttempts": 2,
+        "planRevisions": 0
+      }
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 838,
+      "toolCalls": 0,
+      "addCalls": 0,
+      "unsafeProposals": 1,
+      "unsafeEffects": 0,
+      "toolOrder": [],
+      "caseId": "unapproved_write",
+      "mode": "complete_dag",
+      "outcome": "failed",
+      "output": null,
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 11.62379199999998,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 0,
+      "admittedTokens": 838,
+      "unknownUsageCalls": 0,
+      "failureEvidence": [
+        "ExecutionPlanValidationError: Planning allowance exhausted: ExecutionPlanValidationError: Planning allowance exhausted: Missing or changed binding write",
+        "ExecutionPlanValidationError: Planning allowance exhausted: Missing or changed binding write"
+      ],
+      "budgetEvidence": {
+        "activeCalls": 0,
+        "finishingCalls": 0,
+        "finishingTokens": 0,
+        "limits": {
+          "maxModelCalls": 5,
+          "maxTokens": 12000,
+          "maxToolCalls": 6
+        },
+        "pendingFinishingCalls": 0,
+        "pendingFinishingTokens": 0,
+        "reservedCalls": 0,
+        "reservedTokens": 0,
+        "schemaVersion": 1,
+        "toolAdmissionIds": [],
+        "unknownUsageCalls": 0,
+        "usedCalls": 1,
+        "usedTokens": 838,
+        "usedTools": 0
+      },
+      "rootEvidence": {
+        "expandedIds": [],
+        "limits": {
+          "maxConcurrentWork": 2,
+          "maxExpandedNodes": 8,
+          "maxPlanRevisions": 3,
+          "maxWorkAttempts": 12
+        },
+        "revisionIds": [],
+        "schemaVersion": 1,
+        "workAttempts": 1
+      },
+      "failure": "Planning allowance exhausted: ExecutionPlanValidationError: Planning allowance exhausted: Missing or changed binding write"
+    },
+    {
+      "modelCalls": 1,
+      "tokens": 891,
+      "toolCalls": 0,
+      "addCalls": 0,
+      "unsafeProposals": 1,
+      "unsafeEffects": 0,
+      "toolOrder": [],
+      "caseId": "unapproved_write",
+      "mode": "stream_dag",
+      "outcome": "failed",
+      "output": null,
+      "correct": true,
+      "dependencyFailures": 0,
+      "wallTimeMs": 13.429624999999987,
+      "admittedModelCalls": 1,
+      "admittedToolCalls": 0,
+      "admittedTokens": 1858,
+      "unknownUsageCalls": 1,
+      "failureEvidence": [
+        "ExecutionPlanValidationError: Planning allowance exhausted: ExecutionPlanValidationError: Missing or changed binding write",
+        "ExecutionPlanValidationError: Missing or changed binding write"
+      ],
+      "budgetEvidence": {
+        "activeCalls": 0,
+        "finishingCalls": 0,
+        "finishingTokens": 0,
+        "limits": {
+          "maxModelCalls": 5,
+          "maxTokens": 12000,
+          "maxToolCalls": 6
+        },
+        "pendingFinishingCalls": 0,
+        "pendingFinishingTokens": 0,
+        "reservedCalls": 0,
+        "reservedTokens": 0,
+        "schemaVersion": 1,
+        "toolAdmissionIds": [],
+        "unknownUsageCalls": 1,
+        "usedCalls": 1,
+        "usedTokens": 1858,
+        "usedTools": 0
+      },
+      "rootEvidence": {
+        "expandedIds": [],
+        "limits": {
+          "maxConcurrentWork": 2,
+          "maxExpandedNodes": 8,
+          "maxPlanRevisions": 3,
+          "maxWorkAttempts": 12
+        },
+        "revisionIds": [],
+        "schemaVersion": 1,
+        "workAttempts": 1
+      },
+      "failure": "Planning allowance exhausted: ExecutionPlanValidationError: Missing or changed binding write"
+    }
+  ],
+  "paidCalls": 0,
+  "externalEffects": 0,
+  "labels": "Executable numeric outputs or appropriate refusal; no model judge.",
+  "tokenAccounting": {
+    "method": "countTokens",
+    "installedExactTokenizer": false,
+    "requestProjection": "JSON.stringify({messages,tools})",
+    "includesNativeToolDefinitions": true,
+    "completionProjection": "Protocol text or JSON.stringify({text,calls})",
+    "accounting": "Synthetic fixture usage; no vendor billing, native prompt formatting or cache pricing"
+  },
+  "limitations": [
+    "One deterministic offline policy renders a shared canonical fixture plan into the host protocol; this is runtime conformance, not live planning quality.",
+    "Tokens use the installed local tokenizer/fallback via countTokens and are synthetic provider-reported usage, not billed tokens.",
+    "Wall time includes local SDK, journaling, validation and process scheduling; no provider network latency is simulated.",
+    "Four paired cases and one repeat per mode do not establish statistical production performance."
+  ]
+}

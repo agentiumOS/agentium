@@ -1,0 +1,12 @@
+
+> agentium@4.8.2 test:package
+> AGENTIUM_TEST_PACKAGES=1 vitest run packages/harness/src/__tests__/package-consumption.test.ts packages/cli/src/__tests__/package-consumption.test.ts
+
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+
+ Test Files  2 passed (2)
+      Tests  4 passed (4)
+   Start at  09:51:47
+   Duration  46.60s (transform 71ms, setup 0ms, import 163ms, tests 83.14s, environment 0ms)

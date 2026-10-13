@@ -1,0 +1,23 @@
+packages/harness/src/runtime/__tests__/execution-planning.integration.test.ts:15:62 lint/style/useTemplate  FIXABLE  ━━━━━━━━━━
+
+  ℹ Template literals are preferred over string concatenation.
+
+    13 │ const key = { tenantId: "tenant", taskId: "task" };
+    14 │ const schema = z.object({ value: z.number() });
+  > 15 │ const frame = (baseRevision: number, plan: ExecutionPlan) => JSON.stringify({ baseRevision, plan }) + "\n";
+       │                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    16 │ const plan = (revision: number, value = 1): ExecutionPlan => ({
+    17 │   schemaVersion: 1,
+
+  ℹ Unsafe fix: Use a template literal.
+
+     13  13 │   const key = { tenantId: "tenant", taskId: "task" };
+     14  14 │   const schema = z.object({ value: z.number() });
+     15     │ - const·frame·=·(baseRevision:·number,·plan:·ExecutionPlan)·=>·JSON.stringify({·baseRevision,·plan·})·+·"\n";
+         15 │ + const·frame·=·(baseRevision:·number,·plan:·ExecutionPlan)·=>·`${JSON.stringify({·baseRevision,·plan·})}\n`;
+     16  16 │   const plan = (revision: number, value = 1): ExecutionPlan => ({
+     17  17 │     schemaVersion: 1,
+
+
+Checked 748 files in 979ms. No fixes applied.
+Found 1 info.

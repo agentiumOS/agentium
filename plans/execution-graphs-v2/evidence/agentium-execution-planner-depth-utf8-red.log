@@ -1,0 +1,101 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/execution-proposal.test.ts (44 tests | 1 failed) 65ms
+     × inherits dynamic episode depth for dependencies and rejects exhausted depth before callbacks 16ms
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts (22 tests | 2 failed) 287ms
+     × rejects inherited exhausted episode depth before calling a planner provider 38ms
+     × counts fragmented Unicode as UTF8 bytes across stream chunks 27ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-planner.test.ts > durable authorized execution planning > rejects inherited exhausted episode depth before calling a planner provider
+AssertionError: promise resolved "{ validated: { …(6) }, …(1) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "nodeKeys": {
++     "a": "node:sha256:0435cfcc8cea57b551be4e466cd2209620acc3354f6fa249da58502153e2d0d8",
++   },
++   "validated": {
++     "bindingKinds": {
++       "read": "tool",
++     },
++     "catalogDigest": "sha256:7d0ba0d675fbb8743b767d1734b29c38442a352d56fcd75052d207014f1a10c8",
++     "digest": "sha256:7fdb4c1d9ae3f3f7c89d6acc2c8948ae54692794d91ec9ddbca986f1acddfea0",
++     "order": [
++       "a",
++     ],
++     "plan": {
++       "nodes": [
++         {
++           "args": {
++             "value": 1,
++           },
++           "binding": "read",
++           "id": "a",
++           "version": "1",
++         },
++       ],
++       "revision": 1,
++       "schemaVersion": 1,
++     },
++     "referenceRequirements": [],
++   },
+  }
+
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts:185:69
+    183|   it("rejects inherited exhausted episode depth before calling a plann…
+    184|     const f = await fixture();
+    185|     await expect(generateExecutionPlan({ ...f.options, depth: 21 })).r…
+       |                                                                     ^
+    186|     expect(f.counts().modelCalls).toBe(0);
+    187|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-planner.test.ts > durable authorized execution planning > counts fragmented Unicode as UTF8 bytes across stream chunks
+ExecutionPlanValidationError: Planning allowance exhausted: ExecutionPlanValidationError: Lifetime planning stream byte limit exceeded
+ ❯ interrupt packages/harness/src/runtime/execution-planner.ts:358:11
+    356|   });
+    357|   if (saved.streamLimitExceeded || saved.attempts >= context.planner.m…
+    358|     throw new ExecutionPlanValidationError(`Planning allowance exhaust…
+       |           ^
+    359|   const error = new DurableRecoveryRequiredError();
+    360|   error.message = "Execution planning interrupted; retained proposals …
+ ❯ streamExecutionPlans packages/harness/src/runtime/execution-planner.ts:598:5
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts:194:5
+
+Caused by: ExecutionPlanValidationError: Lifetime planning stream byte limit exceeded
+ ❯ text packages/harness/src/runtime/execution-planner.ts:526:23
+ ❯ awaitPlanningOperation packages/harness/src/runtime/plan-stream.ts:42:12
+ ❯ decodePlanCommitFrames packages/harness/src/runtime/plan-stream.ts:71:20
+ ❯ packages/harness/src/runtime/execution-planner.ts:559:24
+ ❯ streamExecutionPlans packages/harness/src/runtime/execution-planner.ts:496:5
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts:194:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Serialized Error: { code: 'execution_plan_invalid' }
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-proposal.test.ts > trusted execution proposal admission > inherits dynamic episode depth for dependencies and rejects exhausted depth before callbacks
+AssertionError: expected function to throw an error, but it didn't
+ ❯ packages/harness/src/runtime/__tests__/execution-proposal.test.ts:66:71
+     64|   it("inherits dynamic episode depth for dependencies and rejects exha…
+     65|     expect(validateExecutionPlan(plan(), [tool()], limits, 19).order).…
+     66|     expect(() => validateExecutionPlan(plan(), [tool()], limits, 20)).…
+       |                                                                       ^
+     67|     for (const depth of [0, 1.5, 21])
+     68|       expect(() => validateExecutionPlan({ schemaVersion: 1, revision:…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  3 failed | 63 passed (66)
+   Start at  09:38:18
+   Duration  839ms (transform 570ms, setup 0ms, import 837ms, tests 351ms, environment 0ms)

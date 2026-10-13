@@ -1,0 +1,36 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts (20 tests | 1 failed) 291ms
+     × seals a cached completed stream after recovery at the attempt cap without a fresh model call 43ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-planner.test.ts > durable authorized execution planning > seals a cached completed stream after recovery at the attempt cap without a fresh model call
+ExecutionPlanValidationError: Planning allowance exhausted: ExecutionPlanValidationError: Planning allowance exhausted: no fresh attempt remains
+ ❯ interrupt packages/harness/src/runtime/execution-planner.ts:347:11
+    345|   });
+    346|   if (saved.streamLimitExceeded || saved.attempts >= context.planner.m…
+    347|     throw new ExecutionPlanValidationError(`Planning allowance exhaust…
+       |           ^
+    348|   const error = new DurableRecoveryRequiredError();
+    349|   error.message = "Execution planning interrupted; retained proposals …
+ ❯ streamExecutionPlans packages/harness/src/runtime/execution-planner.ts:569:5
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts:299:24
+
+Caused by: ExecutionPlanValidationError: Planning allowance exhausted: no fresh attempt remains
+ ❯ packages/harness/src/runtime/execution-planner.ts:254:13
+ ❯ packages/harness/src/runtime/execution-planner.ts:140:5
+ ❯ update packages/harness/src/runtime/execution-planner.ts:138:33
+ ❯ reserve packages/harness/src/runtime/execution-planner.ts:250:24
+ ❯ streamExecutionPlans packages/harness/src/runtime/execution-planner.ts:472:21
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Serialized Error: { code: 'execution_plan_invalid' }
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 19 passed (20)
+   Start at  09:36:56
+   Duration  795ms (transform 282ms, setup 0ms, import 396ms, tests 291ms, environment 0ms)

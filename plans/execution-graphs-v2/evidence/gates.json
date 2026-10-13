@@ -1,0 +1,96 @@
+{
+  "checkedSourceCommit": "a9b0d1ba903294963fb7a97d438cd46028e8d80a",
+  "sourceFingerprint": "57e675a2b7ecbf3b0c285b9159d01482314fa18236aa1d0b5ac96da5d10fe4de",
+  "environment": {
+    "os": "macOS arm64",
+    "node": "22.23.1",
+    "npm": "10.9.8",
+    "vitest": "4.1.11",
+    "mongodb": "8.0.1 standalone loopback"
+  },
+  "gates": [
+    {
+      "command": "npm run build",
+      "exitCode": 0,
+      "result": "All ten workspaces built",
+      "log": "final-build.log"
+    },
+    {
+      "command": "tsc -p <workspace>/tsconfig.json --noEmit --pretty false (all ten workspaces)",
+      "exitCode": 0,
+      "result": "Source and test types passed",
+      "log": "final-types.log"
+    },
+    {
+      "command": "npm test -- --maxWorkers=2",
+      "exitCode": 0,
+      "filesPassed": 264,
+      "testsPassed": 3035,
+      "filesSkipped": 11,
+      "testsSkipped": 40,
+      "log": "final-tests.log"
+    },
+    {
+      "command": "npx biome ci .",
+      "exitCode": 0,
+      "filesChecked": 748,
+      "informationalDiagnostics": 1,
+      "log": "final-biome.log"
+    },
+    {
+      "command": "npm run test:package",
+      "exitCode": 0,
+      "filesPassed": 2,
+      "testsPassed": 4,
+      "log": "final-packages.log"
+    },
+    {
+      "command": "node --test scripts/release-lock.test.mjs scripts/cjs-declarations.test.mjs",
+      "exitCode": 0,
+      "testsPassed": 4,
+      "log": "final-metadata.log"
+    },
+    {
+      "command": "tsc --strict --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --skipLibCheck --types node <extracted-guide-example.ts>",
+      "exitCode": 0,
+      "log": "final-guide-types.log"
+    },
+    {
+      "command": "npx tsx <extracted-guide-example.ts>",
+      "exitCode": 0,
+      "result": "Guide completed with expected echo result",
+      "log": "final-guide-runtime.log"
+    },
+    {
+      "command": "AGENTIUM_DURABLE_MONGO_TEST=1 AGENTIUM_DURABLE_MONGO_URI=mongodb://127.0.0.1:27319/?directConnection=true npx vitest run <five files listed in RESULTS.md>",
+      "exitCode": 0,
+      "filesPassed": 5,
+      "testsPassed": 28,
+      "testsSkipped": 0,
+      "log": "final-mongodb.log"
+    },
+    {
+      "command": "AGENTIUM_GRAPH_EVAL_OUTPUT=$PWD/plans/execution-graphs-v2/evidence/evaluation.json npx vitest run packages/harness/src/runtime/__tests__/execution-graph.evaluation.test.ts",
+      "exitCode": 0,
+      "testsPassed": 12,
+      "testsSkipped": 0,
+      "log": "evaluation.log"
+    },
+    {
+      "command": "npx vitest run <six review regression/root/recovery suites>",
+      "exitCode": 0,
+      "filesPassed": 6,
+      "testsPassed": 102,
+      "log": "review-green.log"
+    }
+  ],
+  "earlierFailure": {
+    "command": "npm test (concurrent with type/package/integration gates)",
+    "exitCode": 1,
+    "testsPassed": 3034,
+    "testsFailed": 1,
+    "cause": "Existing 5ms reliability timeout assertion observed no fake Agent dispatch; lifecycle can time out before its microtask dispatch. Unchanged source.",
+    "log": "initial-tests-concurrent.log",
+    "followup": "Isolated 9-test suite passed; full suite passed with two workers, without source or test changes."
+  }
+}

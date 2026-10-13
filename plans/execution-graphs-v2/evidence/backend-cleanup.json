@@ -1,0 +1,9 @@
+{
+  "capturedAt": "2026-10-13T04:31:05.201870+00:00",
+  "pid": 16835,
+  "validatedCommand": "/opt/homebrew/bin/mongod --bind_ip 127.0.0.1 --port 27319 --dbpath /tmp/agentium-graph-mongo-27319 --logpath /tmp/agentium-graph-mongo-27319/mongod.log --pidfilepath /tmp/agentium-graph-mongo-27319/mongod.pid --fork",
+  "action": "SIGTERM task-owned loopback Mongo after completed verification",
+  "stopped": true,
+  "dataDirectory": "/tmp/agentium-graph-mongo-27319",
+  "dataDirectoryDeleted": false
+}

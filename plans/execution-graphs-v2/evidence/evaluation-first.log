@@ -1,0 +1,11 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/execution-graph.evaluation.test.ts (12 tests | 2 failed) 331ms
+     × unapproved_write: complete_dag 18ms
+     × unapproved_write: stream_dag 13ms
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 10 passed (12)
+   Start at  09:33:36
+   Duration  968ms (transform 375ms, setup 0ms, import 507ms, tests 331ms, environment 0ms)

@@ -1,0 +1,64 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/durable-budget.test.ts (4 tests | 4 failed) 5ms
+     × restores completed charges and deduplicates the same logical tool admission 2ms
+     × charges interrupted reservations conservatively without replenishing allowances 1ms
+     × retains protected finishing charges after an interrupted finishing call 0ms
+     × rejects changed limits and corrupt persisted counters 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/durable-budget.test.ts > durable root budget accounting > restores completed charges and deduplicates the same logical tool admission
+TypeError: ledger.exportState is not a function
+ ❯ packages/harness/src/runtime/__tests__/durable-budget.test.ts:12:61
+     10|     call.start();
+     11|     call.settle({ promptTokens: 2, completionTokens: 1, totalTokens: 3…
+     12|     const restored = new HarnessBudgetLedger(limits, ledger.exportStat…
+       |                                                             ^
+     13|     expect(restored.admitTool("node/call")).toBe(true);
+     14|     expect(restored.admitTool("other/call")).toBe(true);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/durable-budget.test.ts > durable root budget accounting > charges interrupted reservations conservatively without replenishing allowances
+TypeError: ledger.exportState is not a function
+ ❯ packages/harness/src/runtime/__tests__/durable-budget.test.ts:26:61
+     24|     const call = ledger.reserve(2, 4);
+     25|     call.start();
+     26|     const restored = new HarnessBudgetLedger(limits, ledger.exportStat…
+       |                                                             ^
+     27|     expect(restored.snapshot()).toMatchObject({
+     28|       tokens: { used: 6, reserved: 0, remaining: 4 },
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/durable-budget.test.ts > durable root budget accounting > retains protected finishing charges after an interrupted finishing call
+TypeError: ledger.exportState is not a function
+ ❯ packages/harness/src/runtime/__tests__/durable-budget.test.ts:39:61
+     37|     const call = ledger.reserve(2, 4, true);
+     38|     call.start();
+     39|     const restored = new HarnessBudgetLedger(limits, ledger.exportStat…
+       |                                                             ^
+     40|     expect(restored.snapshot()).toMatchObject({
+     41|       tokens: { used: 6, finishingReserved: 0 }, modelCalls: { used: 1…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/durable-budget.test.ts > durable root budget accounting > rejects changed limits and corrupt persisted counters
+TypeError: ledger.exportState is not a function
+ ❯ packages/harness/src/runtime/__tests__/durable-budget.test.ts:47:26
+     45|   it("rejects changed limits and corrupt persisted counters", () => {
+     46|     const ledger = new HarnessBudgetLedger({ maxToolCalls: 2 });
+     47|     const state = ledger.exportState();
+       |                          ^
+     48|     expect(() => new HarnessBudgetLedger({ maxToolCalls: 3 }, state)).…
+     49|     expect(() => new HarnessBudgetLedger({ maxToolCalls: 2 }, { ...sta…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed (4)
+   Start at  09:04:33
+   Duration  908ms (transform 592ms, setup 0ms, import 772ms, tests 5ms, environment 0ms)

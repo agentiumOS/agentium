@@ -1,0 +1,99 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/core/src/tools/__tests__/durable-boundary.test.ts (3 tests | 3 failed) 48ms
+     × propagates DurableConflictError instead of presenting it as a model-visible tool error 46ms
+     × propagates DurableRecoveryRequiredError instead of presenting it as a model-visible tool error 1ms
+     × propagates RootExecutionError instead of presenting it as a model-visible tool error 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/core/src/tools/__tests__/durable-boundary.test.ts > fatal durable tool boundaries > propagates DurableConflictError instead of presenting it as a model-visible tool error
+AssertionError: promise resolved "[ { toolCallId: 'call', …(3) } ]" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+[
+  {
+    "error": "Durable task conflict",
+    "result": "Error: Durable task conflict",
+    "toolCallId": "call",
+    "toolName": "effect",
+  },
+]
+
+ ❯ packages/core/src/tools/__tests__/durable-boundary.test.ts:13:152
+     11|     it(`propagates ${error.name} instead of presenting it as a model-v…
+     12|       const executor = new ToolExecutor([{ name: "effect", description…
+     13|       await expect(executor.executeAll([{ id: "call", name: "effect", …
+       |                                                                                                                                                        ^
+     14|     });
+     15|   }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  packages/core/src/tools/__tests__/durable-boundary.test.ts > fatal durable tool boundaries > propagates DurableRecoveryRequiredError instead of presenting it as a model-visible tool error
+AssertionError: promise resolved "[ { toolCallId: 'call', …(3) } ]" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+[
+  {
+    "error": "Durable action outcome is unknown; reconcile before resuming",
+    "result": "Error: Durable action outcome is unknown; reconcile before resuming",
+    "toolCallId": "call",
+    "toolName": "effect",
+  },
+]
+
+ ❯ packages/core/src/tools/__tests__/durable-boundary.test.ts:13:152
+     11|     it(`propagates ${error.name} instead of presenting it as a model-v…
+     12|       const executor = new ToolExecutor([{ name: "effect", description…
+     13|       await expect(executor.executeAll([{ id: "call", name: "effect", …
+       |                                                                                                                                                        ^
+     14|     });
+     15|   }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  packages/core/src/tools/__tests__/durable-boundary.test.ts > fatal durable tool boundaries > propagates RootExecutionError instead of presenting it as a model-visible tool error
+AssertionError: promise resolved "[ { toolCallId: 'call', …(3) } ]" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+[
+  {
+    "error": "exhausted",
+    "result": "Error: exhausted",
+    "toolCallId": "call",
+    "toolName": "effect",
+  },
+]
+
+ ❯ packages/core/src/tools/__tests__/durable-boundary.test.ts:13:152
+     11|     it(`propagates ${error.name} instead of presenting it as a model-v…
+     12|       const executor = new ToolExecutor([{ name: "effect", description…
+     13|       await expect(executor.executeAll([{ id: "call", name: "effect", …
+       |                                                                                                                                                        ^
+     14|     });
+     15|   }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed (3)
+   Start at  09:21:16
+   Duration  261ms (transform 50ms, setup 0ms, import 107ms, tests 48ms, environment 0ms)

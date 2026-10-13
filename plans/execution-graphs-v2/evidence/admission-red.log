@@ -1,0 +1,338 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts (15 tests | 15 failed) 84ms
+     × limits aggregate work from independent producers and releases each permit 7ms
+     × preserves FIFO order while cancelling a queued waiter without dispatch or charge 2ms
+     × rejects nested leaf dispatch rather than deadlocking or bypassing aggregate capacity 1ms
+     × releases thrown operations once and does not replenish attempt allowance 1ms
+     × keeps started work owned until it settles after cancellation 2ms
+     × stops queued work on the retained absolute deadline 1ms
+     × holds streaming provider capacity across yields and releases on return 2ms
+     × reserves an entire expansion atomically, deduplicates recovery and never refunds removals 0ms
+     × restores attempts and expansions and rejects widened limits or changed deadlines 1ms
+     × rejects corrupt restored accounting and never dispatches after persistence failure 0ms
+     × limits two independent Agent tool batches and model requests using the same root 57ms
+     × lets journaled tools reuse a result outside attempt admission while preserving schema and grants 1ms
+     × releases tool capacity before toModelOutput starts a controlled model operation 1ms
+     × limits nested graphs and repeated Agent orchestration without parent slots 6ms
+     × rejects the entire next graph episode before its effects when expansion is exhausted 1ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 15 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root leaf admission > limits aggregate work from independent producers and releases each permit
+AssertionError: expected 5 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 5
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:40:23
+     38|     try {
+     39|       await tick();
+     40|       expect(started).toBe(2); expect(root.snapshot()).toMatchObject({…
+       |                       ^
+     41|     } finally { gate.resolve(); await Promise.allSettled(operations); }
+     42|     expect(highWater).toBe(2);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root leaf admission > preserves FIFO order while cancelling a queued waiter without dispatch or charge
+AssertionError: expected [ 'a', 'b' ] to deeply equal [ 'b' ]
+
+- Expected
++ Received
+
+  [
++   "a",
+    "b",
+  ]
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:54:19
+     52|     await tick(); cancelled.abort(); await first.release();
+     53|     await Promise.all([a,b]);
+     54|     expect(order).toEqual(["b"]); expect(root.snapshot()).toMatchObjec…
+       |                   ^
+     55|   });
+     56|   it("rejects nested leaf dispatch rather than deadlocking or bypassin…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root leaf admission > rejects nested leaf dispatch rather than deadlocking or bypassing aggregate capacity
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:59:109
+     57|     const root = new RootExecutionController({ maxConcurrentWork: 1 });
+     58|     let nested = 0;
+     59|     await expect(root.run("function", "parent", () => root.run("tool",…
+       |                                                                                                             ^
+     60|     expect(nested).toBe(0); expect(root.snapshot()).toMatchObject({ ac…
+     61|     await expect(root.run("tool", "next", async () => 42)).resolves.to…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root leaf admission > releases thrown operations once and does not replenish attempt allowance
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:67:73
+     65|     await expect(root.run("tool", "failed", async () => { throw new Er…
+     66|     let outbound = 0;
+     67|     await expect(root.run("tool", "retry", async () => { outbound++; }…
+       |                                                                         ^
+     68|     expect(outbound).toBe(0); expect(root.snapshot()).toMatchObject({ …
+     69|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root leaf admission > keeps started work owned until it settles after cancellation
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:75:36
+     73|     const running = root.run("tool", "running", async () => { await ga…
+     74|     await tick(); cancel.abort();
+     75|     expect(root.snapshot().active).toBe(1);
+       |                                    ^
+     76|     await expect(root.run("tool", "late", async () => {})).rejects.toM…
+     77|     gate.resolve(); await running; expect(root.snapshot().active).toBe…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root leaf admission > stops queued work on the retained absolute deadline
+AssertionError: expected 'unsafe' to match object { code: 'root_deadline' }
+
+- Expected:
+{
+  "code": "root_deadline",
+}
+
++ Received:
+"unsafe"
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:85:26
+     83|     const queued = root.run("tool", "later", async () => "unsafe").cat…
+     84|     await vi.advanceTimersByTimeAsync(11);
+     85|     expect(await queued).toMatchObject({ code: "root_deadline" });
+       |                          ^
+     86|     await lease.release(); expect(root.snapshot()).toMatchObject({ que…
+     87|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root leaf admission > holds streaming provider capacity across yields and releases on return
+AssertionError: expected 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:97:27
+     95|     let started = 0; const next = root.run("tool", "wait", async () =>…
+     96|     await tick();
+     97|     try { expect(started).toBe(0); expect(root.snapshot().active).toBe…
+       |                           ^
+     98|     finally { await stream.return(undefined); await next; }
+     99|     expect(root.snapshot()).toMatchObject({ active:0, workAttempts:2 }…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root lifetime accounting and durable port > reserves an entire expansion atomically, deduplicates recovery and never refunds removals
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:107:41
+    105|     const root = new RootExecutionController({ maxExpandedNodes: 3, ma…
+    106|     await root.expand(["a","b"]); await root.expand(["a","b"]); await …
+    107|     await expect(root.expand(["c","d"])).rejects.toMatchObject({ code:…
+       |                                         ^
+    108|     expect(root.snapshot()).toMatchObject({ expandedNodes:2,planRevisi…
+    109|     await root.expand(["c"]); await expect(root.revision("r2")).reject…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root lifetime accounting and durable port > restores attempts and expansions and rejects widened limits or changed deadlines
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:123:57
+    121|     const second = new RootExecutionController(limits,{persistence,dea…
+    122|     await second.expand(["a","b"]); await second.run("tool","two",asyn…
+    123|     await expect(second.run("tool","three",async()=>{})).rejects.toMat…
+       |                                                         ^
+    124|     expect(second.snapshot()).toMatchObject({expandedNodes:2,workAttem…
+    125|     await expect(new RootExecutionController({maxWorkAttempts:3,maxExp…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root lifetime accounting and durable port > rejects corrupt restored accounting and never dispatches after persistence failure
+AssertionError: promise resolved "undefined" instead of rejecting
+
+- Expected:
+Error {
+  "message": "rejected promise",
+}
+
++ Received:
+undefined
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:131:62
+    129|     const bad = new RootExecutionController({}, { persistence: {update…
+    130|     let effects=0;
+    131|     await expect(bad.run("tool","bad",async()=>{effects++;})).rejects.…
+       |                                                              ^
+    132|     const failed = new RootExecutionController({}, {persistence:{updat…
+    133|     await expect(failed.run("tool","fail",async()=>{effects++;})).reje…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root integration boundaries > limits two independent Agent tool batches and model requests using the same root
+AssertionError: expected 6 to be less than or equal to 2
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:149:127
+    147|     });
+    148|     const outputs=await Promise.all(agents.map((agent)=>agent.run("tas…
+    149|     expect(outputs.map((output)=>output.status)).toEqual(["completed",…
+       |                                                                                                                               ^
+    150|     expect(root.snapshot()).toMatchObject({active:0,workAttempts:10});
+    151|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root integration boundaries > lets journaled tools reuse a result outside attempt admission while preserving schema and grants
+AssertionError: expected 'live' to be 'saved' // Object.is equality
+
+Expected: "saved"
+Received: "live"
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:160:27
+    158|     const executor=new ToolExecutor([tool]);
+    159|     const [result]=await executor.executeAll([{id:"call",name:"read",a…
+    160|     expect(result.result).toBe("saved");expect(effects).toBe(0);expect…
+       |                           ^
+    161|     const [invalid]=await executor.executeAll([{id:"bad",name:"read",a…
+    162|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root integration boundaries > releases tool capacity before toModelOutput starts a controlled model operation
+AssertionError: expected { active: +0, queued: +0, …(4) } to match object { active: +0, workAttempts: 2 }
+(4 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "active": 0,
+-   "workAttempts": 2,
++   "workAttempts": 0,
+  }
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:167:69
+    165|     const tool=defineTool({name:"format",description:"fixture",paramet…
+    166|     const [result]=await new ToolExecutor([tool]).executeAll([{id:"cal…
+    167|     expect(result.result).toBe("formatted");expect(root.snapshot()).to…
+       |                                                                     ^
+    168|   });
+    169|   it("limits nested graphs and repeated Agent orchestration without pa…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root integration boundaries > limits nested graphs and repeated Agent orchestration without parent slots
+AssertionError: expected 4 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 4
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:174:98
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/15]⎯
+
+ FAIL  packages/core/src/agent/__tests__/root-execution.test.ts > root integration boundaries > rejects the entire next graph episode before its effects when expansion is exhausted
+AssertionError: promise resolved "{ state: {}, …(1) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "results": [
++     {
++       "durationMs": 0,
++       "executionPath": "episode",
++       "status": "done",
++       "stepName": "episode",
++     },
++     {
++       "durationMs": 0,
++       "executionPath": "episode/0/effect0",
++       "status": "done",
++       "stepName": "effect0",
++     },
++     {
++       "durationMs": 0,
++       "executionPath": "episode/1/effect1",
++       "status": "done",
++       "stepName": "effect1",
++     },
++   ],
++   "state": {},
+  }
+
+ ❯ packages/core/src/agent/__tests__/root-execution.test.ts:179:73
+    177|     const root=new RootExecutionController({maxExpandedNodes:2});let e…
+    178|     const step:StepDef<Record<string,unknown>>={name:"episode",graph:[…
+    179|     await expect(new StepRunner().executeSteps([step],{},context(root)…
+       |                                                                         ^
+    180|     expect(effects).toBe(0);expect(root.snapshot().expandedNodes).toBe…
+    181|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/15]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  15 failed (15)
+   Start at  09:04:59
+   Duration  697ms (transform 357ms, setup 0ms, import 484ms, tests 84ms, environment 0ms)

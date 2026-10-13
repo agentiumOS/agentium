@@ -1,0 +1,153 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/execution-graph.review.test.ts (4 tests | 4 failed) 867ms
+     × bounds accumulated depth through dynamically planned child episodes 831ms
+     × pins static arguments, budgets, grants and executable bindings against later caller mutation 24ms
+     × pins child programs before a running callback mutates the caller's catalog 11ms
+     × closes a cancelled provider stream while its root permit is still owned 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.review.test.ts > execution graph review regressions > bounds accumulated depth through dynamically planned child episodes
+AssertionError: promise resolved "{ task: { id: 'review', …(21) }, …(2) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "graph": {
++     "admission": {
++       "expandedIds": [
++         "node:sha256:af3cb81bd46abd01f4d33700dc28d0a0f4e2ba3044e2581ea6437b5f1681c720",
++         "node:sha256:abc6b21d9ad9ce6d51425ee9240ff610907fc53eb435f15014644da3367a69db",
+
+[Selected original retained budget excerpt]
++       "toolAdmissionIds": [
++         "node:sha256:e54075890dcbe71ca626c2e384d4a7979ff44c4b5ba32b9c9b5ef1593f19be8d/operation",
++       ],
++       "unknownUsageCalls": 0,
++       "usedCalls": 13,
++       "usedTokens": 26,
++       "usedTools": 1,
++     },
++     "cancellation": {
+
+[Middle graph JSON diff omitted from this excerpt. Full original: review-parent-red.full.log.gz; uncompressed SHA-256 97a3e49fa6b914bf70804d980aafae3096db98e16efae20b6faa296c15108638]
+
++               "order": [
++                 "node",
++               ],
++               "plan": {
++                 "nodes": [
++                   {
++                     "args": {},
++                     "binding": "nested",
++                     "id": "node",
++                     "version": "1",
++                   },
++                 ],
++                 "revision": 1,
++                 "schemaVersion": 1,
++               },
++               "referenceRequirements": [],
++             },
++           },
++         },
++         "schemaVersion": 1,
++       },
++     },
++     "fence": 1,
++     "grantRefs": [],
++     "id": "review",
++     "identity": {
++       "actorId": "actor",
++       "rootRunId": "run",
++       "runId": "run",
++       "sessionId": "session",
++       "tenantId": "tenant",
++     },
++     "input": {},
++     "inputRef": "graph-input:sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
++     "manifestHash": "sha256:a496ed5129a142b83f792119f148f46600d9f69b0570b0bf6852814f33f64ba8",
++     "policyRevision": 1,
++     "reservedCostMicros": 0,
++     "reservedTokens": 0,
++     "resultRef": "graph-result:sha256:e28f3f78448afab9acf83bf315dffc49e9b6e7bea975231c0b826949dfca89c8",
++     "revision": 217,
++     "schemaVersion": 1,
++     "state": "completed",
++     "updatedAt": 1791864897140,
++   },
+  }
+
+ ❯ packages/harness/src/runtime/__tests__/execution-graph.review.test.ts:58:45
+     56|     const runtime = new ExecutionGraphRuntime(config);
+     57|     await runtime.create({ id: key.taskId, identity, input: {} });
+     58|     await expect(runtime.run(key, "worker")).rejects.toThrow();
+       |                                             ^
+     59|     expect(calls).toBe(8);
+     60|     expect(effects).toBe(0);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.review.test.ts > execution graph review regressions > pins static arguments, budgets, grants and executable bindings against later caller mutation
+Error: One or more Workflow steps failed
+ ❯ ExecutionGraphRuntime.executeMaterialized packages/harness/src/runtime/execution-graph.ts:502:46
+    500|       runId: `episode:${durableDigest(scope)}`,
+    501|     });
+    502|     if (result.status !== "completed") throw new Error(result.reason?.…
+       |                                              ^
+    503|     return json(result.state);
+    504|   }
+ ❯ Object.start packages/harness/src/runtime/execution-graph.ts:255:26
+ ❯ packages/harness/src/runtime/driver.ts:1717:19
+ ❯ ExecutionGraphRuntime.execute packages/harness/src/runtime/execution-graph.ts:280:20
+ ❯ ExecutionGraphRuntime.run packages/harness/src/runtime/execution-graph.ts:206:5
+ ❯ packages/harness/src/runtime/__tests__/execution-graph.review.test.ts:77:20
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.review.test.ts > execution graph review regressions > pins child programs before a running callback mutates the caller's catalog
+Error: One or more Workflow steps failed
+ ❯ ExecutionGraphRuntime.executeMaterialized packages/harness/src/runtime/execution-graph.ts:502:46
+    500|       runId: `episode:${durableDigest(scope)}`,
+    501|     });
+    502|     if (result.status !== "completed") throw new Error(result.reason?.…
+       |                                              ^
+    503|     return json(result.state);
+    504|   }
+ ❯ Object.start packages/harness/src/runtime/execution-graph.ts:255:26
+ ❯ packages/harness/src/runtime/driver.ts:1717:19
+ ❯ ExecutionGraphRuntime.execute packages/harness/src/runtime/execution-graph.ts:280:20
+ ❯ ExecutionGraphRuntime.run packages/harness/src/runtime/execution-graph.ts:206:5
+ ❯ packages/harness/src/runtime/__tests__/execution-graph.review.test.ts:99:20
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.review.test.ts > execution graph review regressions > closes a cancelled provider stream while its root permit is still owned
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/harness/src/runtime/__tests__/execution-graph.review.test.ts:130:24
+    128|     const result = await runtime.run("task", { identity: { tenantId: "…
+    129|     expect(result.status).toBe("cancelled");
+    130|     expect(finalizers).toBe(1);
+       |                        ^
+    131|     expect(root.snapshot()).toMatchObject({ active: 0, queued: 0, work…
+    132|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed (4)
+   Start at  09:44:55
+   Duration  1.47s (transform 352ms, setup 0ms, import 479ms, tests 867ms, environment 0ms)

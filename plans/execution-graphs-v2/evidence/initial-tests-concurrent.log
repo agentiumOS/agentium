@@ -1,0 +1,36 @@
+
+> agentium@4.8.2 test
+> vitest run
+
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/eval/src/__tests__/reliability-eval.test.ts (9 tests | 1 failed) 63ms
+     × does not count an infrastructure timeout as an expected agent error, and aborts the run 39ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/eval/src/__tests__/reliability-eval.test.ts > ReliabilityEval mandatory assertions > does not count an infrastructure timeout as an expected agent error, and aborts the run
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ packages/eval/src/__tests__/reliability-eval.test.ts:105:29
+    103|     }).run();
+    104|     expect(result.failed).toBe(1);
+    105|     expect(signal?.aborted).toBe(true);
+       |                             ^
+    106|   });
+    107|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 263 passed | 11 skipped (275)
+      Tests  1 failed | 3034 passed | 40 skipped (3075)
+   Start at  09:51:47
+   Duration  34.82s (transform 16.59s, setup 0ms, import 106.45s, tests 100.93s, environment 57ms)

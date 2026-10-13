@@ -1,0 +1,79 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts (8 tests | 8 failed) 3688ms
+     × recovers a killed node before dispatch and rejects its stale fence 697ms
+     × reuses one actual destination receipt after a crash at remote-accepted 403ms
+     × reuses one actual destination receipt after a crash at receipt-saved 396ms
+     × preserves a completed sibling while restarting only unfinished work 409ms
+     × retains a repeat decision and distinct logical iteration identities 413ms
+     × recovers a real Agent's recorded model decision after remote tool acceptance 409ms
+     × continues from an unsealed committed stream prefix under retained charges 395ms
+     × does not reset an expired original deadline on a fresh worker 412ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts > durable execution graphs with actual MongoDB and fresh-process crashes > recovers a killed node before dispatch and rejects its stale fence
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts > durable execution graphs with actual MongoDB and fresh-process crashes > reuses one actual destination receipt after a crash at remote-accepted
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts > durable execution graphs with actual MongoDB and fresh-process crashes > reuses one actual destination receipt after a crash at receipt-saved
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts > durable execution graphs with actual MongoDB and fresh-process crashes > preserves a completed sibling while restarting only unfinished work
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts > durable execution graphs with actual MongoDB and fresh-process crashes > retains a repeat decision and distinct logical iteration identities
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts > durable execution graphs with actual MongoDB and fresh-process crashes > recovers a real Agent's recorded model decision after remote tool acceptance
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts > durable execution graphs with actual MongoDB and fresh-process crashes > does not reset an expired original deadline on a fresh worker
+Error: Error: Plan restore is not implemented
+    at readExecutionPlan (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/plan-commit.ts:12:9)
+    at ExecutionGraphRuntime.episode (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/execution-graph.ts:129:29)
+    at Object.start (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/execution-graph.ts:113:39)
+    at <anonymous> (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/driver.ts:1708:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async ExecutionGraphRuntime.execute (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/execution-graph.ts:119:20)
+    at async DurableTaskSupervisor.run (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/core/dist/index.js:18567:19)
+    at async ExecutionGraphRuntime.run (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/execution-graph.ts:93:5)
+    at async workerMain (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/__tests__/fixtures/graph-crash-worker.ts:228:5)
+    at async <anonymous> (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/__tests__/fixtures/graph-crash-worker.ts:238:85)
+ ❯ readExecutionPlan packages/harness/src/runtime/plan-commit.ts:12:9
+     10| }
+     11| export async function readExecutionPlan(_journal: DurableGraphJournal,…
+     12|   throw new Error("Plan restore is not implemented");
+       |         ^
+     13| }
+     14|
+ ❯ ExecutionGraphRuntime.episode packages/harness/src/runtime/execution-graph.ts:129:29
+ ❯ Object.start packages/harness/src/runtime/execution-graph.ts:113:39
+ ❯ <anonymous> packages/harness/src/runtime/driver.ts:1708:39
+ ❯ ExecutionGraphRuntime.execute packages/harness/src/runtime/execution-graph.ts:119:20
+ ❯ ExecutionGraphRuntime.run packages/harness/src/runtime/execution-graph.ts:93:5
+ ❯ workerMain packages/harness/src/runtime/__tests__/fixtures/graph-crash-worker.ts:228:5
+ ❯ <anonymous> packages/harness/src/runtime/__tests__/fixtures/graph-crash-worker.ts:238:85
+ ❯ ChildProcess.<anonymous> packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts:47:55
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts > durable execution graphs with actual MongoDB and fresh-process crashes > continues from an unsealed committed stream prefix under retained charges
+Error: Error: Planner integration is pending
+    at ExecutionGraphRuntime.episode (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/execution-graph.ts:127:32)
+    at Object.start (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/execution-graph.ts:113:39)
+    at <anonymous> (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/driver.ts:1708:39)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async ExecutionGraphRuntime.execute (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/execution-graph.ts:119:20)
+    at async DurableTaskSupervisor.run (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/core/dist/index.js:18567:19)
+    at async ExecutionGraphRuntime.run (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/execution-graph.ts:93:5)
+    at async workerMain (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/__tests__/fixtures/graph-crash-worker.ts:228:5)
+    at async <anonymous> (/Users/xerycks/.codex/worktrees/core-harness-dependability/agentium/packages/harness/src/runtime/__tests__/fixtures/graph-crash-worker.ts:238:85)
+ ❯ ExecutionGraphRuntime.episode packages/harness/src/runtime/execution-graph.ts:127:32
+
+ ❯ Object.start packages/harness/src/runtime/execution-graph.ts:113:39
+ ❯ <anonymous> packages/harness/src/runtime/driver.ts:1708:39
+ ❯ ExecutionGraphRuntime.execute packages/harness/src/runtime/execution-graph.ts:119:20
+ ❯ ExecutionGraphRuntime.run packages/harness/src/runtime/execution-graph.ts:93:5
+ ❯ workerMain packages/harness/src/runtime/__tests__/fixtures/graph-crash-worker.ts:228:5
+ ❯ <anonymous> packages/harness/src/runtime/__tests__/fixtures/graph-crash-worker.ts:238:85
+ ❯ ChildProcess.<anonymous> packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts:47:55
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  8 failed (8)
+   Start at  09:21:22
+   Duration  4.68s (transform 576ms, setup 0ms, import 868ms, tests 3.69s, environment 0ms)

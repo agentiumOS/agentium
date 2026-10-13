@@ -1,0 +1,16 @@
+{
+  "capturedAt": "2026-10-13T04:22:14.831Z",
+  "sourceDigests": {
+    "packages/harness/src/runtime/__tests__/execution-graph.mongodb.test.ts": "d4f2f83a19d3c89901c744116f061d10a0d751890a0924454c6b8a5a49cd00f4",
+    "packages/harness/src/runtime/__tests__/fixtures/graph-crash-worker.ts": "f3ba67f631b0dd0524883092c2d5229d9fe05efc013bd84f899294598661fe33",
+    "packages/core/src/durable/__tests__/mongodb.integration.test.ts": "5b7a06a45318ef28c86139daca1c16f1cc8b12a5f542bdf4212c97ae58fb8f41",
+    "packages/core/src/durable/__tests__/records-mongodb.integration.test.ts": "42444dbe57a13719729cf86b84675ad0b978d472b50956ce2c7a33e5da7003ac",
+    "packages/harness/src/watch/__tests__/watch-mongodb.integration.test.ts": "de0cd4b35341ae082c36773a8bfc7f3ba87cf158485e92a9a16f8451ec9782b9",
+    "packages/transport/src/__tests__/durable-protocols.test.ts": "093c7f9d5f9bf62ed404f1b7a3539fc8e1c88bd983ab5562c273267861f35f3f",
+    "packages/harness/src/runtime/execution-graph.ts": "5b9d20d374e7379b0b25742c1cb63f59ea3688fd9b802a41f15aab7f843f7826",
+    "packages/harness/src/runtime/graph-recovery.ts": "cea84209610f38c679bb3b16c083743f8f4ff55fd8e400539c7f0008fe242be0",
+    "packages/core/src/workflow/durable-graph.ts": "72ff52fbcfefcc24def2343b468f09bef917cfd7144b46957a0161e4605dcacc",
+    "packages/core/src/agent/root-execution.ts": "98798d695a1e07adfe4f3f1644a311f6b16cb5fb3c2f106b9ff3c9a0e0a64c9b",
+    "packages/harness/src/runtime/driver.ts": "f116b278f500e4e0de1db8eda36c1e00abbdb4d83385c94bb3d2379bee8f57d1"
+  }
+}

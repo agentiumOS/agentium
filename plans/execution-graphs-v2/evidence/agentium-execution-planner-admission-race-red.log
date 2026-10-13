@@ -1,0 +1,25 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts (23 tests | 1 failed) 345ms
+     × does not clear the winning pending reservation when simultaneous calls race admission 40ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-planner.test.ts > durable authorized execution planning > does not clear the winning pending reservation when simultaneous calls race admission
+AssertionError: expected DurableRecoveryRequiredError: Execution p… to be an instance of ExecutionPlanValidationError
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts:237:22
+    235|     await started; const rejected = await second; const retained = awa…
+    236|     release?.(); await first;
+    237|     expect(rejected).toBeInstanceOf(ExecutionPlanValidationError);
+       |                      ^
+    238|     expect(retained).toMatchObject({ status: "planning", attempts: 1, …
+    239|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 22 passed (23)
+   Start at  09:40:22
+   Duration  934ms (transform 334ms, setup 0ms, import 475ms, tests 345ms, environment 0ms)

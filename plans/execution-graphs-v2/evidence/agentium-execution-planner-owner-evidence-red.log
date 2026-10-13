@@ -1,0 +1,77 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts (19 tests | 2 failed) 378ms
+     × rejects concurrent planner attempts under the same active owner 93ms
+     × retains exact rejected streamed candidate evidence before parser failure 26ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-planner.test.ts > durable authorized execution planning > rejects concurrent planner attempts under the same active owner
+AssertionError: expected 'fulfilled' to be 'rejected' // Object.is equality
+
+Expected: "rejected"
+Received: "fulfilled"
+
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts:194:76
+    192|     setTimeout(() => release?.(), 2);
+    193|     const results = await Promise.allSettled([first, second]);
+    194|     expect(results[0].status).toBe("fulfilled"); expect(results[1].sta…
+       |                                                                            ^
+    195|   });
+    196|   it("retains exact rejected streamed candidate evidence before parser…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-planner.test.ts > durable authorized execution planning > retains exact rejected streamed candidate evidence before parser failure
+AssertionError: expected [ { baseRevision: +0, …(10) }, …(1) ] to deep equally contain ObjectContaining{…}
+
+- Expected:
+ObjectContaining {
+  "raw": "{bad}",
+  "status": "rejected",
+  "type": "planning.proposal",
+}
+
++ Received:
+[
+  {
+    "baseRevision": 0,
+    "inputDigest": "sha256:0cde78f36cce5c3e15bd48c08d0775ed14bf29dab82b5b876997b7397c69ae0d",
+    "modelId": "episode/planner/model/0",
+    "planDigest": "sha256:7fdb4c1d9ae3f3f7c89d6acc2c8948ae54692794d91ec9ddbca986f1acddfea0",
+    "raw": "{\"baseRevision\":0,\"plan\":{\"nodes\":[{\"args\":{\"value\":1},\"binding\":\"read\",\"id\":\"a\",\"version\":\"1\"}],\"revision\":1,\"schemaVersion\":1}}",
+    "rawBytes": 129,
+    "rawDigest": "sha256:129469713e831460f6833abab38d514ee73676a49050bb741b99edecc19b3e2c",
+    "scope": "episode",
+    "source": "stream",
+    "status": "validated",
+    "type": "planning.proposal",
+  },
+  {
+    "attempts": 1,
+    "lastError": "ExecutionPlanValidationError: Malformed planning commit frame",
+    "raw": "{\"baseRevision\":0,\"plan\":{\"schemaVersion\":1,\"revision\":1,\"nodes\":[{\"id\":\"a\",\"binding\":\"read\",\"version\":\"1\",\"args\":{\"value\":1}}]}}
+{bad}
+",
+    "scope": "episode",
+    "source": "stream",
+    "type": "planning.interrupted",
+  },
+]
+
+ ❯ packages/harness/src/runtime/__tests__/execution-planner.test.ts:200:28
+    198|     await expect(streamExecutionPlans(f.options, () => {})).rejects.to…
+    199|     const state = await f.options.journal.snapshot();
+    200|     expect(state.evidence).toContainEqual(expect.objectContaining({ ty…
+       |                            ^
+    201|     expect(await f.state()).toMatchObject({ streamFrames: 2 });
+    202|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 17 passed (19)
+   Start at  09:34:31
+   Duration  1.15s (transform 432ms, setup 0ms, import 617ms, tests 378ms, environment 0ms)

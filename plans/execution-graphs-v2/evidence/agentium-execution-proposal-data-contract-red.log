@@ -1,0 +1,104 @@
+
+ RUN  v4.1.11 /Users/xerycks/.codex/worktrees/core-harness-dependability/agentium
+
+ ❯ packages/harness/src/runtime/__tests__/execution-proposal.test.ts (46 tests | 2 failed) 100ms
+     × accepts cloned Agent-local sandbox data and rejects changed permissions or model-visible contracts 8ms
+     × pins concrete sandbox/schema/example/description contracts without persisting environment secrets 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-proposal.test.ts > trusted execution proposal admission > accepts cloned Agent-local sandbox data and rejects changed permissions or model-visible contracts
+ExecutionPlanValidationError: Agent-local tool read is not an approved executable binding
+ ❯ createCatalog packages/harness/src/runtime/execution-proposal.ts:254:17
+    252|           approvedBinding.tool.toModelOutput !== local.toModelOutput
+    253|         )
+    254|           throw new ExecutionPlanValidationError(
+       |                 ^
+    255|             `Agent-local tool ${local.name} is not an approved executa…
+    256|           );
+ ❯ validateExecutionPlan packages/harness/src/runtime/execution-proposal.ts:499:21
+ ❯ packages/harness/src/runtime/__tests__/execution-proposal.test.ts:291:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  packages/harness/src/runtime/__tests__/execution-proposal.test.ts > trusted execution proposal admission > pins concrete sandbox/schema/example/description contracts without persisting environment secrets
+AssertionError: expected [ { id: 'read', version: '1', …(8) } ] to deeply equal ArrayContaining{…}
+
+- Expected
++ Received
+
+- ArrayContaining [
+-   ObjectContaining {
+-     "tool": ObjectContaining {
+-       "sandbox": {
+-         "allowNetwork": false,
+-         "env": {
+-           "API_KEY": StringMatching /^sha256:/,
++ [
++   {
++     "id": "read",
++     "input": {
++       "additionalProperties": false,
++       "properties": {
++         "value": {
++           "type": "number",
++         },
++       },
++       "required": [
++         "value",
++       ],
++       "type": "object",
++     },
++     "kind": "tool",
++     "output": {
++       "additionalProperties": false,
++       "properties": {
++         "answer": {
++           "type": "number",
++         },
++       },
++       "required": [
++         "answer",
++       ],
++       "type": "object",
++     },
++     "recovery": "pure",
++     "referenceInputs": [
++       "value",
++     ],
++     "referenceOutputs": [
++       "answer",
++     ],
++     "templateValidation": true,
++     "tool": {
++       "approval": false,
++       "name": "read",
++       "parameters": {
++         "additionalProperties": false,
++         "properties": {
++           "value": {
++             "type": "number",
++           },
+          },
++         "required": [
++           "value",
++         ],
++         "type": "object",
+        },
++       "sandbox": true,
++       "transform": false,
+      },
++     "version": "1",
+    },
+  ]
+
+ ❯ packages/harness/src/runtime/__tests__/execution-proposal.test.ts:303:57
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 44 passed (46)
+   Start at  09:45:38
+   Duration  787ms (transform 387ms, setup 0ms, import 532ms, tests 100ms, environment 0ms)
