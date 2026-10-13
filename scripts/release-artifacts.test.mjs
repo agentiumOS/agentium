@@ -4,8 +4,15 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { packRelease, preflightRelease, publishRelease, verifyRelease } from "./release-artifacts.mjs";
+import {
+  packRelease,
+  parseReleaseOptions,
+  preflightRelease,
+  publishRelease,
+  verifyRelease,
+} from "./release-artifacts.mjs";
 
 const exec = promisify(execFile);
 const sourceRef = "a".repeat(40);
@@ -555,4 +562,56 @@ test("registry reads use the remaining reconciliation budget instead of extendin
   assert.deepEqual(readTimeouts, [1_000, 200]);
   assert.deepEqual(downloadTimeouts, [200]);
   assert.ok(outcomes.packages.every((entry) => entry.status === "verified_published"));
+});
+
+test("release CLI accepts an explicitly bounded registry reconciliation deadline", async () => {
+  const script = fileURLToPath(new URL("./release-artifacts.mjs", import.meta.url));
+  await assert.rejects(
+    exec(process.execPath, [script, "publish", "--reconciliation-timeout-ms", "600000"]),
+    (error) => error.code === 1 && /Publication requires the source ref/.test(error.stderr),
+  );
+});
+
+test("release command deadlines reject unbounded, noninteger and nonpositive values", () => {
+  assert.deepEqual(parseReleaseOptions([], "/release"), { root: "/release" });
+  for (const value of ["1", "180000", "600000"]) {
+    assert.equal(parseReleaseOptions(["--reconciliation-timeout-ms", value]).reconciliationTimeoutMs, Number(value));
+  }
+  for (const value of ["0", "-1", "1.5", "600001", "Infinity", "NaN", "1e5", "0x10", "9007199254740993"]) {
+    assert.throws(parseReleaseOptions.bind(null, ["--reconciliation-timeout-ms", value]), /positive integer.*600000/);
+  }
+  assert.throws(parseReleaseOptions.bind(null, ["--reconciliation-timeout-ms"]), /Invalid.*arguments/);
+  assert.throws(parseReleaseOptions.bind(null, ["--reconciliation-timeout-ms", ""]), /Invalid.*arguments/);
+  assert.throws(parseReleaseOptions.bind(null, ["--unknown", "600000"]), /Invalid.*arguments/);
+});
+
+test("an operator-selected deadline reconciles visibility beyond three minutes with only one upload", async (t) => {
+  const { options, manifest, manifestSha256 } = await packedFixture(t);
+  const clock = reconciliationClock();
+  let uploads = 0;
+  const execute = registryExecutor(
+    options,
+    async (name) => {
+      if (name.startsWith("@agentium/harness@")) return manifest.packages[1].integrity;
+      if (!uploads || clock.now() < 240_000) throw missingVersion();
+      return manifest.packages[0].integrity;
+    },
+    async () => {
+      uploads++;
+      return { stdout: "accepted" };
+    },
+  );
+  const outcomes = await publishRelease({
+    ...options,
+    ...parseReleaseOptions(["--reconciliation-timeout-ms", "600000"], options.root),
+    manifestSha256,
+    execute,
+    ...clock,
+    reconciliationIntervalMs: 120_000,
+  });
+  assert.equal(uploads, 1);
+  assert.deepEqual(clock.waits, [120_000, 120_000]);
+  assert.equal(clock.now(), 240_000);
+  assert.ok(outcomes.packages.every((entry) => entry.status === "verified_published"));
+  assert.equal(outcomes.packages[0].action, "published");
 });

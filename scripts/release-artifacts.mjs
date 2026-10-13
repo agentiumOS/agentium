@@ -532,16 +532,34 @@ export async function publishRelease(options) {
   return outcomes;
 }
 
-async function main() {
-  const [command, ...args] = process.argv.slice(2);
-  const options = { root: process.cwd() };
+export function parseReleaseOptions(args, root = process.cwd()) {
+  const options = { root };
   for (let index = 0; index < args.length; index += 2) {
     assert.ok(
-      ["--directory", "--ref", "--version", "--tag", "--manifest-sha256"].includes(args[index]) && args[index + 1],
+      ["--directory", "--ref", "--version", "--tag", "--manifest-sha256", "--reconciliation-timeout-ms"].includes(
+        args[index],
+      ) && args[index + 1],
       "Invalid release artifact command arguments",
     );
-    options[args[index].slice(2).replace(/-([a-z])/g, (_, character) => character.toUpperCase())] = args[index + 1];
+    const key = args[index].slice(2).replace(/-([a-z])/g, (_, character) => character.toUpperCase());
+    const value = args[index + 1];
+    if (key === "reconciliationTimeoutMs") {
+      const timeoutMs = Number(value);
+      assert.ok(
+        /^[1-9]\d*$/.test(value) && Number.isSafeInteger(timeoutMs) && timeoutMs <= 600_000,
+        "Reconciliation timeout must be a positive integer no greater than 600000 milliseconds",
+      );
+      options[key] = timeoutMs;
+    } else {
+      options[key] = value;
+    }
   }
+  return options;
+}
+
+async function main() {
+  const [command, ...args] = process.argv.slice(2);
+  const options = parseReleaseOptions(args);
   const commands = { preflight: preflightRelease, pack: packRelease, verify: verifyRelease, publish: publishRelease };
   assert.ok(Object.hasOwn(commands, command), "Use preflight, pack, verify or publish");
   const result = await commands[command](options);
