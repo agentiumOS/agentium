@@ -819,7 +819,13 @@ export class HarnessRuntime {
         const tools = [...(config.tools ?? []), ...(bound?.tools ?? [])];
         if (new Set(tools.map((tool) => tool.name)).size !== tools.length)
           throw new Error("Duplicate runtime tool bindings");
-        const executor = new ToolExecutor(tools, { approvalManager: config.approvalManager, executionPolicy: policy });
+        // Use the same policy identity as the root context: its lazy wrapper
+        // already delegates to the budget/grant policy. A distinct identity
+        // makes ToolExecutor compose and admit that same operation twice.
+        const executor = new ToolExecutor(tools, {
+          approvalManager: config.approvalManager,
+          executionPolicy: ctx.executionPolicy,
+        });
         const sources = bound
           ? await fetchHarnessContext(
               bound.contextSources,
@@ -1561,7 +1567,7 @@ export class HarnessRuntime {
                 };
                 const effectExecutor = new ToolExecutor([tool], {
                   approvalManager: config.approvalManager,
-                  executionPolicy: policy,
+                  executionPolicy: ctx.executionPolicy,
                 });
                 const [result] = await effectExecutor.executeAll([{ id: randomUUID(), name, arguments: args }], ctx);
                 await observeSettlement(result, ctx);

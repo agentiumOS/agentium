@@ -1,8 +1,18 @@
-import type { RunContext } from "../agent/run-context.js";
+import { RunContext } from "../agent/run-context.js";
 import type { RunOpts } from "../agent/types.js";
 import { abortable } from "../models/request-controls.js";
-import { WorkflowCancellationError, WorkflowMergeConflict } from "./errors.js";
-import type { AgentStep, ConditionStep, FunctionStep, ParallelStep, StepDef, StepResult } from "./types.js";
+import { WorkflowCancellationError, WorkflowDefinitionError, WorkflowMergeConflict } from "./errors.js";
+import { executeWorkflowGraph, validateWorkflowSteps } from "./graph-runner.js";
+import type {
+  AgentStep,
+  ConditionStep,
+  FunctionStep,
+  GraphStep,
+  ParallelStep,
+  RepeatStep,
+  StepDef,
+  StepResult,
+} from "./types.js";
 
 interface StepExecution<TState> {
   state: TState;
@@ -11,7 +21,11 @@ interface StepExecution<TState> {
 }
 
 function fatal(error: unknown): boolean {
-  return error instanceof WorkflowMergeConflict || error instanceof WorkflowCancellationError;
+  return (
+    error instanceof WorkflowMergeConflict ||
+    error instanceof WorkflowCancellationError ||
+    error instanceof WorkflowDefinitionError
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -41,6 +55,8 @@ export class StepRunner<TState extends Record<string, unknown>> {
     state: TState,
     ctx: RunContext,
     opts?: RunOpts,
+    scope?: string,
+    depth = 0,
   ): Promise<StepExecution<TState>> {
     let currentState = { ...state };
     const patch: Partial<TState> = {};
@@ -52,7 +68,7 @@ export class StepRunner<TState extends Record<string, unknown>> {
         results.push({ stepName: step.name, status: "skipped", durationMs: 0 });
         continue;
       }
-      const outcome = await this.executeStepWithPatch(step, currentState, ctx, opts);
+      const outcome = await this.executeStepWithPatch(step, currentState, ctx, opts, scope, depth);
       currentState = outcome.state;
       Object.assign(patch, outcome.patch);
       results.push(...outcome.results);
@@ -62,8 +78,13 @@ export class StepRunner<TState extends Record<string, unknown>> {
     return { state: currentState, patch, results };
   }
 
-  private emit(ctx: RunContext, stepName: string, status: "start" | "done" | "error"): void {
-    ctx.eventBus.emit("workflow.step", { runId: ctx.runId, stepName, status });
+  private emit(ctx: RunContext, stepName: string, status: "start" | "done" | "error", executionPath?: string): void {
+    ctx.eventBus.emit("workflow.step", {
+      runId: ctx.runId,
+      stepName,
+      status,
+      ...(executionPath ? { executionPath } : {}),
+    });
   }
 
   private async executeStepWithPatch(
@@ -71,29 +92,51 @@ export class StepRunner<TState extends Record<string, unknown>> {
     state: TState,
     ctx: RunContext,
     opts?: RunOpts,
+    scope?: string,
+    depth = 0,
   ): Promise<StepExecution<TState>> {
     ctx.signal?.throwIfAborted();
+    const path =
+      scope !== undefined
+        ? `${scope}/${encodeURIComponent(step.name)}`
+        : "graph" in step || "repeat" in step
+          ? encodeURIComponent(step.name)
+          : undefined;
+    if (path !== undefined && depth >= 64)
+      throw new WorkflowDefinitionError("Workflow graph/repeat composition exceeds depth 64");
     const start = Date.now();
-    this.emit(ctx, step.name, "start");
+    this.emit(ctx, step.name, "start", path);
     try {
       let outcome: StepExecution<TState>;
-      if ("condition" in step) outcome = await this.executeConditionStep(step, state, ctx, opts);
-      else if ("parallel" in step) outcome = await this.executeParallelStep(step, state, ctx, opts);
+      if ("graph" in step) outcome = await this.executeGraphStep(step, state, ctx, opts, path ?? step.name, depth);
+      else if ("repeat" in step)
+        outcome = await this.executeRepeatStep(step, state, ctx, opts, path ?? step.name, depth);
+      else if ("condition" in step) outcome = await this.executeConditionStep(step, state, ctx, opts, path, depth);
+      else if ("parallel" in step) outcome = await this.executeParallelStep(step, state, ctx, opts, path, depth);
       else if ("agent" in step)
-        outcome = await this.withRetry(() => this.executeAgentStep(step, state, ctx, opts), ctx);
-      else outcome = await this.withRetry(() => this.executeFunctionStep(step, state, ctx), ctx);
+        outcome = await this.withRetry(() => this.executeAgentStep(step, state, ctx, opts, path), ctx);
+      else outcome = await this.withRetry(() => this.executeFunctionStep(step, state, ctx, path), ctx);
       ctx.signal?.throwIfAborted();
       outcome.results[0].durationMs = Date.now() - start;
-      this.emit(ctx, step.name, outcome.results[0].status === "error" ? "error" : "done");
+      if (path !== undefined) outcome.results[0].executionPath = path;
+      this.emit(ctx, step.name, outcome.results[0].status === "error" ? "error" : "done", path);
       return outcome;
     } catch (error) {
       ctx.signal?.throwIfAborted();
       if (fatal(error)) throw error;
-      this.emit(ctx, step.name, "error");
+      this.emit(ctx, step.name, "error", path);
       return {
         state,
         patch: {},
-        results: [{ stepName: step.name, status: "error", error: errorMessage(error), durationMs: Date.now() - start }],
+        results: [
+          {
+            stepName: step.name,
+            status: "error",
+            error: errorMessage(error),
+            durationMs: Date.now() - start,
+            ...(path ? { executionPath: path } : {}),
+          },
+        ],
       };
     }
   }
@@ -115,10 +158,11 @@ export class StepRunner<TState extends Record<string, unknown>> {
     state: TState,
     ctx: RunContext,
     opts?: RunOpts,
+    executionPath?: string,
   ): Promise<StepExecution<TState>> {
     const input = step.inputFrom ? step.inputFrom(state) : JSON.stringify(state);
     const output = await step.agent.run(input, {
-      sessionId: `${ctx.sessionId}:${step.name}`,
+      sessionId: `${ctx.sessionId}:${executionPath ?? step.name}`,
       userId: ctx.userId,
       tenantId: ctx.tenantId,
       signal: ctx.signal,
@@ -128,7 +172,11 @@ export class StepRunner<TState extends Record<string, unknown>> {
       apiKey: opts?.apiKey,
       dependencies: opts?.dependencies,
       questions: opts?.questions,
-      metadata: { ...ctx.metadata, parentRunId: ctx.runId },
+      metadata: {
+        ...ctx.metadata,
+        parentRunId: ctx.runId,
+        ...(executionPath ? { workflowExecutionPath: executionPath } : {}),
+      },
     });
     ctx.signal?.throwIfAborted();
     if (output.status === "cancelled") throw new WorkflowCancellationError(step.name, output.reason?.message);
@@ -155,12 +203,16 @@ export class StepRunner<TState extends Record<string, unknown>> {
     step: FunctionStep<TState>,
     state: TState,
     ctx: RunContext,
+    executionPath?: string,
   ): Promise<StepExecution<TState>> {
+    const scopedContext = executionPath
+      ? new RunContext({ ...ctx, metadata: { ...ctx.metadata, workflowExecutionPath: executionPath } })
+      : ctx;
     const value = ctx.executionServices
-      ? await ctx.executionServices.dispatchEffect(`workflow:${step.name}`, { state }, async (args) =>
-          step.run(args.state as TState, ctx),
+      ? await ctx.executionServices.dispatchEffect(`workflow:${executionPath ?? step.name}`, { state }, async (args) =>
+          step.run(args.state as TState, scopedContext),
         )
-      : await step.run(state, ctx);
+      : await step.run(state, scopedContext);
     ctx.signal?.throwIfAborted();
     const patch = this.ownedPatch(value);
     return { state: { ...state, ...patch }, patch, results: [{ stepName: step.name, status: "done", durationMs: 0 }] };
@@ -171,10 +223,12 @@ export class StepRunner<TState extends Record<string, unknown>> {
     state: TState,
     ctx: RunContext,
     opts?: RunOpts,
+    scope?: string,
+    depth = 0,
   ): Promise<StepExecution<TState>> {
     if (!step.condition(state))
       return { state, patch: {}, results: [{ stepName: step.name, status: "skipped", durationMs: 0 }] };
-    const outcome = await this.executeStepsWithPatch(step.steps, state, ctx, opts);
+    const outcome = await this.executeStepsWithPatch(step.steps, state, ctx, opts, scope, depth + 1);
     const failed = outcome.results.some((result) => result.status === "error");
     return {
       ...outcome,
@@ -187,9 +241,11 @@ export class StepRunner<TState extends Record<string, unknown>> {
     state: TState,
     ctx: RunContext,
     opts?: RunOpts,
+    scope?: string,
+    depth = 0,
   ): Promise<StepExecution<TState>> {
     const settled = await Promise.allSettled(
-      step.parallel.map((branch) => this.executeStepWithPatch(branch, { ...state }, ctx, opts)),
+      step.parallel.map((branch) => this.executeStepWithPatch(branch, { ...state }, ctx, opts, scope, depth + 1)),
     );
     ctx.signal?.throwIfAborted();
     for (const outcome of settled) {
@@ -223,6 +279,91 @@ export class StepRunner<TState extends Record<string, unknown>> {
       patch,
       results: [{ stepName: step.name, status: failed ? "error" : "done", durationMs: 0 }, ...results],
     };
+  }
+
+  private async executeGraphStep(
+    step: GraphStep<TState>,
+    state: TState,
+    ctx: RunContext,
+    opts: RunOpts | undefined,
+    scope: string,
+    depth: number,
+  ): Promise<StepExecution<TState>> {
+    validateWorkflowSteps([step]);
+    const outcome = await executeWorkflowGraph(step, state, ctx.signal, (node, input) =>
+      this.executeStepWithPatch(node.step, input, ctx, opts, `${scope}/${encodeURIComponent(node.id)}`, depth + 1),
+    );
+    for (const result of outcome.results) {
+      if (result.reason?.code === "workflow_dependency_blocked" || result.reason?.code === "workflow_node_failed")
+        result.executionPath = `${scope}/${result.executionPath}`;
+    }
+    const failed = outcome.results.some(
+      (result) => result.status === "error" || result.reason?.code === "workflow_dependency_blocked",
+    );
+    return {
+      state: { ...state, ...outcome.patch },
+      patch: outcome.patch,
+      results: [{ stepName: step.name, status: failed ? "error" : "done", durationMs: 0 }, ...outcome.results],
+    };
+  }
+
+  private async executeRepeatStep(
+    step: RepeatStep<TState>,
+    state: TState,
+    ctx: RunContext,
+    opts: RunOpts | undefined,
+    scope: string,
+    depth: number,
+  ): Promise<StepExecution<TState>> {
+    if (
+      !Number.isSafeInteger(step.maxIterations) ||
+      step.maxIterations <= 0 ||
+      typeof step.while !== "function" ||
+      !Array.isArray(step.repeat)
+    )
+      throw new WorkflowDefinitionError("Repeat requires a positive safe maxIterations, predicate and step array");
+    validateWorkflowSteps([step]);
+    let current = { ...state };
+    const patch: Partial<TState> = {};
+    const results: StepResult[] = [];
+    let iteration = 0;
+    while (true) {
+      ctx.signal?.throwIfAborted();
+      const again = step.while(current, iteration);
+      ctx.signal?.throwIfAborted();
+      if (typeof again !== "boolean") throw new WorkflowDefinitionError("Repeat predicate must return a boolean");
+      if (!again) break;
+      if (iteration >= step.maxIterations) {
+        const reason = {
+          code: "workflow_iteration_limit",
+          message: `Workflow repeat ${step.name} exhausted ${step.maxIterations} iterations`,
+        };
+        return {
+          state: current,
+          patch,
+          results: [{ stepName: step.name, status: "error", error: reason.message, reason, durationMs: 0 }, ...results],
+        };
+      }
+      const outcome = await this.executeStepsWithPatch(
+        step.repeat,
+        current,
+        ctx,
+        opts,
+        `${scope}/${iteration}`,
+        depth + 1,
+      );
+      current = outcome.state;
+      Object.assign(patch, outcome.patch);
+      results.push(...outcome.results);
+      if (outcome.results.some((result) => result.status === "error"))
+        return {
+          state: current,
+          patch,
+          results: [{ stepName: step.name, status: "error", durationMs: 0 }, ...results],
+        };
+      iteration++;
+    }
+    return { state: current, patch, results: [{ stepName: step.name, status: "done", durationMs: 0 }, ...results] };
   }
 
   private async withRetry(fn: () => Promise<StepExecution<TState>>, ctx: RunContext): Promise<StepExecution<TState>> {

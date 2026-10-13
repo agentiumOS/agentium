@@ -101,6 +101,7 @@ export type AgentEventMap = {
   "workflow.step": {
     runId: string;
     stepName: string;
+    executionPath?: string;
     status: "start" | "done" | "error";
   };
 

@@ -158,7 +158,7 @@ it.skipIf(!enabled).each([false, true])(
         if (name in core) throw new Error("Removed compatibility export: " + name);
       }
       if ("deep" in core.Agent || "legacyDeep" in harness) throw new Error("Implicit deep preset still exported");
-      for (const name of ["MCPToolProvider", "MCPV2ToolProvider", "A2ARemoteAgent", "CrossEncoderReranker"]) {
+      for (const name of ["MCPToolProvider", "MCPV2ToolProvider", "A2ARemoteAgent", "CrossEncoderReranker", "WorkflowDefinitionError"]) {
         if (typeof core[name] !== "function") throw new Error("Missing supported export: " + name);
       }`;
       await writeFile(
@@ -172,6 +172,18 @@ it.skipIf(!enabled).each([false, true])(
       await exec(process.execPath, [join(fixture, "esm.mjs")], { cwd: fixture });
       await exec(process.execPath, [join(fixture, "common.cjs")], { cwd: fixture });
       const offline = `
+        const graphWorkflow = new core.Workflow({name:"packed-graph",register:false,initialState:{left:0,right:0,total:0,checked:false},steps:[{
+          name:"repair",maxIterations:1,while:state=>!state.checked,repeat:[{
+            name:"calculate",maxConcurrency:2,graph:()=>[
+              {id:"left",step:{name:"read",run:async()=>({left:2})}},
+              {id:"right",step:{name:"read",run:async()=>({right:3})}},
+              {id:"sum",inputsFrom:["left","right"],step:{name:"sum",run:async state=>({total:state.left+state.right,checked:true})}}
+            ]
+          }]
+        }]});
+        const graphRuntime = new harness.HarnessRuntime({driver:harness.workflowDriver(graphWorkflow),grants:{toolIds:["workflow:repair/0/calculate/left/read","workflow:repair/0/calculate/right/read","workflow:repair/0/calculate/sum/sum"],modelRoles:[]},budgets:{maxToolCalls:3,maxModelCalls:0}});
+        const graphResult = await graphRuntime.run("{}",{identity:{tenantId:"fixture",userId:"fixture"},sessionId:"packed-graph"});
+        if(graphResult.status!=="completed" || graphResult.structured?.total!==5 || graphResult.budget?.toolCalls.used!==3) throw new Error("Packed workflow graph failed");
         const model = {providerId:"fixture",modelId:"fixture",generate:async()=>({message:{role:"assistant",content:"packed answer"},finishReason:"stop",usage:{promptTokens:1,completionTokens:1,totalTokens:2},raw:{}}),async *stream(){}};
         const config = {driver:harness.agentDriver({name:"packed",model}),grants:{toolIds:[],modelRoles:["main"]},completionPolicy:harness.verifiedCompletionPolicy({verifier:{verify:async()=>({verdict:"pass",reason:"Host fixture checked current candidate",evidence:["fixture:current"]})}})};
         const target = testing.createHarnessEvalTarget({config,identity:{tenantId:"fixture",userId:"fixture"}});
@@ -186,11 +198,11 @@ it.skipIf(!enabled).each([false, true])(
       `;
       await writeFile(
         join(fixture, "offline.mjs"),
-        `import * as harness from "@agentium/harness"; import * as testing from "@agentium/harness/testing"; ${withEval ? 'import * as evaluation from "@agentium/eval";' : ""} ${offline}`,
+        `import * as core from "@agentium/core"; import * as harness from "@agentium/harness"; import * as testing from "@agentium/harness/testing"; ${withEval ? 'import * as evaluation from "@agentium/eval";' : ""} ${offline}`,
       );
       await writeFile(
         join(fixture, "offline.cjs"),
-        `const harness = require("@agentium/harness"); const testing = require("@agentium/harness/testing"); ${withEval ? 'const evaluation = require("@agentium/eval");' : ""} (async()=>{${offline}})().catch(error=>{console.error(error);process.exitCode=1;});`,
+        `const core = require("@agentium/core"); const harness = require("@agentium/harness"); const testing = require("@agentium/harness/testing"); ${withEval ? 'const evaluation = require("@agentium/eval");' : ""} (async()=>{${offline}})().catch(error=>{console.error(error);process.exitCode=1;});`,
       );
       await exec(process.execPath, [join(fixture, "offline.mjs")], { cwd: fixture });
       await exec(process.execPath, [join(fixture, "offline.cjs")], { cwd: fixture });
@@ -203,6 +215,17 @@ it.skipIf(!enabled).each([false, true])(
       import { type AgentCloseOptions, type MemoryDrainResult, type RememberResult, type ScopedStorageOptions, type WorkflowContinuationOptions } from "@agentium/core";
       import { verifiedCompletionPolicy, continuityContextPolicy, currentSessionRecallPolicy, incrementalTaskSummaryPolicy, type RecallBudget, type RecallStore, type RecallScope, type TaskSummaryRecord } from "@agentium/harness";
       import { createHarnessEvalTarget, type HarnessEvalTarget } from "@agentium/harness/testing";
+
+      import { Workflow, WorkflowDefinitionError, type GraphStep, type WorkflowGraphNode, type RepeatStep, type StepDef, type StepResult } from "@agentium/core";
+      import { workflowDriver } from "@agentium/harness";
+      type GraphState = {count:number};
+      const node: WorkflowGraphNode<GraphState> = {id:"a",step:{name:"produce",run:async state=>({count:state.count+1})}};
+      const graph: GraphStep<GraphState> = {name:"episode",graph:()=>[node],maxConcurrency:2,merge:"error"};
+      const repeat: RepeatStep<GraphState> = {name:"repair",repeat:[graph],maxIterations:2,while:state=>state.count<2};
+      const steps: StepDef<GraphState>[] = [repeat];
+      const row: StepResult = {stepName:"produce",status:"done",durationMs:0,executionPath:"episode/a/produce",reason:{code:"fixture",message:"verified"}};
+      const invalid = new WorkflowDefinitionError("Invalid host graph");
+      workflowDriver(new Workflow({name:"typed-graph",register:false,initialState:{count:0},steps}));
       const scopedOptions: ScopedStorageOptions = {keyEncoding:"tuple-v1",ownsInner:false};
       const closeOptions: AgentCloseOptions = {closeStorage:false,memoryDrain:{timeoutMs:5000}};
       const verifier = verifiedCompletionPolicy({verifier:{verify:async()=>({verdict:"unknown",reason:"Missing current evidence"})}});
@@ -268,6 +291,17 @@ it.skipIf(!enabled).each([false, true])(
         import { verifiedCompletionPolicy, continuityContextPolicy, type RecallStore, type TaskSummaryRecord } from "@agentium/harness";
         import { createHarnessEvalTarget, type HarnessEvalTarget } from "@agentium/harness/testing";
         import { type AgentCloseOptions, type ScopedStorageOptions, type ModelProvider, Agent } from "@agentium/core";
+
+      import { Workflow, WorkflowDefinitionError, type GraphStep, type WorkflowGraphNode, type RepeatStep, type StepDef, type StepResult } from "@agentium/core";
+      import { workflowDriver } from "@agentium/harness";
+      type GraphState = {count:number};
+      const node: WorkflowGraphNode<GraphState> = {id:"a",step:{name:"produce",run:async state=>({count:state.count+1})}};
+      const graph: GraphStep<GraphState> = {name:"episode",graph:()=>[node],maxConcurrency:2,merge:"error"};
+      const repeat: RepeatStep<GraphState> = {name:"repair",repeat:[graph],maxIterations:2,while:state=>state.count<2};
+      const steps: StepDef<GraphState>[] = [repeat];
+      const row: StepResult = {stepName:"produce",status:"done",durationMs:0,executionPath:"episode/a/produce",reason:{code:"fixture",message:"verified"}};
+      const invalid = new WorkflowDefinitionError("Invalid host graph");
+      workflowDriver(new Workflow({name:"typed-graph",register:false,initialState:{count:0},steps}));
         const closeOptions: AgentCloseOptions = {memoryDrain:{timeoutMs:100}};
         const scopedOptions: ScopedStorageOptions = {keyEncoding:"tuple-v1"};
         const verifier = verifiedCompletionPolicy({verifier:{verify:async()=>({verdict:"pass",reason:"Current host evidence"})}});

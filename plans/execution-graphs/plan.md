@@ -1,0 +1,22 @@
+# Execution graph implementation plan
+
+Spec: [design.md](design.md). Baseline `f5e4434`. Research/runtime/API investigations are read-only and parallel; implementation uses disjoint file ownership after the contracts are frozen. Coordinator owns architecture, shared integration and commits. No publication, deployment or merge.
+
+## Global constraints
+
+Reuse Workflow, StepRunner, Agent, ToolExecutor, ExecutionServices, workflowDriver and existing evaluation adapters. Preserve host authority, cancellation and one controlled retry owner. Bound episodes and repeats. Join owned patches independent of settlement order. Distinguish checkpoint continuation from recorded replay and remote effect safety. Preserve old StepDef callers and the original concurrent checkout. No new dependency.
+
+## Tasks
+
+- [x] 1. Coordinator freezes additive types/errors/event fields, writes consumer behavior tests first, and runs RED before integration. Files: core workflow types/errors/index; events types; workflow graph/repeat tests. Acceptance: scheduling/readiness/isolation/invalid graphs/conflicts/branch joins/repair limits/cancel/partial failure/retries/checkpoint no-repeat all represented. Interfaces: GraphStep, WorkflowGraphNode, RepeatStep, StepResult optional identity/reason.
+- [x] 2. Graph implementer owns only `core/src/workflow/graph-runner.ts` and its focused scheduler tests. Consume frozen public types; exported internal `executeWorkflowGraph(step, state, signal, executeNode)` returns `{patch, results}`; executeNode returns owned `{patch,results}`. Validate complete DAG; stable order, cloned inputs/patches, bounded incremental ready dispatch, blocked nodes, strict comparable-writer merge, cancellation/fatal draining. Write test first and record RED/GREEN. No shared-file edits or commits.
+- [x] 3. Coordinator integrates scheduler in StepRunner and implements bounded RepeatStep, scoped Agent sessions/effect names/results/events. Reuse retry/effect ports. Tests first; targeted core tests/typecheck. Expected: new and old workflows pass with no ordinary failure swallowed as completion, no cancellation late patch and no downstream conflict effect.
+- [x] 4. Harness/evaluation expert owns only a new `harness/src/__tests__/execution-graphs.test.ts` and optional `scripts/compare-execution-graphs.ts`; no driver/runtime replacement. Verify real Workflow through workflowDriver under shared model/tool budget and grants, concurrency/cancel, Agent instruction authority, legacy loop caller and eval adapter. Compare deterministic fixture model/task/budgets, report correctness/calls/tokens/latency with explicit offline limits. Record RED/GREEN where integration is missing; no paid model calls.
+- [x] 5. Coordinator documents examples/limits in workflow README and harness guide, adds packed consumer assertions to existing package test, integrates and self-reviews all contributions. Preserve research and inventories under plans/execution-graphs. Acceptance: public ESM/CJS/type exports resolve; graph example uses existing driver; no durable capability widening.
+- [ ] 6. Fresh independent reviewer checks whole branch against spec, execution boundary/failure/cancellation/state edge cases and tests. Coordinator resolves material findings with reproducing tests, then runs full build, default tests, all workspace types, packed consumers, metadata checks and changed-file Biome. Record exact revision, results, skips and fixture comparison. Commit locally, leave branch/worktree available, no push/merge/publish/deploy.
+
+## Verification and review focus
+
+Targeted commands: `npx vitest run packages/core/src/workflow/__tests__`; `npx vitest run packages/harness/src/__tests__/execution-graphs.test.ts`; core/harness TypeScript checks. Full checks follow current CI scripts. Correctness comparisons must use literal independently derived expected outputs and identical offline provider/resource configuration; timings are diagnostics, not a speedup threshold or production benchmark.
+
+Review adversarial definitions (duplicate IDs/edges, self/missing/cyclic references, malformed limits/steps), timing inversions, transitive data visibility, same-value writes, ordered and unordered rewrites, skipped control vs data inputs, failure in nested groups, scoped duplicate Agent names, factory/predicate throws or cancellation, shared budget admission and checkpoint loss windows. External side-effect/resource independence remains host-owned.

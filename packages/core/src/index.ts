@@ -548,17 +548,25 @@ export {
   type WorkflowCheckpoint,
   type WorkflowCheckpointStore,
 } from "./workflow/checkpoints.js";
-export { WorkflowCancellationError, WorkflowCheckpointError, WorkflowMergeConflict } from "./workflow/errors.js";
+export {
+  WorkflowCancellationError,
+  WorkflowCheckpointError,
+  WorkflowDefinitionError,
+  WorkflowMergeConflict,
+} from "./workflow/errors.js";
 // Workflow
 export type {
   AgentStep,
   ConditionStep,
   FunctionStep,
+  GraphStep,
   ParallelStep,
+  RepeatStep,
   StepDef,
   StepResult,
   WorkflowConfig,
   WorkflowContinuationOptions,
+  WorkflowGraphNode,
   WorkflowResult,
 } from "./workflow/types.js";
 export { Workflow } from "./workflow/workflow.js";

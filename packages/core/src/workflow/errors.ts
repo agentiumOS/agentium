@@ -36,3 +36,13 @@ export class WorkflowCheckpointError extends Error {
     this.name = "WorkflowCheckpointError";
   }
 }
+
+/** Invalid generated definitions reject before their episode starts effects. */
+export class WorkflowDefinitionError extends Error {
+  readonly code = "workflow_definition_invalid";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "WorkflowDefinitionError";
+  }
+}

@@ -24,6 +24,8 @@ const checkpointEnvelope = z.object({
       stepName: z.string(),
       status: z.enum(["done", "error", "skipped"]),
       error: z.string().optional(),
+      executionPath: z.string().optional(),
+      reason: z.object({ code: z.string(), message: z.string() }).optional(),
       durationMs: z.number().finite().nonnegative(),
       output: z
         .object({
@@ -179,12 +181,22 @@ export class Workflow<TState extends Record<string, unknown> = Record<string, un
 
   private aggregate(state: TState, stepResults: StepResult[]): WorkflowResult<TState> {
     const failed = stepResults.some((result) => result.status === "error");
+    const exhausted = stepResults.find(
+      (result) => result.status === "error" && result.reason?.code === "workflow_iteration_limit",
+    );
     return {
       state,
       stepResults,
       status: failed ? "failed" : "completed",
       ...(failed
-        ? { reason: { code: "workflow_step_failed" as const, message: "One or more Workflow steps failed" } }
+        ? {
+            reason: exhausted
+              ? {
+                  code: "workflow_iteration_limit" as const,
+                  message: exhausted.reason?.message ?? "Workflow iteration limit reached",
+                }
+              : { code: "workflow_step_failed" as const, message: "One or more Workflow steps failed" },
+          }
         : {}),
     };
   }

@@ -608,3 +608,42 @@ Durable recovery requires versioned execution checkpoints, pending-input state a
 safe continuation of effects. That work is deferred, as is paged skill-reference
 retrieval: the current built-in skill tool still reads whole files. A future paging
 contract should include stable offsets/revisions and truthful omission markers.
+
+## Execution graphs
+
+Use core `Workflow` graph/repeat steps with the existing `workflowDriver`. No graph database, additional driver or second agent loop is needed. A complete [Workflow guide](../core/src/workflow/README.md#dependency-graphs-and-bounded-replanning) defines data/control edges, joins, scoped identities, repair bounds and checkpoint limitations.
+
+```ts
+import { Workflow } from "@agentium/core";
+import { HarnessRuntime, workflowDriver } from "@agentium/harness";
+
+const workflow = new Workflow({
+  name: "graph-example", register: false,
+  initialState: { left: 0, right: 0, total: 0 },
+  steps: [{
+    name: "calculate", maxConcurrency: 2,
+    graph: [
+      { id: "left", step: { name: "read", run: async () => ({ left: 2 }) } },
+      { id: "right", step: { name: "read", run: async () => ({ right: 3 }) } },
+      { id: "sum", inputsFrom: ["left", "right"],
+        step: { name: "sum", run: async (state) => ({ total: state.left + state.right }) } },
+    ],
+  }],
+});
+const runtime = new HarnessRuntime({
+  driver: workflowDriver(workflow),
+  grants: {
+    toolIds: ["workflow:calculate/left/read", "workflow:calculate/right/read", "workflow:calculate/sum/sum"],
+    modelRoles: [],
+  },
+  budgets: { maxToolCalls: 3, maxModelCalls: 0 },
+});
+const result = await runtime.run("{}", {
+  identity: { tenantId: "verified-tenant", userId: "verified-user" }, sessionId: "calculation-1",
+});
+// result.structured.total = 5; trusted functions use the existing controlled effect port.
+```
+
+Graph node functions and Agent tools retain the host's grants, approval policy, cancellation and aggregate budget. Nested node work can exceed the outer node concurrency, and hosts own external resource locking/idempotency. WorkflowDriver returns final state and aggregate reason; direct Workflow results contain node diagnostics. `workflow_iteration_limit` survives driver/eval composition. Default graph joins reject incomparable writes; existing serial/parallel callers keep their behavior.
+
+Persistence remains explicit core boundary continuation. WorkflowDriver does not start checkpointing automatically or provide durable graph recovery. No per-node resume, recorded playback or exactly-once remote effects is claimed.
