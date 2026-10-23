@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.10.0] - 2026-10-24
+
+### Added
+- Content-pinned `SkillMdSnapshot` catalogs preserve bounded skill instructions and references across filesystem changes, with digest validation and progressive disclosure.
+- Opt-in native decision journaling in `@agentium/harness` retains complete model, tool, controller, input, completion and finalization boundaries through a host-owned journal. Content-addressed fragments support large snapshots without repeating unchanged history.
+- An opt-in application-state recovery lifecycle records ordered model/tool boundaries with a host-supplied reducer and configuration identity.
+- Google and Ollama providers expose shared request controls for timeouts, cancellation and retry ownership, including streaming cleanup and configurable provider endpoints.
+
+### Fixed
+- Native recovery rejects run-mode changes before replaying retained state, and closes abandoned model streams without committing partial responses.
+- Tool execution preserves host recovery control flow and can serialize journaled tool outcomes in causal order.
+
+### Compatibility and limits
+- New recovery APIs are opt-in. Hosts own durable storage, fencing, configuration commitments, application snapshots and reconciliation of ambiguous external effects. The ordinary native driver's `durable` capability remains false; these APIs do not promise arbitrary Agent hook replay or exactly-once effects.
+- Native journaling and application-state lifecycle recovery are separate modes and cannot be combined. See [harness dependability](packages/harness/DEPENDABILITY.md) and [skill snapshots](packages/core/src/skills/README.md) for supported boundaries and limits.
+
 ## [4.9.0] - Release preparation
 
 This entry describes the integrated release candidate after 4.8.3. Package publication and production or live-model validation are separate release gates.

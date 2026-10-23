@@ -1,9 +1,16 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod/v3";
 import { defineTool } from "../tools/define-tool.js";
 import type { ToolDef } from "../tools/types.js";
+import {
+  captureSkillMdSnapshot,
+  isSkillReferencePath,
+  parseSkillMdSnapshot,
+  type SkillMdSnapshot,
+  type SkillSnapshotLimits,
+} from "./skill-snapshot.js";
 
 export interface SkillMd {
   name: string;
@@ -15,7 +22,9 @@ export interface SkillMd {
 
 export interface SkillMdManagerConfig {
   /** Directories to scan for skill folders that contain SKILL.md */
-  dirs: string[];
+  dirs?: string[];
+  /** A validated, content-pinned catalog instead of live filesystem lookup. */
+  snapshot?: unknown;
 }
 
 const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -27,8 +36,65 @@ const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export class SkillMdManager {
   private skills: SkillMd[] = [];
   private initPromise: Promise<void> | null = null;
+  private pinned: SkillMdSnapshot | undefined;
 
-  constructor(private config: SkillMdManagerConfig) {}
+  constructor(private config: SkillMdManagerConfig) {
+    if (config.snapshot !== undefined) {
+      if (config.dirs?.length) throw new Error("Configure either skill directories or a snapshot");
+      this.pinned = parseSkillMdSnapshot(config.snapshot);
+      this.skills = this.pinned.skills.map((skill) => {
+        const parsed = parseSkillMd(skill.files["SKILL.md"], skill.name);
+        if (!parsed || parsed.name !== skill.name) throw new Error("Invalid pinned skill metadata");
+        return { ...parsed, dir: "" };
+      });
+      this.initPromise = Promise.resolve();
+    }
+  }
+
+  /** Capture a portable catalog at admission. Store it with the run before dispatch. */
+  async createSnapshot(limits: SkillSnapshotLimits): Promise<SkillMdSnapshot> {
+    if (this.pinned) {
+      let bytes = 0;
+      let count = 0;
+      for (const skill of this.pinned.skills) {
+        for (const content of Object.values(skill.files)) {
+          count++;
+          bytes += Buffer.byteLength(content);
+        }
+      }
+      if (!Number.isSafeInteger(limits.maxBytes) || limits.maxBytes <= 0 || bytes > limits.maxBytes)
+        throw new Error("Skill snapshot byte limit exceeded");
+      if (!Number.isSafeInteger(limits.maxFiles) || limits.maxFiles <= 0 || count > limits.maxFiles)
+        throw new Error("Skill snapshot file limit exceeded");
+      return parseSkillMdSnapshot(this.pinned);
+    }
+    const locations: { name: string; dir: string }[] = [];
+    for (const dir of this.config.dirs ?? []) {
+      if (existsSync(dir)) collectSnapshotLocations(resolve(dir), locations, limits.maxFiles);
+    }
+    const snapshot = await captureSkillMdSnapshot(locations, limits, (source, fallback) => {
+      const parsed = parseSkillMd(source, fallback);
+      if (!parsed) throw new Error("Invalid skill metadata in snapshot");
+      return parsed.name;
+    });
+    new SkillMdManager({ snapshot });
+    return snapshot;
+  }
+
+  async readReference(name: string, path: string): Promise<string> {
+    const skill = await this.get(name);
+    if (!skill) return `Skill "${name}" not found.`;
+    if (!isSkillReferencePath(path)) return "Invalid path.";
+    if (this.pinned) {
+      const files = this.pinned.skills.find((entry) => entry.name === name)?.files;
+      return files && Object.hasOwn(files, path) ? files[path] : `File not found: ${path}`;
+    }
+    try {
+      return await readFile(join(skill.dir, path), "utf8");
+    } catch {
+      return `File not found: ${path}`;
+    }
+  }
 
   async ensureLoaded(): Promise<void> {
     if (!this.initPromise) this.initPromise = this.scan();
@@ -42,7 +108,8 @@ export class SkillMdManager {
 
   async get(name: string): Promise<SkillMd | null> {
     await this.ensureLoaded();
-    return this.skills.find((s) => s.name === name) ?? null;
+    const skill = this.skills.find((s) => s.name === name);
+    return skill ? { ...skill } : null;
   }
 
   /** ~100-token index injected into the system prompt. */
@@ -85,18 +152,7 @@ export class SkillMdManager {
           path: z.string().describe("Relative path inside the skill folder, e.g. references/guide.md"),
         }),
         execute: async ({ name, path }) => {
-          const skill = await this.get(name);
-          if (!skill) return `Skill "${name}" not found.`;
-          if (path.includes("..") || path.startsWith("/") || path.includes("\0")) {
-            return "Invalid path.";
-          }
-          const full = join(skill.dir, path);
-          if (!full.startsWith(skill.dir)) return "Invalid path.";
-          try {
-            return await readFile(full, "utf8");
-          } catch {
-            return `File not found: ${path}`;
-          }
+          return this.readReference(name, path);
         },
       }),
     ];
@@ -104,12 +160,36 @@ export class SkillMdManager {
 
   private async scan(): Promise<void> {
     const found: SkillMd[] = [];
-    for (const dir of this.config.dirs) {
+    for (const dir of this.config.dirs ?? []) {
       const root = resolve(dir);
       if (!existsSync(root)) continue;
       collectSkillDirs(root, found);
     }
     this.skills = found;
+  }
+}
+
+// Discover without reading SKILL.md: snapshot byte limits must apply before any text is loaded.
+function collectSnapshotLocations(
+  root: string,
+  out: { name: string; dir: string }[],
+  maxFiles: number,
+  depth = 0,
+): void {
+  if (depth > 4) return;
+  if (lstatSync(root).isSymbolicLink()) throw new Error("Skill snapshot cannot contain symbolic links");
+  const entries = readdirSync(root).sort();
+  if (entries.includes("SKILL.md")) {
+    if (out.length >= maxFiles) throw new Error("Skill snapshot file limit exceeded");
+    out.push({ name: basename(root), dir: root });
+    return;
+  }
+  for (const name of entries) {
+    if (name.startsWith(".")) continue;
+    const full = join(root, name);
+    const entry = lstatSync(full);
+    if (entry.isSymbolicLink()) throw new Error("Skill snapshot cannot contain symbolic links");
+    if (entry.isDirectory()) collectSnapshotLocations(full, out, maxFiles, depth + 1);
   }
 }
 

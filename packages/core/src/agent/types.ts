@@ -117,6 +117,8 @@ export interface AgentConfig {
    * Accepts loaded Skill objects or source strings (paths, npm packages, URLs).
    */
   skills?: Array<import("../skills/types.js").Skill | string>;
+  /** Content-pinned SKILL.md catalog for one logical run. Do not combine with skillDirs. */
+  skillSnapshot?: import("../skills/skill-snapshot.js").SkillMdSnapshot;
   /** Agent handoff — transfer conversations to specialist agents. */
   handoff?: import("../handoff/types.js").HandoffConfig;
   /** Enable owned cost accounting once; false/default still inherits a parent run's accounting. */

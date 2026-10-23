@@ -143,6 +143,7 @@ export class Agent {
       "workspace",
       "skills",
       "skillDirs",
+      "skillSnapshot",
       "contextFiles",
       "subagents",
       "handoff",
@@ -267,6 +268,7 @@ export class Agent {
     opts?: RunOpts,
   ): import("../tools/tool-executor.js").ToolExecutorConfig {
     return {
+      concurrency: ctx?.executionServices?.toolConcurrency,
       sandbox: this.config.sandbox,
       approvalManager: ctx?.executionServices?.approvalManager ?? this.approvalService ?? undefined,
       // Supplied orchestration may add approvals, but cannot replace the Agent's own gate.
@@ -444,7 +446,9 @@ export class Agent {
       const fsConfig = config.filesystem === true ? {} : config.filesystem;
       this.agentFs = new AgentFileSystem({ ...fsConfig, storage: fsConfig.storage ?? sharedStorage });
     }
-    if (config.skillDirs && config.skillDirs.length > 0) {
+    if (config.skillSnapshot !== undefined) {
+      this.skillMd = new SkillMdManager({ snapshot: config.skillSnapshot, dirs: config.skillDirs || undefined });
+    } else if (config.skillDirs && config.skillDirs.length > 0) {
       this.skillMd = new SkillMdManager({ dirs: config.skillDirs });
     }
     if (config.workspace) {

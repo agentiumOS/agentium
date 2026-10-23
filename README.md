@@ -12,7 +12,7 @@ Agentium is a TypeScript-native agent orchestration framework with zero dependen
 
 > Install from npm: [`@agentium/core`](https://www.npmjs.com/package/@agentium/core) · full docs at [docs.agentium.in](https://docs.agentium.in)
 
-Agentium **4.9.0** adds Workflow dependency graphs, opt-in recoverable execution graphs, bounded evidence recall and current-evidence completion verification. Keep installed Agentium packages on matching versions; see the [changelog](CHANGELOG.md) for compatibility changes and release scope.
+Agentium **4.10.0** adds content-pinned skill catalogs, opt-in native recovery journals and application-state recovery, and shared Google/Ollama request controls. Keep installed Agentium packages on matching versions; see the [changelog](CHANGELOG.md) for compatibility changes and recovery limits.
 
 ## Features
 

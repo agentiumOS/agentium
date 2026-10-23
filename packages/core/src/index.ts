@@ -292,14 +292,14 @@ export type { CohereConfig } from "./models/providers/cohere.js";
 export { CohereProvider } from "./models/providers/cohere.js";
 export type { DeepSeekConfig } from "./models/providers/deepseek.js";
 export { DeepSeekProvider } from "./models/providers/deepseek.js";
-export { GoogleProvider } from "./models/providers/google.js";
+export { type GoogleConfig, GoogleProvider } from "./models/providers/google.js";
 export type { JevConfig } from "./models/providers/jev.js";
 export { JevProvider } from "./models/providers/jev.js";
 export type { MetaLlamaConfig } from "./models/providers/meta-llama.js";
 export { MetaLlamaProvider } from "./models/providers/meta-llama.js";
 export type { MistralConfig } from "./models/providers/mistral.js";
 export { MistralProvider } from "./models/providers/mistral.js";
-export { OllamaProvider } from "./models/providers/ollama.js";
+export { type OllamaConfig, OllamaProvider } from "./models/providers/ollama.js";
 export type { OpenAIConfig } from "./models/providers/openai.js";
 export { OpenAIProvider } from "./models/providers/openai.js";
 export type { OpenAICompatibleConfig } from "./models/providers/openai-compatible.js";
@@ -395,6 +395,8 @@ export { GitSkillLoader, type GitSkillLoaderConfig } from "./skills/loaders/git.
 export { loadSkill, SkillManager } from "./skills/skill-manager.js";
 export type { SkillMd, SkillMdManagerConfig } from "./skills/skill-md.js";
 export { parseSkillMd, SkillMdManager } from "./skills/skill-md.js";
+export type { SkillMdSnapshot, SkillSnapshotLimits } from "./skills/skill-snapshot.js";
+export { parseSkillMdSnapshot } from "./skills/skill-snapshot.js";
 // Skills
 export type { Skill, SkillLoader, SkillManifest, SkillSource } from "./skills/types.js";
 export type { ArtifactPointer, StoredArtifact } from "./state/artifact-store.js";

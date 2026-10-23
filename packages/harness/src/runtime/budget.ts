@@ -131,6 +131,8 @@ export class HarnessBudgetLedger {
   private pendingFinishingCalls = 0;
   private unknownUsageCalls = 0;
   private activeCalls = 0;
+  private activeReservedTokens = 0;
+  private activeFinishingTokens = 0;
   private toolAdmissionIds = new Set<string>();
   constructor(
     private limits: HarnessBudgets = {},
@@ -175,6 +177,18 @@ export class HarnessBudgetLedger {
       unknownUsageCalls: this.unknownUsageCalls,
       toolAdmissionIds: [...this.toolAdmissionIds],
     });
+  }
+  /** Native journal submission persists after start and before provider I/O.
+   * Unstarted admission reservations cannot have been billed and are reconstructed
+   * by replay; only active physical requests need conservative recovery charges. */
+  exportStartedState(): HarnessBudgetState {
+    return {
+      ...this.exportState(),
+      reservedTokens: this.activeReservedTokens,
+      reservedCalls: 0,
+      pendingFinishingCalls: 0,
+      pendingFinishingTokens: this.activeFinishingTokens,
+    };
   }
   snapshot(): HarnessBudgetSnapshot {
     return {
@@ -260,6 +274,8 @@ export class HarnessBudgetLedger {
         if (started || settled) return;
         started = true;
         this.activeCalls++;
+        this.activeReservedTokens += projected;
+        if (finishing) this.activeFinishingTokens += projected;
         call.start();
       },
       settle: (usage?: TokenUsage) => {
@@ -278,6 +294,8 @@ export class HarnessBudgetLedger {
         if (finishing) this.pendingFinishingTokens -= projected;
         if (!started) return;
         this.activeCalls--;
+        this.activeReservedTokens -= projected;
+        if (finishing) this.activeFinishingTokens -= projected;
         // Normalized missing accounting counters must not masquerade as known zero usage.
         const known =
           usage &&

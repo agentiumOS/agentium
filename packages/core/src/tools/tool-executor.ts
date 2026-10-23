@@ -177,10 +177,34 @@ export class ToolExecutor {
     if (toolCalls.some((call) => !call.id) || new Set(toolCalls.map((call) => call.id)).size !== toolCalls.length)
       throw new Error("Tool batch requires nonempty unique call IDs");
     const results: ToolCallResult[] = [];
+    const fatal = (error: unknown) =>
+      error instanceof ToolLoopError ||
+      error instanceof RootExecutionError ||
+      error instanceof DurableConflictError ||
+      error instanceof DurableRecoveryRequiredError ||
+      error instanceof AwaitingDurableApproval ||
+      !!ctx.executionServices?.isControlFlowError?.(error);
+    const failure = (call: ToolCall, error: unknown): ToolCallResult => {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      return { toolCallId: call.id, toolName: call.name, result: `Error: ${message}`, error: message };
+    };
 
     for (let i = 0; i < toolCalls.length; i += this.concurrency) {
       const batch = toolCalls.slice(i, i + this.concurrency);
-      const batchResults = await Promise.allSettled(batch.map((tc) => this.executeSingle(tc, ctx)));
+      const batchResults = await Promise.allSettled(
+        batch.map((tc) =>
+          ctx.executionServices?.executeTool
+            ? ctx.executionServices.executeTool(tc, ctx, async () => {
+                try {
+                  return await this.executeSingle(tc, ctx);
+                } catch (error) {
+                  if (fatal(error)) throw error;
+                  return failure(tc, error);
+                }
+              })
+            : this.executeSingle(tc, ctx),
+        ),
+      );
 
       for (let j = 0; j < batchResults.length; j++) {
         const settled = batchResults[j];
@@ -190,21 +214,10 @@ export class ToolExecutor {
           results.push(settled.value);
         } else {
           // Bubble fatal "stop the run" errors up to the agent loop.
-          if (
-            settled.reason instanceof ToolLoopError ||
-            settled.reason instanceof RootExecutionError ||
-            settled.reason instanceof DurableConflictError ||
-            settled.reason instanceof DurableRecoveryRequiredError ||
-            settled.reason instanceof AwaitingDurableApproval
-          ) {
+          if (fatal(settled.reason)) {
             throw settled.reason;
           }
-          results.push({
-            toolCallId: tc.id,
-            toolName: tc.name,
-            result: `Error: ${settled.reason?.message ?? "Unknown error"}`,
-            error: settled.reason?.message ?? "Unknown error",
-          });
+          results.push(failure(tc, settled.reason));
         }
       }
     }

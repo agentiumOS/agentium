@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { captureRetryFailure } from "../../cost/context.js";
 import type { ModelProvider } from "../provider.js";
+import {
+  abortableStream,
+  createRequestScope,
+  type ProviderRequestControls,
+  validateRequestControls,
+} from "../request-controls.js";
 import {
   applyGoogleRequestExtras,
   applyGoogleThinkingConfig,
@@ -22,6 +27,19 @@ import {
 import { providerTokenUsage, safeResponseContext } from "../usage-normalizers.js";
 
 const _require = createRequire(import.meta.url);
+type GoogleStreamChunk = {
+  usageMetadata?: unknown;
+  candidates?: {
+    finishReason?: string;
+    content?: {
+      parts?: {
+        thought?: boolean;
+        text?: string;
+        functionCall?: { name: string; args?: unknown };
+      }[];
+    };
+  }[];
+};
 
 function billingDimensions(messages: ChatMessage[], options?: ModelConfig): Record<string, string> {
   const textOnly = messages.every(
@@ -37,26 +55,32 @@ function billingDimensions(messages: ChatMessage[], options?: ModelConfig): Reco
   };
 }
 
-interface GoogleConfig {
+export interface GoogleConfig extends ProviderRequestControls {
   apiKey?: string;
+  baseURL?: string;
 }
 
 export class GoogleProvider implements ModelProvider {
   readonly providerId = "google";
   readonly modelId: string;
   readonly communicationCapabilities = { messagePhases: "inferred", reasoningSummaries: "conditional" } as const;
+  readonly attemptVisibility: "physical" | "opaque";
+  private readonly config: GoogleConfig;
   private ai: any;
   private GoogleGenAICtor: any;
   private clientCache = new Map<string, any>();
 
   constructor(modelId: string, config?: GoogleConfig) {
     this.modelId = modelId;
+    this.config = { ...config };
+    validateRequestControls(this.config);
+    this.attemptVisibility = config?.sdkMaxRetries === 0 ? "physical" : "opaque";
     try {
       const { GoogleGenAI } = _require("@google/genai");
       this.GoogleGenAICtor = GoogleGenAI;
       const key = config?.apiKey ?? process.env.GOOGLE_API_KEY;
       if (key) {
-        this.ai = new GoogleGenAI({ apiKey: key });
+        this.ai = new GoogleGenAI(this.clientOptions(key));
       }
     } catch (e: any) {
       if (e?.code === "MODULE_NOT_FOUND" || e?.code === "ERR_MODULE_NOT_FOUND") {
@@ -70,7 +94,7 @@ export class GoogleProvider implements ModelProvider {
     if (apiKey) {
       let cached = this.clientCache.get(apiKey);
       if (!cached) {
-        cached = new this.GoogleGenAICtor({ apiKey });
+        cached = new this.GoogleGenAICtor(this.clientOptions(apiKey));
         this.clientCache.set(apiKey, cached);
         if (this.clientCache.size > 50) {
           const oldest = this.clientCache.keys().next().value;
@@ -82,7 +106,7 @@ export class GoogleProvider implements ModelProvider {
     if (this.ai) return this.ai;
     const envKey = process.env.GOOGLE_API_KEY;
     if (envKey) {
-      this.ai = new this.GoogleGenAICtor({ apiKey: envKey });
+      this.ai = new this.GoogleGenAICtor(this.clientOptions(envKey));
       return this.ai;
     }
     throw new Error(
@@ -90,204 +114,206 @@ export class GoogleProvider implements ModelProvider {
     );
   }
 
-  private async withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        return await fn();
-      } catch (err: any) {
-        const status = err?.status ?? err?.statusCode ?? err?.code;
-        const isRetryable =
-          status === 429 ||
-          status === 500 ||
-          status === 502 ||
-          status === 503 ||
-          err?.code === "ECONNRESET" ||
-          err?.code === "ETIMEDOUT" ||
-          err?.message?.includes("rate limit");
-        if (!isRetryable || attempt === retries) throw err;
-        await captureRetryFailure(err);
-        const delay = Math.min(1000 * 2 ** attempt + Math.random() * 500, 10000);
-        await new Promise((r) => setTimeout(r, delay));
-      }
-    }
-    throw new Error("Unreachable");
+  private clientOptions(apiKey: string) {
+    return {
+      apiKey,
+      httpOptions: {
+        ...(this.config.baseURL ? { baseUrl: this.config.baseURL } : {}),
+        ...(this.config.timeoutMs !== undefined ? { timeout: this.config.timeoutMs } : {}),
+        ...(this.config.sdkMaxRetries !== undefined
+          ? { retryOptions: { attempts: this.config.sdkMaxRetries + 1 } }
+          : {}),
+      },
+    };
   }
 
   async generate(
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): Promise<ModelResponse> {
-    const { systemInstruction, contents } = this.toGoogleMessages(messages);
-    const usageDimensions = billingDimensions(messages, options);
+    const scope = createRequestScope(this.config ?? {}, options);
+    try {
+      const { systemInstruction, contents } = this.toGoogleMessages(messages);
+      const usageDimensions = billingDimensions(messages, options);
 
-    const config: Record<string, unknown> = {};
-    if (options?.temperature !== undefined) config.temperature = options.temperature;
-    if (options?.maxTokens !== undefined) config.maxOutputTokens = options.maxTokens;
-    if (options?.topP !== undefined) config.topP = options.topP;
-    if (options?.stop) config.stopSequences = options.stop;
+      const config: Record<string, unknown> = {};
+      if (options?.temperature !== undefined) config.temperature = options.temperature;
+      if (options?.maxTokens !== undefined) config.maxOutputTokens = options.maxTokens;
+      if (options?.topP !== undefined) config.topP = options.topP;
+      if (options?.stop) config.stopSequences = options.stop;
 
-    if (options?.responseFormat) {
-      config.responseMimeType = "application/json";
-      const rf = options.responseFormat;
-      if (
-        typeof rf === "object" &&
-        rf !== null &&
-        "type" in rf &&
-        rf.type === "json_schema" &&
-        "schema" in rf &&
-        rf.schema
-      ) {
-        config.responseSchema = this.cleanJsonSchema(rf.schema as Record<string, unknown>);
+      if (options?.responseFormat) {
+        config.responseMimeType = "application/json";
+        const rf = options.responseFormat;
+        if (
+          typeof rf === "object" &&
+          rf !== null &&
+          "type" in rf &&
+          rf.type === "json_schema" &&
+          "schema" in rf &&
+          rf.schema
+        ) {
+          config.responseSchema = this.cleanJsonSchema(rf.schema as Record<string, unknown>);
+        }
       }
+
+      if (options?.reasoning?.enabled) {
+        applyGoogleThinkingConfig(config, this.modelId, options);
+      }
+
+      if (systemInstruction) config.systemInstruction = systemInstruction;
+      if (options?.tools?.length) {
+        config.tools = [
+          {
+            functionDeclarations: this.toGoogleTools(options.tools),
+          },
+        ];
+      }
+      applyGoogleRequestExtras(config, this.modelId, options);
+      config.abortSignal = scope.signal;
+
+      const params: Record<string, unknown> = {
+        model: this.modelId,
+        contents,
+        config,
+      };
+
+      const client = this.getClient(options?.apiKey);
+      const response = await scope.retry(() => client.models.generateContent(params));
+      return this.normalizeResponse(response, options, usageDimensions);
+    } finally {
+      scope.dispose();
     }
-
-    if (options?.reasoning?.enabled) {
-      applyGoogleThinkingConfig(config, this.modelId, options);
-    }
-
-    if (systemInstruction) config.systemInstruction = systemInstruction;
-    if (options?.tools?.length) {
-      config.tools = [
-        {
-          functionDeclarations: this.toGoogleTools(options.tools),
-        },
-      ];
-    }
-    applyGoogleRequestExtras(config, this.modelId, options);
-    if (options?.signal) config.abortSignal = options.signal;
-
-    const params: Record<string, unknown> = {
-      model: this.modelId,
-      contents,
-      config,
-    };
-
-    const client = this.getClient(options?.apiKey);
-    const response = await this.withRetry(() => client.models.generateContent(params));
-    return this.normalizeResponse(response, options, usageDimensions);
   }
 
   async *stream(
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): AsyncGenerator<StreamChunk> {
-    const { systemInstruction, contents } = this.toGoogleMessages(messages);
-    const usageDimensions = billingDimensions(messages, options);
+    const scope = createRequestScope(this.config ?? {}, options);
+    try {
+      const { systemInstruction, contents } = this.toGoogleMessages(messages);
+      const usageDimensions = billingDimensions(messages, options);
 
-    const config: Record<string, unknown> = {};
-    if (options?.temperature !== undefined) config.temperature = options.temperature;
-    if (options?.maxTokens !== undefined) config.maxOutputTokens = options.maxTokens;
-    if (options?.topP !== undefined) config.topP = options.topP;
-    if (options?.stop) config.stopSequences = options.stop;
+      const config: Record<string, unknown> = {};
+      if (options?.temperature !== undefined) config.temperature = options.temperature;
+      if (options?.maxTokens !== undefined) config.maxOutputTokens = options.maxTokens;
+      if (options?.topP !== undefined) config.topP = options.topP;
+      if (options?.stop) config.stopSequences = options.stop;
 
-    if (options?.reasoning?.enabled) {
-      applyGoogleThinkingConfig(config, this.modelId, options);
-    }
+      if (options?.reasoning?.enabled) {
+        applyGoogleThinkingConfig(config, this.modelId, options);
+      }
 
-    if (systemInstruction) config.systemInstruction = systemInstruction;
-    if (options?.tools?.length) {
-      config.tools = [
-        {
-          functionDeclarations: this.toGoogleTools(options.tools),
-        },
-      ];
-    }
-    applyGoogleRequestExtras(config, this.modelId, options);
-    if (options?.signal) config.abortSignal = options.signal;
+      if (systemInstruction) config.systemInstruction = systemInstruction;
+      if (options?.tools?.length) {
+        config.tools = [
+          {
+            functionDeclarations: this.toGoogleTools(options.tools),
+          },
+        ];
+      }
+      applyGoogleRequestExtras(config, this.modelId, options);
+      config.abortSignal = scope.signal;
 
-    const params: Record<string, unknown> = {
-      model: this.modelId,
-      contents,
-      config,
-    };
+      const params: Record<string, unknown> = {
+        model: this.modelId,
+        contents,
+        config,
+      };
 
-    const client = this.getClient(options?.apiKey);
-    const streamResult = await this.withRetry<any>(() => client.models.generateContentStream(params));
+      const client = this.getClient(options?.apiKey);
+      const streamResult = await scope.retry<AsyncIterable<GoogleStreamChunk>>(() =>
+        client.models.generateContentStream(params),
+      );
 
-    let toolCallCounter = 0;
-    let replayParts: unknown[] = [];
-    let lastFinishReason = "stop";
+      let toolCallCounter = 0;
+      let replayParts: unknown[] = [];
+      let lastFinishReason = "stop";
 
-    for await (const chunk of streamResult) {
-      if (chunk.usageMetadata)
-        providerTokenUsage(this.providerId, "generate-content", chunk.usageMetadata, {
-          modelId: this.modelId,
-          ...safeResponseContext(chunk),
-          dimensions: usageDimensions,
-        });
-      const candidate = chunk.candidates?.[0];
-      if (!candidate?.content?.parts) {
+      for await (const chunk of abortableStream(streamResult, scope.signal)) {
         if (chunk.usageMetadata)
-          yield {
-            type: "finish",
-            finishReason: lastFinishReason,
-            usage: providerTokenUsage(this.providerId, "generate-content", chunk.usageMetadata, {
-              modelId: this.modelId,
-              ...safeResponseContext(chunk),
-              dimensions: usageDimensions,
-            }),
-            providerExtras: extrasFromGoogleParts(replayParts),
-          };
-        continue;
-      }
-
-      if (candidate.finishReason && candidate.content.parts.length) {
-        replayParts = candidate.content.parts;
-      } else {
-        replayParts = replayParts.concat(candidate.content.parts);
-      }
-
-      for (const part of candidate.content.parts) {
-        if (part.thought) {
-          yield { type: "thinking", text: part.text ?? "" };
-          if (part.text) yield { type: "reasoning_summary", text: part.text };
-        } else if (part.text) {
-          yield { type: "text", text: part.text };
-        }
-
-        if (part.functionCall) {
-          const id = `google_tc_${toolCallCounter++}`;
-          yield {
-            type: "tool_call_start",
-            toolCall: { id, name: part.functionCall.name },
-          };
-          yield {
-            type: "tool_call_delta",
-            toolCallId: id,
-            argumentsDelta: JSON.stringify(part.functionCall.args ?? {}),
-          };
-          yield { type: "tool_call_end", toolCallId: id };
-        }
-      }
-
-      if (candidate.finishReason) {
-        let finishReason = "stop";
-        if (candidate.finishReason === "STOP" || candidate.finishReason === "END_TURN") {
-          finishReason = "stop";
-        } else if (candidate.finishReason === "MAX_TOKENS") {
-          finishReason = "length";
-        } else if (candidate.finishReason === "SAFETY") {
-          finishReason = "content_filter";
-        }
-
-        const hasToolCalls = candidate.content?.parts?.some((p: any) => p.functionCall);
-        if (hasToolCalls) finishReason = "tool_calls";
-
-        lastFinishReason = finishReason;
-        const cum = chunk.usageMetadata;
-        yield {
-          type: "finish",
-          finishReason,
-          usage: cum
-            ? providerTokenUsage(this.providerId, "generate-content", cum, {
+          providerTokenUsage(this.providerId, "generate-content", chunk.usageMetadata, {
+            modelId: this.modelId,
+            ...safeResponseContext(chunk),
+            dimensions: usageDimensions,
+          });
+        const candidate = chunk.candidates?.[0];
+        if (!candidate?.content?.parts) {
+          if (chunk.usageMetadata)
+            yield {
+              type: "finish",
+              finishReason: lastFinishReason,
+              usage: providerTokenUsage(this.providerId, "generate-content", chunk.usageMetadata, {
                 modelId: this.modelId,
                 ...safeResponseContext(chunk),
                 dimensions: usageDimensions,
-              })
-            : undefined,
-          providerExtras: extrasFromGoogleParts(replayParts),
-        };
+              }),
+              providerExtras: extrasFromGoogleParts(replayParts),
+            };
+          continue;
+        }
+
+        if (candidate.finishReason && candidate.content.parts.length) {
+          replayParts = candidate.content.parts;
+        } else {
+          replayParts = replayParts.concat(candidate.content.parts);
+        }
+
+        for (const part of candidate.content.parts) {
+          if (part.thought) {
+            yield { type: "thinking", text: part.text ?? "" };
+            if (part.text) yield { type: "reasoning_summary", text: part.text };
+          } else if (part.text) {
+            yield { type: "text", text: part.text };
+          }
+
+          if (part.functionCall) {
+            const id = `google_tc_${toolCallCounter++}`;
+            yield {
+              type: "tool_call_start",
+              toolCall: { id, name: part.functionCall.name },
+            };
+            yield {
+              type: "tool_call_delta",
+              toolCallId: id,
+              argumentsDelta: JSON.stringify(part.functionCall.args ?? {}),
+            };
+            yield { type: "tool_call_end", toolCallId: id };
+          }
+        }
+
+        if (candidate.finishReason) {
+          let finishReason = "stop";
+          if (candidate.finishReason === "STOP" || candidate.finishReason === "END_TURN") {
+            finishReason = "stop";
+          } else if (candidate.finishReason === "MAX_TOKENS") {
+            finishReason = "length";
+          } else if (candidate.finishReason === "SAFETY") {
+            finishReason = "content_filter";
+          }
+
+          const hasToolCalls = candidate.content?.parts?.some((p: any) => p.functionCall);
+          if (hasToolCalls) finishReason = "tool_calls";
+
+          lastFinishReason = finishReason;
+          const cum = chunk.usageMetadata;
+          yield {
+            type: "finish",
+            finishReason,
+            usage: cum
+              ? providerTokenUsage(this.providerId, "generate-content", cum, {
+                  modelId: this.modelId,
+                  ...safeResponseContext(chunk),
+                  dimensions: usageDimensions,
+                })
+              : undefined,
+            providerExtras: extrasFromGoogleParts(replayParts),
+          };
+        }
       }
+    } finally {
+      scope.dispose();
     }
   }
 

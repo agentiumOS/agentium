@@ -18,6 +18,12 @@ import type { RunContext } from "./run-context.js";
  * construct or own the host's orchestration, configuration, or resource lifecycle.
  */
 export interface ExecutionServices {
+  /** Durable native execution serializes tools to commit causal state safely. */
+  readonly toolConcurrency?: number;
+  /** Propagate host control flow (for example durable input suspension). */
+  isControlFlowError?(error: unknown): boolean;
+  /** Retain one complete tool outcome, including authorization and output transforms. */
+  executeTool?(call: ToolCall, context: RunContext, execute: () => Promise<ToolCallResult>): Promise<ToolCallResult>;
   readonly rootExecution?: import("./root-execution.js").RootExecutionController;
   /** Journal a validated/authorized invocation. Call execute only for fresh dispatch;
    * recorded results can return without a new root work attempt. */

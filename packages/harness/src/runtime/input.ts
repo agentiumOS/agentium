@@ -83,6 +83,13 @@ export function validateTimeout(value: number | undefined): void {
     throw new HarnessInputError("invalid_input", "Timeout must be a positive safe integer");
 }
 
+export function validateInputRequest(options: unknown): InputRequestOptions {
+  const parsed = question.safeParse(options);
+  if (!parsed.success || Buffer.byteLength(JSON.stringify(parsed.data)) > RUN_INPUT_LIMITS.maxQuestionBytes)
+    throw new HarnessInputError("invalid_input", "Question must be valid and no larger than 32KB");
+  return parsed.data;
+}
+
 /** Owns live promises only; this is not a restart checkpoint. */
 export class LiveInput {
   private pending?: { request: InputRequest; resolve: (reply: InputReply) => void; reject: (error: unknown) => void };
@@ -132,10 +139,11 @@ export class LiveInput {
 
   requestInput(options: InputRequestOptions): Promise<InputReply> {
     this.assertNotWaiting();
-    const parsed = question.safeParse(options);
-    if (!parsed.success || Buffer.byteLength(JSON.stringify(parsed.data)) > RUN_INPUT_LIMITS.maxQuestionBytes)
-      throw new HarnessInputError("invalid_input", "Question must be valid and no larger than 32KB");
-    const request: InputRequest = { ...parsed.data, id: `${this.runId}:${randomUUID()}`, runId: this.runId };
+    const request: InputRequest = {
+      ...validateInputRequest(options),
+      id: `${this.runId}:${randomUUID()}`,
+      runId: this.runId,
+    };
     const promise = new Promise<InputReply>((resolve, reject) => {
       this.pending = { request, resolve, reject };
     });

@@ -41,6 +41,7 @@ export type {
   HarnessResourceSnapshot,
   InputTokenEstimator,
 } from "./runtime/budget.js";
+export { parseHarnessBudgetState } from "./runtime/budget.js";
 export type {
   ExecutionGraphResult,
   ExecutionGraphRuntimeOptions,
@@ -107,7 +108,13 @@ export type {
   HarnessIdentity,
   HarnessManifest,
   HarnessMiddleware,
+  HarnessNativeJournal,
+  HarnessNativeRecoveryOptions,
   HarnessReason,
+  HarnessRecoveryBoundary,
+  HarnessRecoveryLifecycleOptions,
+  HarnessRecoveryState,
+  HarnessRecoveryStateAdapter,
   HarnessRegistryEntry,
   HarnessRegistryReference,
   HarnessResult,
@@ -152,14 +159,18 @@ export type {
   TaskSummaryRecord,
 } from "./runtime/index.js";
 export {
+  createHarnessRecoveryLifecycle,
   HarnessBudgetError,
   HarnessEventGapError,
+  HarnessNativeInputPending,
+  HarnessRecoveryLifecycleError,
   HarnessResourcePool,
   HarnessRuntime,
   HarnessSessionConflict,
   HarnessUnsupportedError,
   InMemoryHarnessEventStore,
   InMemoryHarnessSessionStore,
+  isHarnessNativeInputPending,
   resolveHarnessRuntime,
 } from "./runtime/index.js";
 export type { HarnessInputErrorCode } from "./runtime/input.js";

@@ -74,7 +74,7 @@ export type {
   HarnessResourceSnapshot,
   InputTokenEstimator,
 } from "./budget.js";
-export { HarnessBudgetError } from "./budget.js";
+export { HarnessBudgetError, parseHarnessBudgetState } from "./budget.js";
 
 import { fetchHarnessContext } from "./context.js";
 import type { ContextPolicy } from "./context-policy.js";
@@ -98,7 +98,7 @@ import {
   retrieveHistory,
   validateHistoryPolicy,
 } from "./history.js";
-import { HarnessInputError, LiveInput, validateRunInput, validateTimeout } from "./input.js";
+import { HarnessInputError, LiveInput, validateInputRequest, validateRunInput, validateTimeout } from "./input.js";
 import {
   runAfterModel,
   runAfterTool,
@@ -106,6 +106,25 @@ import {
   runToolSettlementObservers,
   validateHarnessMessages,
 } from "./middleware.js";
+import {
+  createHarnessNativeRecovery,
+  HarnessNativeInputPending,
+  HarnessNativeRecoveryError,
+  type HarnessNativeRecoveryOptions,
+  isHarnessNativeInputPending,
+  nativeJSON,
+  nativeModelValue,
+  nativeRequestOptions,
+  parseNativeModelResponse,
+  parseNativeToolResult,
+} from "./native-recovery.js";
+import {
+  createHarnessRecoveryLifecycle,
+  HarnessRecoveryLifecycleError,
+  type HarnessRecoveryLifecycleOptions,
+  modelRecoveryBoundary,
+  toolsRecoveryBoundary,
+} from "./recovery-lifecycle.js";
 import { bindHarness, createHarnessDefinition, resolveHarness } from "./resolve.js";
 import { resolveHarnessRuntime } from "./runtime-registry.js";
 import {
@@ -277,6 +296,12 @@ export interface HarnessStartOptions {
     budgetState?: HarnessBudgetState;
     persistBudget(state: HarnessBudgetState): Promise<void>;
     invokeTool?: ExecutionServices["invokeTool"];
+    /** Opt-in application-state causal boundaries only. Does not make this
+     * driver durable or replay model calls, context, input or streaming. */
+    lifecycle?: HarnessRecoveryLifecycleOptions;
+    /** SDK-owned recorded native decisions; the host supplies the authoritative
+     * fenced task journal and recoverable effect connectors. */
+    native?: HarnessNativeRecoveryOptions;
   };
   identity: HarnessIdentity;
   sessionId: string;
@@ -469,7 +494,9 @@ export class HarnessRuntime {
     let budgetWrites = Promise.resolve();
     const persistBudget = () => {
       if (!options.recovery) return Promise.resolve();
-      const write = budgetWrites.then(() => options.recovery!.persistBudget(budget.exportState()));
+      const write = budgetWrites.then(() =>
+        options.recovery!.persistBudget(options.recovery!.native ? budget.exportStartedState() : budget.exportState()),
+      );
       budgetWrites = write.catch(() => {});
       return write;
     };
@@ -491,7 +518,12 @@ export class HarnessRuntime {
     validateTimeout(config.activeTimeoutMs);
     validateTimeout(config.inputTimeoutMs);
     const controller = new AbortController();
-    const runId = randomUUID();
+    if (options.recovery?.native && options.recovery.lifecycle)
+      throw new HarnessUnsupportedError("simultaneous native and projection-only recovery");
+    const runId = options.recovery?.native
+      ? z.string().min(1).max(512).parse(options.recovery.native.taskId)
+      : randomUUID();
+    let nativePending: InputRequest | undefined;
     const request: HarnessRunRequest = Object.freeze({
       input: validateRunInput(input),
       identity: Object.freeze({ ...options.identity }),
@@ -509,6 +541,22 @@ export class HarnessRuntime {
       }),
       runMode: options.runMode ?? "execute",
     });
+    const lifecycle = options.recovery?.lifecycle
+      ? createHarnessRecoveryLifecycle(options.recovery.lifecycle, {
+          identity: { tenantId: request.identity.tenantId, userId: request.identity.userId },
+          sessionId: request.sessionId,
+          input: request.input,
+          driver: { id: config.driver.id, version: config.driver.version },
+          budgets: Object.fromEntries(Object.entries(config.budgets ?? {}).filter(([, value]) => value !== undefined)),
+          grants: {
+            toolIds: [...request.grants.toolIds],
+            modelRoles: [...request.grants.modelRoles],
+            requiredToolIds: [...(request.grants.requiredToolIds ?? [])],
+          },
+          runMode: request.runMode ?? "execute",
+          deadline: request.deadline ?? null,
+        })
+      : undefined;
     const events = new InMemoryHarnessEventStore(
       {
         runId,
@@ -654,8 +702,10 @@ export class HarnessRuntime {
       let committed = false;
       let commitAttempted = false;
       let acceptingOperations = true;
+      let native: ReturnType<typeof createHarnessNativeRecovery> | undefined;
       const owned = new Set<Promise<unknown>>();
       const streams = new Set<AsyncGenerator<StreamChunk>>();
+      const publicMessageIds = new Map<string, string>();
       const track = <T>(operation: Promise<T>): Promise<T> => {
         owned.add(operation);
         operation.then(
@@ -776,6 +826,117 @@ export class HarnessRuntime {
         }
         state = snapshot.state;
         replayable = snapshot.replayable;
+        if (options.recovery?.native) {
+          const optionsNative = options.recovery.native;
+          native = createHarnessNativeRecovery(
+            optionsNative,
+            nativeJSON({
+              identity: request.identity,
+              sessionId: request.sessionId,
+              input: request.input,
+              runMode: request.runMode,
+              driver: { id: config.driver.id, version: config.driver.version },
+              grants: request.grants,
+              budgets: config.budgets ?? {},
+              deadline: request.deadline ?? null,
+            }),
+            {
+              capture: () =>
+                nativeJSON({
+                  canonical,
+                  state,
+                  usage,
+                  stepIndex,
+                  currentRole,
+                  revision,
+                  prepareDefaults,
+                  replayable,
+                  activeTools: [...activeTools],
+                  conversations,
+                  archivedHistory,
+                  taskSummaries,
+                  memoryScope: memoryScope ?? null,
+                  pendingSummaryConversations: [...pendingSummaryConversations],
+                }),
+              restore: (value) => {
+                const saved = z
+                  .object({
+                    canonical: z.array(
+                      z.custom<ChatMessage>(
+                        (item) => typeof item === "object" && item !== null && "role" in item && "content" in item,
+                      ),
+                    ),
+                    state: z.custom<Record<string, unknown>>(
+                      (item) => typeof item === "object" && item !== null && !Array.isArray(item),
+                    ),
+                    usage: z
+                      .object({ promptTokens: z.number(), completionTokens: z.number(), totalTokens: z.number() })
+                      .passthrough(),
+                    stepIndex: z.number().int(),
+                    currentRole: z.string(),
+                    revision: z.number().int(),
+                    prepareDefaults: z.custom<StepOverrides>((item) => typeof item === "object" && item !== null),
+                    replayable: z.boolean(),
+                    activeTools: z.array(z.tuple([z.string(), z.array(z.string())])),
+                    conversations: z.record(
+                      z.array(
+                        z.custom<ChatMessage>(
+                          (item) => typeof item === "object" && item !== null && "role" in item && "content" in item,
+                        ),
+                      ),
+                    ),
+                    archivedHistory: z.array(
+                      z.object({
+                        id: z.string(),
+                        conversationId: z.string(),
+                        messageCount: z.number().int().nonnegative(),
+                        digest: z.string(),
+                      }),
+                    ),
+                    taskSummaries: z.record(z.unknown()),
+                    memoryScope: recallScopeSchema.nullable(),
+                    pendingSummaryConversations: z.array(z.string()),
+                  })
+                  .parse(value);
+                canonical = saved.canonical;
+                for (const key of Object.keys(state)) delete state[key];
+                Object.defineProperties(state, Object.getOwnPropertyDescriptors(saved.state));
+                Object.assign(usage, saved.usage);
+                stepIndex = saved.stepIndex;
+                currentRole = saved.currentRole;
+                revision = saved.revision;
+                prepareDefaults = saved.prepareDefaults;
+                replayable = saved.replayable;
+                activeTools.clear();
+                for (const [id, names] of saved.activeTools) activeTools.set(id, names);
+                conversations = saved.conversations;
+                archivedHistory = saved.archivedHistory;
+                memoryScope = saved.memoryScope ?? undefined;
+                for (const key of Object.keys(taskSummaries)) delete taskSummaries[key];
+                for (const [id, raw] of Object.entries(saved.taskSummaries)) {
+                  const record =
+                    config.taskSummary && recallScope
+                      ? validateTaskSummaryRecord(raw, {
+                          scope: recallScope,
+                          policy: config.taskSummary.policy,
+                          archives: archivedHistory,
+                          config: config.taskSummary,
+                          conversationId: id,
+                        })
+                      : undefined;
+                  if (!record) throw new Error("Invalid retained native task summary");
+                  taskSummaries[id] = record;
+                }
+                pendingSummaryConversations.clear();
+                for (const id of saved.pendingSummaryConversations) pendingSummaryConversations.add(id);
+              },
+            },
+          );
+          await native.initialize();
+          ensureActive();
+        }
+        await lifecycle?.initialize();
+        ensureActive();
         const retain = (
           provider?: ModelProvider,
           callCtx?: RunContext,
@@ -824,8 +985,13 @@ export class HarnessRuntime {
           metadata: { parentRunId: request.parentRunId, rootRunId: request.rootRunId },
         });
         Object.defineProperty(ctx, "executionServices", { get: () => services, configurable: false });
+        const assertLifecycleContext = (context: RunContext) => {
+          if ((lifecycle || native) && context.runId !== request.runId)
+            throw new HarnessUnsupportedError("nested native recovery lifecycle");
+        };
         policy = {
           decide: async (call, callCtx) => {
+            assertLifecycleContext(callCtx);
             ensureActive();
             if (
               !request.grants.toolIds.includes(call.toolName) ||
@@ -857,6 +1023,7 @@ export class HarnessRuntime {
         // already delegates to the budget/grant policy. A distinct identity
         // makes ToolExecutor compose and admit that same operation twice.
         const executor = new ToolExecutor(tools, {
+          ...(native ? { concurrency: 1 } : {}),
           approvalManager: config.approvalManager,
           executionPolicy: ctx.executionPolicy,
         });
@@ -879,6 +1046,18 @@ export class HarnessRuntime {
         });
         const middleware = bound?.middleware ?? [];
         const observedSettlements = new WeakSet<ToolCallResult>();
+        const lifecycleSettlements = new WeakMap<ToolCallResult, Promise<void>>();
+        const settleApplicationTools = (results: readonly ToolCallResult[]) => {
+          if (!lifecycle || !results.length) return Promise.resolve();
+          const previous = results.map((result) => lifecycleSettlements.get(result));
+          const first = previous[0];
+          if (first && previous.every((entry) => entry === first)) return first;
+          if (previous.some(Boolean))
+            return Promise.reject(new HarnessRecoveryLifecycleError("Cannot mix retained and new tool settlements"));
+          const pending = lifecycle.settle(toolsRecoveryBoundary(results));
+          for (const result of results) lifecycleSettlements.set(result, pending);
+          return pending;
+        };
         const observeSettlement = async (result: ToolCallResult, context: RunContext) => {
           if (observedSettlements.has(result)) return;
           observedSettlements.add(result);
@@ -917,6 +1096,8 @@ export class HarnessRuntime {
           supplied: ModelConfig & { tools?: ToolDefinition[] } = {},
           callCtx = ctx,
         ) => {
+          assertLifecycleContext(callCtx);
+          await lifecycle?.idle();
           ensureActive();
           liveInput.assertNotWaiting();
           const callReservation = budget.reserveCall();
@@ -1295,88 +1476,115 @@ export class HarnessRuntime {
         ): Promise<ModelResponse> =>
           track(
             (async () => {
-              ensureActive();
-              liveInput.assertNotWaiting();
-              operationSignal?.throwIfAborted();
-              if (!request.grants.modelRoles.includes(role)) throw new Error("Ungranted control model role");
+              const generate = async () => {
+                ensureActive();
+                liveInput.assertNotWaiting();
+                operationSignal?.throwIfAborted();
+                if (!request.grants.modelRoles.includes(role)) throw new Error("Ungranted control model role");
+                const binding = config.models?.[role];
+                if (!binding) throw new Error("Control model requires an explicit host binding");
+                for (const key of Object.keys(options)) {
+                  if (
+                    !["maxTokens", "temperature"].includes(key) ||
+                    !binding.options?.includes(key as keyof ModelConfig)
+                  )
+                    throw new HarnessUnsupportedError(`control model option ${key}`);
+                }
+                if (
+                  options.maxTokens !== undefined &&
+                  (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0)
+                )
+                  throw new HarnessUnsupportedError("maxTokens must be a finite positive integer");
+                if (
+                  options.temperature !== undefined &&
+                  (!Number.isFinite(options.temperature) || options.temperature < 0)
+                )
+                  throw new HarnessUnsupportedError("temperature must be finite and non-negative");
+                const projection = structuredClone(messages) as ChatMessage[];
+                if (
+                  projection.some(
+                    (message) => message.role === "tool" || message.toolCalls?.length || message.providerExtras,
+                  )
+                )
+                  throw new Error(
+                    "Control model calls require independent plain messages without provider/tool continuation",
+                  );
+                validateHarnessMessages(projection, projection);
+                const projectedInput = (config.estimateInputTokens ?? estimateInputTokens)({
+                  provider: binding.provider,
+                  messages: projection,
+                  tools: [],
+                });
+                const requestedOutput = options.maxTokens ?? binding.provider.capabilities?.maxOutputTokens;
+                validateModelRequest(
+                  binding.provider.capabilities,
+                  projection,
+                  { ...options, maxTokens: requestedOutput },
+                  binding.provider.unknownCapabilities,
+                  projectedInput,
+                );
+                const reservation = budget.reserve(projectedInput, requestedOutput, finishing);
+                const maxTokens = reservation.maxTokens;
+                let accounted = false;
+                try {
+                  ensureActive();
+                  const response = await generateObserved(
+                    binding.provider,
+                    projection,
+                    {
+                      ...options,
+                      ...(maxTokens !== undefined ? { maxTokens } : {}),
+                      signal: operationSignal
+                        ? AbortSignal.any([controller.signal, operationSignal])
+                        : controller.signal,
+                      deadline: operationDeadline ?? request.deadline,
+                    },
+                    reservation.start,
+                  );
+                  reservation.settle(response.usage);
+                  await persistBudget();
+                  if (!native) account(binding.provider, response.usage);
+                  accounted = true;
+                  ensureActive();
+                  operationSignal?.throwIfAborted();
+                  if (response.finishReason !== "stop" || response.message.toolCalls?.length)
+                    throw new Error("Control model must return a complete tool-free response");
+                  return response;
+                } catch (error) {
+                  const amount = error instanceof ModelUsageError ? error.usage : undefined;
+                  if (amount && !accounted) {
+                    reservation.settle(amount);
+                    account(binding.provider, amount);
+                  }
+                  throw error;
+                } finally {
+                  reservation.settle();
+                  await persistBudget();
+                }
+              };
+              if (!native) return generate();
+              const response = await native.run(
+                "control",
+                { role, messages, options, finishing },
+                async () => nativeModelValue(await generate()),
+                parseNativeModelResponse,
+              );
+              // Apply usage after child replay too. Nested decisions intentionally
+              // do not restore a transient parent snapshot during context projection.
               const binding = config.models?.[role];
               if (!binding) throw new Error("Control model requires an explicit host binding");
-              for (const key of Object.keys(options)) {
-                if (!["maxTokens", "temperature"].includes(key) || !binding.options?.includes(key as keyof ModelConfig))
-                  throw new HarnessUnsupportedError(`control model option ${key}`);
-              }
-              if (
-                options.maxTokens !== undefined &&
-                (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0)
-              )
-                throw new HarnessUnsupportedError("maxTokens must be a finite positive integer");
-              if (
-                options.temperature !== undefined &&
-                (!Number.isFinite(options.temperature) || options.temperature < 0)
-              )
-                throw new HarnessUnsupportedError("temperature must be finite and non-negative");
-              const projection = structuredClone(messages) as ChatMessage[];
-              if (
-                projection.some(
-                  (message) => message.role === "tool" || message.toolCalls?.length || message.providerExtras,
-                )
-              )
-                throw new Error(
-                  "Control model calls require independent plain messages without provider/tool continuation",
-                );
-              validateHarnessMessages(projection, projection);
-              const projectedInput = (config.estimateInputTokens ?? estimateInputTokens)({
-                provider: binding.provider,
-                messages: projection,
-                tools: [],
-              });
-              const requestedOutput = options.maxTokens ?? binding.provider.capabilities?.maxOutputTokens;
-              validateModelRequest(
-                binding.provider.capabilities,
-                projection,
-                { ...options, maxTokens: requestedOutput },
-                binding.provider.unknownCapabilities,
-                projectedInput,
-              );
-              const reservation = budget.reserve(projectedInput, requestedOutput, finishing);
-              const maxTokens = reservation.maxTokens;
-              let accounted = false;
-              try {
-                ensureActive();
-                const response = await generateObserved(
-                  binding.provider,
-                  projection,
-                  {
-                    ...options,
-                    ...(maxTokens !== undefined ? { maxTokens } : {}),
-                    signal: operationSignal ? AbortSignal.any([controller.signal, operationSignal]) : controller.signal,
-                    deadline: operationDeadline ?? request.deadline,
-                  },
-                  reservation.start,
-                );
-                reservation.settle(response.usage);
-                await persistBudget();
-                account(binding.provider, response.usage);
-                accounted = true;
-                ensureActive();
-                operationSignal?.throwIfAborted();
-                if (response.finishReason !== "stop" || response.message.toolCalls?.length)
-                  throw new Error("Control model must return a complete tool-free response");
-                return response;
-              } catch (error) {
-                const amount = error instanceof ModelUsageError ? error.usage : undefined;
-                if (amount && !accounted) {
-                  reservation.settle(amount);
-                  account(binding.provider, amount);
-                }
-                throw error;
-              } finally {
-                reservation.settle();
-                await persistBudget();
-              }
+              account(binding.provider, response.usage);
+              return response;
             })(),
           );
         services = {
+          ...(native
+            ? {
+                toolConcurrency: 1,
+                isControlFlowError: (error: unknown) =>
+                  isHarnessNativeInputPending(error) || error instanceof HarnessNativeRecoveryError,
+              }
+            : {}),
           ctx,
           signal: controller.signal,
           tools,
@@ -1388,11 +1596,51 @@ export class HarnessRuntime {
           },
           executionPolicy: policy,
           rootExecution,
+          executeTool: native
+            ? async (call, context, execute) => {
+                assertLifecycleContext(context);
+                const recovery = native;
+                if (!recovery) throw new Error("Native recovery was not initialized");
+                return recovery.run(
+                  "tool",
+                  { id: call.id, name: call.name, args: call.arguments },
+                  async () => {
+                    const result = await execute();
+                    await persistBudget();
+                    return nativeJSON(result);
+                  },
+                  (value) => {
+                    const result = z
+                      .object({
+                        toolCallId: z.string(),
+                        toolName: z.string(),
+                        result: z.unknown(),
+                        error: z.string().optional(),
+                        denial: z.enum(["policy", "approval_required", "approval_denied", "cancelled"]).optional(),
+                      })
+                      .parse(value);
+                    if (result.toolCallId !== call.id || result.toolName !== call.name)
+                      throw new HarnessNativeRecoveryError(new Error("Retained tool identity mismatch"));
+                    return { ...result, result: parseNativeToolResult(result.result) };
+                  },
+                );
+              }
+            : undefined,
           invokeTool: async (tool, call, args, context, execute) => {
+            assertLifecycleContext(context);
             await persistBudget();
-            return options.recovery?.invokeTool
-              ? options.recovery.invokeTool(tool, call, args, context, execute)
-              : execute();
+            const previous = context.metadata.nativeToolCallId;
+            if (native) context.metadata.nativeToolCallId = call.id;
+            try {
+              return options.recovery?.invokeTool
+                ? await options.recovery.invokeTool(tool, call, args, context, execute)
+                : await execute();
+            } finally {
+              if (native) {
+                if (previous === undefined) delete context.metadata.nativeToolCallId;
+                else context.metadata.nativeToolCallId = previous;
+              }
+            }
           },
           approvalManager: config.approvalManager,
           state,
@@ -1407,7 +1655,25 @@ export class HarnessRuntime {
             return structuredClone(archivedHistory);
           },
           retainHistory: config.residentHistory
-            ? (provider, messages, context) => track(retain(provider, context, messages))
+            ? (provider, messages, context) =>
+                track(
+                  native
+                    ? native.run(
+                        "retain-history",
+                        { providerId: provider?.providerId, modelId: provider?.modelId, messages },
+                        () => retain(provider, context, messages),
+                        (value) =>
+                          z
+                            .array(
+                              z.custom<ChatMessage>(
+                                (item) =>
+                                  typeof item === "object" && item !== null && "role" in item && "content" in item,
+                              ),
+                            )
+                            .parse(value),
+                      )
+                    : retain(provider, context, messages),
+                )
             : undefined,
           retrieveHistory: (referenceId) =>
             track(
@@ -1427,163 +1693,213 @@ export class HarnessRuntime {
           model: (provider, messages, options, callCtx) =>
             track(
               (async () => {
-                const call = await prepare(provider, messages, options, callCtx);
-                let accounted = false;
-                try {
-                  ensureActive();
-                  const response = await generateObserved(
-                    call.provider,
-                    call.messages,
-                    call.options,
-                    call.reservation.start,
-                  );
-                  call.reservation.settle(response.usage);
-                  await persistBudget();
-                  account(call.provider, response.usage);
-                  accounted = true;
-                  ensureActive();
-                  await runAfterModel(middleware, response, callCtx ?? ctx);
-                  return response;
-                } catch (error) {
-                  const amount = error instanceof ModelUsageError ? error.usage : undefined;
-                  if (amount && !accounted) {
-                    call.reservation.settle(amount);
-                    account(call.provider, amount);
+                assertLifecycleContext(callCtx ?? ctx);
+                const generate = async () => {
+                  const call = await prepare(provider, messages, options, callCtx);
+                  let accounted = false;
+                  try {
+                    ensureActive();
+                    const response = await generateObserved(
+                      call.provider,
+                      call.messages,
+                      call.options,
+                      call.reservation.start,
+                    );
+                    call.reservation.settle(response.usage);
+                    await persistBudget();
+                    account(call.provider, response.usage);
+                    accounted = true;
+                    ensureActive();
+                    await lifecycle?.settle(
+                      modelRecoveryBoundary(call.provider, call.messages, call.options, response),
+                    );
+                    ensureActive();
+                    await runAfterModel(middleware, response, callCtx ?? ctx);
+                    return response;
+                  } catch (error) {
+                    const amount = error instanceof ModelUsageError ? error.usage : undefined;
+                    if (amount && !accounted) {
+                      call.reservation.settle(amount);
+                      account(call.provider, amount);
+                    }
+                    throw error;
+                  } finally {
+                    call.reservation.settle();
+                    await persistBudget();
                   }
-                  throw error;
-                } finally {
-                  call.reservation.settle();
-                  await persistBudget();
-                }
+                };
+                return native
+                  ? native.run(
+                      "model",
+                      {
+                        providerId: provider.providerId,
+                        modelId: provider.modelId,
+                        messages,
+                        options: nativeRequestOptions(options),
+                      },
+                      async () => nativeModelValue(await generate()),
+                      parseNativeModelResponse,
+                    )
+                  : generate();
               })(),
             ),
           streamModel: (provider, messages, options, callCtx) => {
-            let finishLifetime!: () => void;
-            track(
-              new Promise<void>((resolve) => {
-                finishLifetime = resolve;
-              }),
-            );
-            const implementation = (async function* (): AsyncGenerator<StreamChunk> {
-              const call = await prepare(provider, messages, options, callCtx);
-              const endObservation = observeModel(call.provider);
-              let stream: AsyncGenerator<StreamChunk> | undefined;
-              let succeeded = false;
-              let text = "";
-              let finished = false;
-              let amount = zero();
-              let reason = "stop";
-              let extras: Record<string, unknown> | undefined;
-              let publicMessages: PublicMessage[] | undefined;
-              let phase: "commentary" | "final" | undefined;
-              let executionLease: Awaited<ReturnType<RootExecutionController["acquire"]>> | undefined;
-              const calls: Array<{ id: string; name: string; args: string }> = [];
-              try {
-                ensureActive();
-                liveInput.assertNotWaiting();
-                call.options.signal?.throwIfAborted();
-                executionLease = await rootExecution?.acquire("model", `${runId}/${randomUUID()}`, call.options.signal);
-                call.reservation.start();
-                await persistBudget();
-                stream = call.provider.stream(call.messages, call.options);
-                while (true) {
-                  const next = await (executionLease ? executionLease.run(() => stream!.next()) : stream.next());
-                  if (!next.done && next.value.type === "finish") {
-                    if (finished) throw new Error("Provider emitted duplicate terminal usage");
-                    finished = true;
-                    reason = next.value.finishReason;
-                    extras = next.value.providerExtras;
-                    publicMessages = next.value.publicMessages;
-                    phase = next.value.phase;
-                    amount = next.value.usage ?? zero();
-                    call.reservation.settle(next.value.usage);
-                    await persistBudget();
-                    account(call.provider, amount);
-                  }
-                  ensureActive();
-                  if (next.done) break;
-                  if (next.value.type === "text") text += next.value.text;
-                  else if (next.value.type === "tool_call_start") calls.push({ ...next.value.toolCall, args: "" });
-                  else if (next.value.type === "tool_call_delta") {
-                    const chunk = next.value;
-                    const pending = calls.find((item) => item.id === chunk.toolCallId);
-                    if (pending) pending.args += chunk.argumentsDelta;
-                  }
-                  yield next.value;
-                }
-                if (!finished) throw new ModelProtocolError(text, amount);
-                const response: ModelResponse = {
-                  message: {
-                    role: "assistant",
-                    content: text || null,
-                    ...(phase ? { phase } : {}),
-                    ...(calls.length
-                      ? {
-                          toolCalls: calls.map((item) => ({
-                            id: item.id,
-                            name: item.name,
-                            arguments: JSON.parse(item.args),
-                          })),
-                        }
-                      : {}),
-                    ...(extras ? { providerExtras: extras } : {}),
-                  },
-                  usage: amount,
-                  finishReason:
-                    reason === "tool_calls" || reason === "length" || reason === "content_filter" ? reason : "stop",
-                  raw: { streamed: true },
-                  ...(publicMessages ? { publicMessages } : {}),
-                };
-                await runAfterModel(middleware, response, callCtx ?? ctx);
-                succeeded = true;
-              } catch (error) {
-                const known = error instanceof ModelUsageError ? error.usage : undefined;
-                if (known && !finished) {
-                  call.reservation.settle(known);
-                  account(call.provider, known);
-                }
-                throw error;
-              } finally {
-                endObservation(succeeded, finished ? amount : undefined);
-                call.reservation.settle();
+            assertLifecycleContext(callCtx ?? ctx);
+            const open = (streamSignal?: AbortSignal) => {
+              let finishLifetime!: () => void;
+              track(
+                new Promise<void>((resolve) => {
+                  finishLifetime = resolve;
+                }),
+              );
+              const implementation = (async function* (): AsyncGenerator<StreamChunk> {
+                const call = await prepare(
+                  provider,
+                  messages,
+                  streamSignal
+                    ? {
+                        ...options,
+                        signal: AbortSignal.any([streamSignal, ...(options?.signal ? [options.signal] : [])]),
+                      }
+                    : options,
+                  callCtx,
+                );
+                const endObservation = observeModel(call.provider);
+                let stream: AsyncGenerator<StreamChunk> | undefined;
+                let succeeded = false;
+                let text = "";
+                let finished = false;
+                let amount = zero();
+                let reason = "stop";
+                let extras: Record<string, unknown> | undefined;
+                let publicMessages: PublicMessage[] | undefined;
+                let phase: "commentary" | "final" | undefined;
+                let executionLease: Awaited<ReturnType<RootExecutionController["acquire"]>> | undefined;
+                const calls: Array<{ id: string; name: string; args: string }> = [];
                 try {
-                  if (stream)
-                    await (executionLease
-                      ? executionLease.cleanup(() => stream!.return(undefined))
-                      : stream.return(undefined));
+                  ensureActive();
+                  liveInput.assertNotWaiting();
+                  call.options.signal?.throwIfAborted();
+                  executionLease = await rootExecution?.acquire(
+                    "model",
+                    `${runId}/${randomUUID()}`,
+                    call.options.signal,
+                  );
+                  call.reservation.start();
                   await persistBudget();
+                  stream = call.provider.stream(call.messages, call.options);
+                  while (true) {
+                    const next = await (executionLease ? executionLease.run(() => stream!.next()) : stream.next());
+                    if (!next.done && next.value.type === "finish") {
+                      if (finished) throw new Error("Provider emitted duplicate terminal usage");
+                      finished = true;
+                      reason = next.value.finishReason;
+                      extras = next.value.providerExtras;
+                      publicMessages = next.value.publicMessages;
+                      phase = next.value.phase;
+                      amount = next.value.usage ?? zero();
+                      call.reservation.settle(next.value.usage);
+                      await persistBudget();
+                      account(call.provider, amount);
+                    }
+                    ensureActive();
+                    if (next.done) break;
+                    if (next.value.type === "text") text += next.value.text;
+                    else if (next.value.type === "tool_call_start") calls.push({ ...next.value.toolCall, args: "" });
+                    else if (next.value.type === "tool_call_delta") {
+                      const chunk = next.value;
+                      const pending = calls.find((item) => item.id === chunk.toolCallId);
+                      if (pending) pending.args += chunk.argumentsDelta;
+                    }
+                    yield next.value;
+                  }
+                  if (!finished) throw new ModelProtocolError(text, amount);
+                  const response: ModelResponse = {
+                    message: {
+                      role: "assistant",
+                      content: text || null,
+                      ...(phase ? { phase } : {}),
+                      ...(calls.length
+                        ? {
+                            toolCalls: calls.map((item) => ({
+                              id: item.id,
+                              name: item.name,
+                              arguments: JSON.parse(item.args),
+                            })),
+                          }
+                        : {}),
+                      ...(extras ? { providerExtras: extras } : {}),
+                    },
+                    usage: amount,
+                    finishReason:
+                      reason === "tool_calls" || reason === "length" || reason === "content_filter" ? reason : "stop",
+                    raw: { streamed: true },
+                    ...(publicMessages ? { publicMessages } : {}),
+                  };
+                  await lifecycle?.settle(modelRecoveryBoundary(call.provider, call.messages, call.options, response));
+                  ensureActive();
+                  await runAfterModel(middleware, response, callCtx ?? ctx);
+                  succeeded = true;
+                } catch (error) {
+                  const known = error instanceof ModelUsageError ? error.usage : undefined;
+                  if (known && !finished) {
+                    call.reservation.settle(known);
+                    account(call.provider, known);
+                  }
+                  throw error;
                 } finally {
-                  await executionLease?.release();
+                  endObservation(succeeded, finished ? amount : undefined);
+                  call.reservation.settle();
+                  try {
+                    if (stream)
+                      await (executionLease
+                        ? executionLease.cleanup(() => stream!.return(undefined))
+                        : stream.return(undefined));
+                    await persistBudget();
+                  } finally {
+                    await executionLease?.release();
+                  }
                 }
-              }
-            })();
-            const finish = () => {
-              streams.delete(iterator);
-              finishLifetime();
+              })();
+              const finish = () => {
+                streams.delete(iterator);
+                finishLifetime();
+              };
+              const iterator: AsyncGenerator<StreamChunk> = {
+                [Symbol.asyncIterator]() {
+                  return this;
+                },
+                [Symbol.asyncDispose]: async () => {
+                  await iterator.return(undefined);
+                },
+                next: (...args) =>
+                  track(implementation.next(...args)).then(
+                    (item) => {
+                      if (item.done) finish();
+                      return item;
+                    },
+                    (error) => {
+                      finish();
+                      throw error;
+                    },
+                  ),
+                return: (value) => track(implementation.return(value)).finally(finish),
+                throw: (error) => track(implementation.throw(error)).finally(finish),
+              };
+              streams.add(iterator);
+              return iterator;
             };
-            const iterator: AsyncGenerator<StreamChunk> = {
-              [Symbol.asyncIterator]() {
-                return this;
-              },
-              [Symbol.asyncDispose]: async () => {
-                await iterator.return(undefined);
-              },
-              next: (...args) =>
-                track(implementation.next(...args)).then(
-                  (item) => {
-                    if (item.done) finish();
-                    return item;
+            return native
+              ? native.stream(
+                  {
+                    providerId: provider.providerId,
+                    modelId: provider.modelId,
+                    messages,
+                    options: nativeRequestOptions(options),
                   },
-                  (error) => {
-                    finish();
-                    throw error;
-                  },
-                ),
-              return: (value) => track(implementation.return(value)).finally(finish),
-              throw: (error) => track(implementation.throw(error)).finally(finish),
-            };
-            streams.add(iterator);
-            return iterator;
+                  open,
+                )
+              : open();
           },
           runOwned: (operation) =>
             track(
@@ -1593,15 +1909,22 @@ export class HarnessRuntime {
               })(),
             ),
           observeTool: async (result, callCtx) => {
-            await observeSettlement(result, callCtx ?? ctx);
-            ensureActive();
-            await runAfterTool(middleware, result, callCtx ?? ctx);
+            assertLifecycleContext(callCtx ?? ctx);
+            const observe = async () => {
+              await observeSettlement(result, callCtx ?? ctx);
+              ensureActive();
+              await runAfterTool(middleware, result, callCtx ?? ctx);
+              return null;
+            };
+            if (native) await native.run("observe-tool", { result }, observe, () => undefined);
+            else await observe();
           },
           dispatch: (call) =>
             track(
               (async () => {
                 ensureActive();
                 const [result] = await executor.executeAll([call], ctx);
+                await settleApplicationTools([result]);
                 await observeSettlement(result, ctx);
                 ensureActive();
                 await runAfterTool(middleware, result, ctx);
@@ -1645,7 +1968,14 @@ export class HarnessRuntime {
               (conversations[executionId] ??= []).push(...structuredClone(additions));
           },
           observeToolSettlements: async (results, context = ctx) => {
-            for (const result of results) await observeSettlement(result, context);
+            assertLifecycleContext(context);
+            const observe = async () => {
+              await settleApplicationTools(results);
+              for (const result of results) await observeSettlement(result, context);
+              return null;
+            };
+            if (native) await native.run("tool-batch", { results }, observe, () => undefined);
+            else await observe();
           },
           append: (messages) => {
             ensureActive();
@@ -1663,6 +1993,16 @@ export class HarnessRuntime {
           publishMessage: (event) => {
             // Failure events must remain observable during cooperative cancellation.
             if (terminal) return;
+            if (native) {
+              const originalId = event.type === "message.completed" ? event.message.id : event.id;
+              let id = publicMessageIds.get(originalId);
+              if (!id) {
+                id = `${runId}/message/${publicMessageIds.size}`;
+                publicMessageIds.set(originalId, id);
+              }
+              event =
+                event.type === "message.completed" ? { ...event, message: { ...event.message, id } } : { ...event, id };
+            }
             if (event.type === "message.completed" && Buffer.byteLength(JSON.stringify(event)) > 60000) {
               const artifactId = randomUUID();
               this.artifacts.set(artifactId, { owner: services.sessionKey, value: structuredClone(event.message) });
@@ -1671,6 +2011,32 @@ export class HarnessRuntime {
           },
           requestInput: (question) => {
             ensureActive();
+            question = validateInputRequest(question);
+            if (native)
+              return track(
+                native.run(
+                  "input",
+                  question,
+                  async (id) => {
+                    const inputRequest = { ...question, id: `${request.runId}/${id}`, runId: request.runId };
+                    nativePending = inputRequest;
+                    events.append({ type: "input.requested", request: inputRequest });
+                    const reply = await options.recovery?.native?.requestInput?.(inputRequest);
+                    if (!reply) throw new HarnessNativeInputPending(inputRequest);
+                    if (reply.requestId !== inputRequest.id)
+                      throw new HarnessInputError("input_mismatch", "Durable answer does not match its question");
+                    const answer = validateRunInput(reply.input);
+                    nativePending = undefined;
+                    events.append({ type: "input.resolved", requestId: inputRequest.id });
+                    return nativeJSON({ requestId: reply.requestId, input: answer });
+                  },
+                  (value) => {
+                    const reply = z.object({ requestId: z.string(), input: z.unknown() }).parse(value);
+                    nativePending = undefined;
+                    return { requestId: reply.requestId, input: validateRunInput(reply.input) };
+                  },
+                ),
+              );
             return track(liveInput.requestInput(question));
           },
           takeInput: (context) => {
@@ -1703,11 +2069,19 @@ export class HarnessRuntime {
             return this.getArtifact(request.identity, request.sessionId, id);
           },
         };
-        if (config.models?.main || !canonical.some((message) => message.providerExtras)) await retain();
-        prepareDefaults =
-          (config.controller?.prepareRun
-            ? await observeControl("prepareRun", () => config.controller!.prepareRun!(ctx))
-            : undefined) ?? {};
+        const prepareRun = async () => {
+          if (config.models?.main || !canonical.some((message) => message.providerExtras)) await retain();
+          return (
+            (config.controller?.prepareRun
+              ? await observeControl("prepareRun", () => config.controller!.prepareRun!(ctx))
+              : undefined) ?? {}
+          );
+        };
+        prepareDefaults = native
+          ? await native.run("prepare-run", {}, prepareRun, (value) =>
+              z.custom<StepOverrides>((item) => typeof item === "object" && item !== null).parse(value),
+            )
+          : await prepareRun();
         if (prepareDefaults.stop) throw new HarnessBudgetError(prepareDefaults.stop.reason);
         events.append({ type: "run.started", driverId: config.driver.id });
         let current = request;
@@ -1735,16 +2109,21 @@ export class HarnessRuntime {
             canonical = proposed;
           }
           if (final.status && final.status !== "completed") break;
-          const decision = config.completionPolicy
-            ? await observeControl("completion", async () =>
-                validateCompletionDecision(
-                  await config.completionPolicy!.evaluate(
-                    { text: final.text, structured: final.structured, revision },
-                    ctx,
+          const evaluateCompletion = async () =>
+            config.completionPolicy
+              ? await observeControl("completion", async () =>
+                  validateCompletionDecision(
+                    await config.completionPolicy!.evaluate(
+                      { text: final.text, structured: final.structured, revision },
+                      ctx,
+                    ),
                   ),
-                ),
-              )
-            : undefined;
+                )
+              : undefined;
+          const decision =
+            config.completionPolicy && native
+              ? await native.run("completion", { final, revision }, evaluateCompletion, validateCompletionDecision)
+              : await evaluateCompletion();
           if (decision) {
             completion = { policyId: config.completionPolicy?.id ?? "completion", revision, decision };
             services.emit({
@@ -1788,21 +2167,28 @@ export class HarnessRuntime {
         const rejected = operations.find((entry) => entry.status === "rejected");
         if (rejected?.status === "rejected") throw rejected.reason;
         ensureActive();
-        await retain();
-        // Completed child transcripts are canonical archive records, not permanent resident copies.
-        for (const [executionId, messages] of Object.entries(conversations)) {
-          if (!config.residentHistory) break;
-          const reference = await archiveCompletedConversation(
-            messages,
-            config.residentHistory,
-            { identity: request.identity, sessionId: request.sessionId },
-            executionId,
-          );
-          if (reference) archivedHistory.push(reference);
-          delete conversations[executionId];
-          delete taskSummaries[executionId];
-        }
-        await validateSummariesAtCommit();
+        const finalize = async () => {
+          await retain();
+          // Completed child transcripts are canonical archive records, not permanent resident copies.
+          for (const [executionId, messages] of Object.entries(conversations)) {
+            if (!config.residentHistory) break;
+            const reference = await archiveCompletedConversation(
+              messages,
+              config.residentHistory,
+              { identity: request.identity, sessionId: request.sessionId },
+              executionId,
+            );
+            if (reference) archivedHistory.push(reference);
+            delete conversations[executionId];
+            delete taskSummaries[executionId];
+          }
+          await validateSummariesAtCommit();
+          return null;
+        };
+        if (native) await native.run("finalize", {}, finalize, () => undefined);
+        else await finalize();
+        await lifecycle?.finish();
+        ensureActive();
         commitAttempted = true;
         try {
           await lease.commit({
@@ -1819,14 +2205,27 @@ export class HarnessRuntime {
         }
         committed = true;
       } catch (error) {
+        if (native) persistenceAllowed = false;
+        if (isHarnessNativeInputPending(error)) nativePending = error.request;
+        if (lifecycle) {
+          try {
+            await lifecycle.idle();
+          } catch {
+            // A failed restore may leave application state partially applied.
+            // Do not publish it through the ordinary session fallback commit.
+            persistenceAllowed = false;
+          }
+        }
         final = {
           ...final,
           ...(final.text || final.structured !== undefined ? { partial: true } : {}),
           status: controller.signal.aborted
             ? "cancelled"
-            : error instanceof HarnessBudgetError || error instanceof HarnessContinuityError
-              ? "stopped"
-              : "failed",
+            : isHarnessNativeInputPending(error)
+              ? "awaiting_input"
+              : error instanceof HarnessBudgetError || error instanceof HarnessContinuityError
+                ? "stopped"
+                : "failed",
           reason: {
             code: controller.signal.aborted
               ? "cancelled"
@@ -1955,16 +2354,18 @@ export class HarnessRuntime {
       },
       runId,
       get state() {
-        return terminal
-          ? "finished"
-          : controller.signal.aborted
-            ? "cancelling"
-            : liveInput.request
-              ? "awaiting_input"
-              : "running";
+        return nativePending
+          ? "awaiting_input"
+          : terminal
+            ? "finished"
+            : controller.signal.aborted
+              ? "cancelling"
+              : liveInput.request
+                ? "awaiting_input"
+                : "running";
       },
       get pendingInput() {
-        return liveInput.request;
+        return nativePending ?? liveInput.request;
       },
       reply: async (requestId, input) => {
         if (!acceptingInput) throw new HarnessInputError("run_finished", "Run is no longer active");

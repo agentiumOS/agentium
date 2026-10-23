@@ -14,11 +14,11 @@ import { type AzureFoundryConfig, AzureFoundryProvider } from "./providers/azure
 import { type AzureOpenAIConfig, AzureOpenAIProvider } from "./providers/azure-openai.js";
 import { type CohereConfig, CohereProvider } from "./providers/cohere.js";
 import { type DeepSeekConfig, DeepSeekProvider } from "./providers/deepseek.js";
-import { GoogleProvider } from "./providers/google.js";
+import { type GoogleConfig, GoogleProvider } from "./providers/google.js";
 import { type JevConfig, JevProvider } from "./providers/jev.js";
 import { type MetaLlamaConfig, MetaLlamaProvider } from "./providers/meta-llama.js";
 import { type MistralConfig, MistralProvider } from "./providers/mistral.js";
-import { OllamaProvider } from "./providers/ollama.js";
+import { type OllamaConfig, OllamaProvider } from "./providers/ollama.js";
 import { type OpenAIConfig, OpenAIProvider } from "./providers/openai.js";
 import { type OpenAIDecisionsConfig, OpenAIDecisionsProvider } from "./providers/openai-decisions.js";
 import { type PerplexityConfig, PerplexityProvider } from "./providers/perplexity.js";
@@ -57,9 +57,9 @@ modelRegistry.register(
 
 modelRegistry.register("anthropic", (modelId, config) => new AnthropicProvider(modelId, config as { apiKey?: string }));
 
-modelRegistry.register("google", (modelId, config) => new GoogleProvider(modelId, config as { apiKey?: string }));
+modelRegistry.register("google", (modelId, config) => new GoogleProvider(modelId, config));
 
-modelRegistry.register("ollama", (modelId, config) => new OllamaProvider(modelId, config as { host?: string }));
+modelRegistry.register("ollama", (modelId, config) => new OllamaProvider(modelId, config));
 
 export function openai(modelId: string, config?: OpenAIConfig): ModelProvider {
   return modelRegistry.resolve("openai", modelId, config);
@@ -76,11 +76,11 @@ export function anthropic(modelId: string, config?: AnthropicConfig): ModelProvi
   return modelRegistry.resolve("anthropic", modelId, config);
 }
 
-export function google(modelId: string, config?: { apiKey?: string }): ModelProvider {
+export function google(modelId: string, config?: GoogleConfig): ModelProvider {
   return modelRegistry.resolve("google", modelId, config);
 }
 
-export function ollama(modelId: string, config?: { host?: string }): ModelProvider {
+export function ollama(modelId: string, config?: OllamaConfig): ModelProvider {
   return modelRegistry.resolve("ollama", modelId, config);
 }
 
