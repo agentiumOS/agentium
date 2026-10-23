@@ -878,3 +878,75 @@ test("registry lookup timeout covers response body consumption", async () => {
     /timeout/i,
   );
 });
+
+test("accepted uploads wait for tarball propagation without uploading again", async (t) => {
+  const { options, manifest, manifestSha256 } = await packedFixture(t);
+  const clock = reconciliationClock();
+  const published = new Set();
+  const uploads = [];
+  let missingReads = 0;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (url.includes("core") && missingReads++ < 2) return new Response(null, { status: 404 });
+    return new Response(await options.download(url));
+  });
+  const result = await publishRelease({
+    ...options,
+    manifestSha256,
+    ...clock,
+    download: undefined,
+    reconciliationTimeoutMs: 10_000,
+    reconciliationIntervalMs: 2_000,
+    lookup: async (entry) =>
+      published.has(entry.name)
+        ? {
+            integrity: entry.integrity,
+            tarball: `https://registry.npmjs.org/${encodeURIComponent(`${entry.name}@${entry.version}`)}`,
+          }
+        : undefined,
+    execute: async (command, args, executionOptions) => {
+      if (command !== "npm" || args[0] !== "publish") return options.execute(command, args, executionOptions);
+      const entry = manifest.packages.find((entry) => args[1].endsWith(entry.filename));
+      uploads.push(entry.name);
+      published.add(entry.name);
+      return { stdout: "accepted" };
+    },
+  });
+  assert.deepEqual(
+    uploads,
+    manifest.packages.map((entry) => entry.name),
+  );
+  assert.deepEqual(clock.waits, [2_000, 2_000]);
+  assert.ok(result.packages.every((entry) => entry.status === "verified_published"));
+});
+
+test("unavailable tarballs remain bounded and never cause a second upload", async (t) => {
+  const { options, manifest, manifestSha256 } = await packedFixture(t);
+  const clock = reconciliationClock();
+  let uploads = 0;
+  t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 404 }));
+  await assert.rejects(
+    publishRelease({
+      ...options,
+      manifestSha256,
+      ...clock,
+      download: undefined,
+      reconciliationTimeoutMs: 10_000,
+      reconciliationIntervalMs: 2_000,
+      lookup: async (entry) =>
+        uploads && entry.name === manifest.packages[0].name
+          ? {
+              integrity: entry.integrity,
+              tarball: `https://registry.npmjs.org/${encodeURIComponent(`${entry.name}@${entry.version}`)}`,
+            }
+          : undefined,
+      execute: async (command, args, executionOptions) => {
+        if (command !== "npm" || args[0] !== "publish") return options.execute(command, args, executionOptions);
+        uploads++;
+        return { stdout: "accepted" };
+      },
+    }),
+    /registry_tarball_pending/,
+  );
+  assert.equal(uploads, 1);
+  assert.equal(clock.now(), 10_000);
+});

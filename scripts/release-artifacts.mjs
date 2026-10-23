@@ -361,6 +361,10 @@ export async function readRegistryVersion(entry, timeoutMs, request = fetch) {
 
 async function downloadTarball(url, size, timeoutMs = 30_000) {
   const response = await fetch(url, { signal: AbortSignal.timeout(Math.ceil(timeoutMs)), redirect: "error" });
+  if (response.status === 404) {
+    if (response.body) await response.body.cancel().catch(() => {});
+    throw Object.assign(new Error("Registry tarball is not available yet"), { code: "ARTIFACT_NOT_READY" });
+  }
   assert.ok(response.ok && response.body, "Registry tarball retrieval failed");
   const reader = response.body.getReader();
   const chunks = [];
@@ -401,6 +405,7 @@ async function registryState(entry, lookup, download, remainingMs = () => Infini
       : { status: "failed", reason: "registry_bytes_mismatch" };
   } catch (error) {
     if (error.code === "ARTIFACT_TOO_LARGE") return { status: "failed", reason: "registry_bytes_mismatch" };
+    if (error.code === "ARTIFACT_NOT_READY") return { status: "unknown", reason: "registry_tarball_pending" };
     return { status: "unknown", reason: "registry_unavailable" };
   }
 }
@@ -531,7 +536,7 @@ export async function publishRelease(options) {
     const remainingMs = () => Math.max(0, deadline - now());
     let state = await registryState(entry, lookup, download, reconciliationTimeoutMs === 0 ? undefined : remainingMs);
     // An accepted upload may precede registry visibility. Poll reads only; never retry the upload here.
-    while (state.status === "missing" && remainingMs() > 0) {
+    while ((state.status === "missing" || state.reason === "registry_tarball_pending") && remainingMs() > 0) {
       outcomes.packages[index] = {
         ...outcomes.packages[index],
         status: "unknown",

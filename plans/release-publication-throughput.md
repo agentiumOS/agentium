@@ -1,8 +1,8 @@
 # Bounded publication throughput
 
-The 4.11.0 release remains bound to `6b5aad0` and its retained artifacts. Its first npm upload took about 112 seconds; removing registry lookup overhead does not remove that serial upload bottleneck. This follow-up changes future publication tooling only.
+The 4.11.0 release remains bound to `6b5aad0` and its retained artifacts. Its first publication took about 112 seconds. Completed logs show the upload itself took about four seconds and registry confirmation took about 99 seconds; removing metadata lookup overhead does not remove that serial confirmation bottleneck. This follow-up changes future publication tooling only.
 
-Use opt-in concurrency of three in the release workflow. Compute dependency-respecting batches from retained runtime and peer dependency metadata before any upload. Verify each batch completely before starting dependent packages. Keep the CLI default sequential for existing callers.
+Use opt-in concurrency of three for upload and confirmation in the release workflow. Compute dependency-respecting batches from retained runtime and peer dependency metadata before any upload. Verify each batch completely before starting dependent packages. Keep the CLI default sequential for existing callers.
 
 Serialize outcome-file writes. On any failure, wait for all admitted publications to settle and retain their individual outcomes, then stop before another batch. Preserve exact source/artifact checks, per-package upload limits, no blind retries, and reconciliation of already-published versions.
 
@@ -15,3 +15,5 @@ Tests must prove dependent packages wait for verified dependencies, independent 
 - Biome, syntax checks, actionlint and diff whitespace checks pass.
 - No files under `packages/` differ from the 4.11.0 tag. The final main-branch CI run will verify the follow-up on Node 22 and 24.
 - The in-progress 4.11.0 workflow keeps its original sequential implementation. Future workflow runs opt in with `--publish-concurrency 3`; the CLI default remains one.
+
+Registry propagation follow-up: an accepted upload can expose matching version metadata before its tarball is available. HTTP 404 tarball reads now remain inside the existing bounded reconciliation loop. The upload is still attempted once, and other failures still stop publication. Two regression tests cover eventual visibility and deadline expiry; all 42 release-tooling tests pass.
