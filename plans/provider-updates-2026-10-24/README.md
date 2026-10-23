@@ -39,17 +39,17 @@ Each subsystem plan includes the owning tests for these conditions.
 | 2 | [Accounting corrections](accounting.md) | Correct Decisions cache charges; verified missing tariffs and aliases | Medium |
 | 3 | [Decisions GA](decisions.md) | Native JSON/history evidence, image questions, 400-question limit and cache controls | Medium to large |
 
-Implementing the first two does not require implementing the third. The third requires the accounting contract from the second. No implementation has started.
+All three increments are implemented locally. The third uses the accounting contract from the second. See [execution decisions](execution.md) and [verification results](verification.md) for the delivered scope and evidence.
 
 ## Execution and verification
 
-- [ ] Read the design and selected subsystem plan; confirm the checkout still matches the recorded baseline or reconcile newer changes. Reuse the current checkout if suitable. Preserve unrelated work.
-- [ ] Implement the subsystem with focused failing-then-passing tests and one commit per testable deliverable. Recommended execution: native implementation in this chat, with independent review after the combined change; these adapters share existing contracts, so per-task delegation adds coordination overhead.
-- [ ] Update package documentation with each subsystem. In `/Users/xerycks/Xhip/agentium-docs`, read `AGENTS.md` first, then update `models/google.mdx`, `models/openai-decisions.mdx`, `models/deepseek.mdx`, and `cost/overview.mdx` only where behavior or guidance changes. Record separate repository commits; do not deploy the site.
-- [ ] Run `npm run build`, then TypeScript checks covering source and tests (`npx tsc -p packages/<package>/tsconfig.json --noEmit --pretty false`) for each of the ten workspaces. Never typecheck dependent workspaces while build is deleting their declarations.
-- [ ] Run `npx biome ci .` and `VITEST_MAX_WORKERS=2 npm test`. Expect no failures; report the actual pass/skip counts. Confirm existing MCP v2 and native-recovery tests are included.
-- [ ] Run `node --test scripts/release-lock.test.mjs scripts/cjs-declarations.test.mjs scripts/release-artifacts.test.mjs` and `npm run test:package`. Expect all tests to pass. Add public API ESM/CJS consumption checks for the new Decisions exports to the existing packed fixture.
-- [ ] Review the complete diff against the design, capture source revision and evidence, and report any live-service limitations explicitly.
+- [x] Read the design and selected subsystem plan; confirm the checkout still matches the recorded baseline or reconcile newer changes. Reuse the current checkout if suitable. Preserve unrelated work.
+- [x] Implement the subsystem with focused failing-then-passing tests and one commit per testable deliverable. The requested Poteto workflow used disjoint source owners and independent combined review. The parent owns integration and commits.
+- [x] Update package documentation with each subsystem. In `/Users/xerycks/Xhip/agentium-docs`, read `AGENTS.md` first, then update `models/google.mdx`, `models/openai-decisions.mdx`, `models/deepseek.mdx`, and `cost/overview.mdx` only where behavior or guidance changes. Record separate repository commits; do not deploy the site.
+- [x] Run `npm run build`, then TypeScript checks covering source and tests (`npx tsc -p packages/<package>/tsconfig.json --noEmit --pretty false`) for each of the ten workspaces. Never typecheck dependent workspaces while build is deleting their declarations.
+- [x] Run `npx biome ci .` and the full Vitest suite with two workers. Record actual pass/skip counts. Existing MCP and native-recovery files remain included.
+- [x] Run `node --test scripts/release-lock.test.mjs scripts/cjs-declarations.test.mjs scripts/release-artifacts.test.mjs` and `npm run test:package`. All tests passed. Public API ESM/CJS consumption checks cover the new Decisions exports in the existing packed fixture.
+- [x] Review the complete diff against the design, capture source revision and evidence, and report any live-service limitations explicitly.
 - [ ] If a release is subsequently requested, choose the next available semver version and follow the repository release gate: exact-revision Linux Node 22/24 matrix, integration services, retained package artifacts, then publication and registry reconciliation. The combined additive Decisions API normally warrants a minor release. Do not reuse `v4.10.0`.
 
 ## Deliberately deferred
