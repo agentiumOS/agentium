@@ -10,6 +10,10 @@ on:
         description: Existing release tag to publish or resume (e.g. v4.9.0)
         required: true
         type: string
+      retained-run-id:
+        description: Optional original workflow run whose first-attempt verified tarballs must be reused
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -52,6 +56,7 @@ jobs:
     environment: Prod
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,7 +74,9 @@ jobs:
         run: node --test "$GITHUB_WORKSPACE/publication-tools/scripts/release-artifacts.test.mjs"
       - uses: actions/download-artifact@v4
         with:
-          name: agentium-release-${{ needs.preflight.outputs.sha }}-${{ github.run_attempt }}
+          name: agentium-release-${{ needs.preflight.outputs.sha }}-${{ inputs.retained-run-id != '' && '1' || github.run_attempt }}
+          run-id: ${{ inputs.retained-run-id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ${{ runner.temp }}/agentium-release
       - name: Verify and reconcile publication of the exact retained tarballs
         working-directory: release-source
