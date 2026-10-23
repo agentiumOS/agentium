@@ -14,10 +14,12 @@ import { Team } from "../../team/team.js";
 import { TeamMode } from "../../team/types.js";
 import { Workflow } from "../../workflow/workflow.js";
 import { meteredGenerate, meteredOperation, meteredStream } from "../accounting.js";
-import type { UsageRecordInput } from "../accounting-types.js";
+import type { NormalizedUsage, PricingCatalog, UsageRecordInput } from "../accounting-types.js";
+import { REVIEWED_PRICING_CATALOG } from "../catalog-data/reviewed.js";
 import { captureRetryFailure, captureUsage, withAccountingContext, withAccountingStream } from "../context.js";
 import { CostTracker } from "../cost-tracker.js";
-import { fixtureCatalog, fixtureContext, fixtureUsage } from "./fixtures.js";
+import { InMemoryUsageStore } from "../stores/in-memory.js";
+import { fixtureCatalog, fixtureContext, fixtureRecord, fixtureRule, fixtureUsage } from "./fixtures.js";
 
 const usage = (output = 16) =>
   providerTokenUsage("openai", "responses", {
@@ -66,6 +68,102 @@ function provider(generate: ModelProvider["generate"] = async () => response()):
 }
 
 describe("attempt accounting lifecycle", () => {
+  it("does not rewrite a stored Decisions assessment when the GA catalog becomes active", async () => {
+    const context = {
+      ...fixtureContext,
+      providerId: "openai-decisions",
+      billingProviderId: "openai",
+      modelId: "gpt-6-luna",
+      api: "decisions",
+      inputTokens: 1000,
+    };
+    const historicalUsage: NormalizedUsage = {
+      schemaVersion: 1,
+      normalizerId: "openai-decisions/decisions",
+      normalizerVersion: "1.1.0",
+      tokens: {
+        input: { total: 1000, ordinary: 100, cacheRead: 800, cacheWrite: 100, cacheWriteByTTL: [] },
+        output: { total: 50, reasoning: null },
+        total: 1050,
+        providerReportedTotal: 1050,
+      },
+      measurements: [
+        {
+          id: "token.input",
+          meter: "token.input",
+          unit: "token",
+          quantity: "1000",
+          dimensions: {},
+          source: "derived",
+          evidencePaths: ["input_tokens"],
+        },
+        ...["token.cache_read", "token.cache_write", "token.output"].map((meter) => ({
+          id: meter,
+          meter,
+          unit: "token",
+          quantity: "0",
+          dimensions: {},
+          source: "derived" as const,
+          evidencePaths: ["contract:openai/decisions/gpt-6-luna/input-only"],
+        })),
+      ],
+      coverage: {
+        requiredMeters: ["token.input", "token.cache_read", "token.cache_write", "token.output"],
+        unsupportedFeatures: [],
+      },
+      issues: [],
+      context,
+    };
+    const historicalCatalog: PricingCatalog = {
+      id: "agentium-reviewed",
+      version: "2026-10-08.2",
+      validUntil: "2026-11-08T00:00:00.000Z",
+      rules: ["token.input", "token.cache_read", "token.cache_write", "token.output"].map((meter) =>
+        fixtureRule(meter, meter === "token.input" ? "0.1" : "0", {
+          match: {
+            providerId: "openai-decisions",
+            billingProviderId: "openai",
+            modelId: "gpt-6-luna",
+            api: "decisions",
+            actualServiceTier: "*",
+            region: "global",
+            reasoningMode: "*",
+            reasoningEffort: "*",
+            contractId: "*",
+            modality: "*",
+          },
+          sourceUrl: "https://developers.openai.com/api/docs/guides/decisions#pricing-and-availability",
+        }),
+      ),
+    };
+    const store = new InMemoryUsageStore();
+    const oldTracker = new CostTracker({ store, catalog: historicalCatalog });
+    await oldTracker.recordUsage({ ...fixtureRecord("old-decisions"), context, usage: historicalUsage });
+    expect((await oldTracker.queryCosts({ tenantId: "test" })).total).toBe("0.0001");
+    const original = await oldTracker.queryAssessments({ tenantId: "test", attemptId: "old-decisions" });
+    const nextTracker = new CostTracker({ store, catalog: REVIEWED_PRICING_CATALOG });
+    expect(await nextTracker.queryAssessments({ tenantId: "test", attemptId: "old-decisions" })).toEqual(original);
+    const currentContext = { ...context, occurredAt: "2026-10-24T00:00:00.000Z" };
+    const currentUsage = providerTokenUsage(
+      "openai-decisions",
+      "decisions",
+      {
+        input_tokens: 1000,
+        output_tokens: 50,
+        total_tokens: 1050,
+        input_tokens_details: { cached_tokens: 800, cache_write_tokens: 100 },
+      },
+      currentContext,
+    );
+    if (!currentUsage.accounting) throw new Error("Expected canonical Decisions evidence");
+    await nextTracker.recordUsage({
+      ...fixtureRecord("ga-decisions"),
+      context: currentContext,
+      usage: currentUsage.accounting,
+    });
+    expect((await nextTracker.queryCosts({ tenantId: "test" })).total).toBe("0.0001305");
+    expect(await nextTracker.queryAssessments({ tenantId: "test", attemptId: "old-decisions" })).toEqual(original);
+  });
   it("records one inclusive output and preserves unknown physical retries", async () => {
     const f = fixture();
     const output = await withAccountingContext(f.context, () => meteredGenerate(provider(), []));

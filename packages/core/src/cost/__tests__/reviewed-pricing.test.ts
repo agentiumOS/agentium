@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { normalizeProviderUsage } from "../../models/usage-normalizers.js";
-import type { BillingContext, NormalizedUsage } from "../accounting-types.js";
+import type { BillingContext, NormalizedUsage, PricingCatalog } from "../accounting-types.js";
 import { calculateCharges } from "../calculator.js";
 import { resolvePriceRule } from "../catalog.js";
 import { REVIEWED_PRICING_CATALOG } from "../catalog-data/reviewed.js";
 import { fixtureContext, fixtureUsage } from "./fixtures.js";
+
+const current = "2026-10-24T00:00:00.000Z";
 
 function assess(usage: NormalizedUsage, extra: Partial<BillingContext> = {}) {
   return calculateCharges({
@@ -20,10 +22,11 @@ function rate(
   meter: string,
   extra: Partial<BillingContext> = {},
   dimensions: Record<string, string> = {},
+  catalog: PricingCatalog = REVIEWED_PRICING_CATALOG,
 ) {
   const measurement = fixtureUsage().measurements[0];
   return resolvePriceRule(
-    REVIEWED_PRICING_CATALOG,
+    catalog,
     {
       ...fixtureContext,
       providerId,
@@ -111,7 +114,7 @@ describe("reviewed current first-party tariffs", () => {
     expect(assess(usage).total).toBe("0.012");
     expect(assess(usage, { actualServiceTier: "batch" }).total).toBeNull();
   });
-  it("prices Decisions inclusive input only while keeping reported cache/output statistics", () => {
+  it("charges Decisions GA cache partitions once while retaining inclusive statistics", () => {
     const usage = normalizeProviderUsage(
       "openai-decisions",
       "decisions",
@@ -124,8 +127,8 @@ describe("reviewed current first-party tariffs", () => {
       { modelId: "gpt-6-luna", region: "global" },
     );
     expect(usage.tokens?.input).toMatchObject({ total: 1000, ordinary: 100, cacheRead: 800, cacheWrite: 100 });
-    expect(usage.measurements.map((measurement) => measurement.quantity)).toEqual(["1000", "0", "0", "0"]);
-    expect(assess(usage, { actualServiceTier: undefined }).total).toBe("0.0001");
+    expect(usage.measurements.map((measurement) => measurement.quantity)).toEqual(["100", "800", "100", "0"]);
+    expect(assess(usage, { actualServiceTier: undefined, occurredAt: current }).total).toBe("0.0000305");
     expect(
       assess(
         normalizeProviderUsage(
@@ -134,9 +137,143 @@ describe("reviewed current first-party tariffs", () => {
           { input_tokens: 1000 },
           { modelId: "gpt-6-luna", region: "global" },
         ),
+        { occurredAt: current },
       ).total,
-    ).toBe("0.0001");
+    ).toBeNull();
     expect(assess(usage, { billingProviderId: "unknown" }).total).toBeNull();
+    expect(assess(usage).total).toBeNull();
+  });
+  it.each(["us", "eu"])("applies Decisions long-input and %s regional factors once", (region) => {
+    const usage = normalizeProviderUsage(
+      "openai-decisions",
+      "decisions",
+      {
+        input_tokens: 272001,
+        output_tokens: 50,
+        total_tokens: 272051,
+        input_tokens_details: { cached_tokens: 800, cache_write_tokens: 100 },
+      },
+      { modelId: "gpt-6-luna", region },
+    );
+    expect(assess(usage, { occurredAt: current }).total).toBe("0.05968732");
+  });
+  it.each([
+    ["global", 272000, "token.input", "12"],
+    ["global", 272000, "token.output", "60"],
+    ["us", 272001, "token.input", "26.4"],
+    ["us", 272001, "token.output", "99"],
+    ["eu", 272000, "token.cache_read", "0.66"],
+    ["eu", 272001, "token.cache_write", "33"],
+  ])("prices Sol Ultrafast in %s at %s input tokens for %s", (region, inputTokens, meter, amount) => {
+    expect(
+      rate("openai", "gpt-6.1-sol", "responses", meter, {
+        actualServiceTier: "ultrafast",
+        region,
+        inputTokens: Number(inputTokens),
+        occurredAt: current,
+      }),
+    ).toHaveProperty("rule.rate.amount", amount);
+  });
+  it("keeps Ultrafast endpoints and other model regions scoped", () => {
+    expect(
+      rate("openai", "gpt-6.1-sol", "chat-completions", "token.input", {
+        actualServiceTier: "ultrafast",
+        occurredAt: current,
+      }),
+    ).toEqual({ reason: "missing_rate" });
+    expect(
+      rate("openai", "gpt-6-astra", "responses", "token.input", {
+        actualServiceTier: "ultrafast",
+        region: "us",
+        occurredAt: current,
+      }),
+    ).toEqual({ reason: "missing_rate" });
+    expect(rate("openai", "gpt-6.1-sol", "responses", "token.input", { inputTokens: 272000 })).toHaveProperty(
+      "rule.rate.amount",
+      "2",
+    );
+    expect(rate("openai", "gpt-6.1-sol", "responses", "token.input", { inputTokens: 272001 })).toHaveProperty(
+      "rule.rate.amount",
+      "4",
+    );
+  });
+  it.each([
+    ["token.input", "2", "4"],
+    ["token.cache_read", "0.1", "0.2"],
+    ["token.output", "10", "20"],
+  ])("bounds Argon %s prices around the date-only transition", (meter, introductory, regular) => {
+    const extended = { ...REVIEWED_PRICING_CATALOG, validUntil: "2027-01-01T00:00:00.000Z" };
+    const selected = rate("google", "gemini-4-argon", "generate-content", meter, { occurredAt: current });
+    expect(selected).toHaveProperty("rule.rate.amount", introductory);
+    expect(selected).toHaveProperty("rule.effectiveFrom", "2026-10-23T21:42:29.000Z");
+    expect(selected).toHaveProperty("rule.effectiveUntil", "2026-11-30T10:00:00.000Z");
+    for (const occurredAt of ["2026-11-30T10:00:00.000Z", "2026-12-01T11:59:59.999Z"])
+      expect(rate("google", "gemini-4-argon", "generate-content", meter, { occurredAt }, {}, extended)).toEqual({
+        reason: "missing_rate",
+      });
+    expect(
+      rate(
+        "google",
+        "gemini-4-argon",
+        "generate-content",
+        meter,
+        { occurredAt: "2026-12-01T12:00:00.000Z" },
+        {},
+        extended,
+      ),
+    ).toHaveProperty("rule.rate.amount", regular);
+    expect(
+      rate("google", "gemini-4-argon", "generate-content", meter, { occurredAt: "2026-12-01T12:00:00.000Z" }),
+    ).toEqual({ reason: "stale_catalog" });
+  });
+  it("prices Argon ordinary usage without inventing a free cache-write product", () => {
+    const usage = normalizeProviderUsage(
+      "google",
+      "generate-content",
+      { promptTokenCount: 1000, cachedContentTokenCount: 800, candidatesTokenCount: 100, thoughtsTokenCount: 20 },
+      { modelId: "gemini-4-argon" },
+    );
+    const context = { occurredAt: current, dimensions: { pricePlan: "paid", modality: "text" } };
+    expect(assess(usage, context).total).toBe("0.00168");
+    const withWrite = {
+      ...usage,
+      measurements: [
+        ...usage.measurements.filter((measurement) => measurement.meter !== "token.cache_write"),
+        {
+          id: "write",
+          meter: "token.cache_write",
+          unit: "token",
+          quantity: "10",
+          dimensions: {},
+          source: "provider" as const,
+          evidencePaths: ["cacheWriteTokenCount"],
+        },
+      ],
+    };
+    expect(assess(withWrite, context).total).toBeNull();
+    expect(rate("google", "gemini-4-argon", "generate-content", "token.cache_write", { occurredAt: current })).toEqual({
+      reason: "missing_rate",
+    });
+    expect(rate("google", "gemini-4-argon", "interactions", "token.input", { occurredAt: current })).toEqual({
+      reason: "missing_rate",
+    });
+    expect(
+      rate("google", "gemini-4-argon", "generate-content", "token.input", {
+        occurredAt: current,
+        actualServiceTier: "priority",
+      }),
+    ).toEqual({ reason: "missing_rate" });
+    expect(
+      assess(
+        normalizeProviderUsage(
+          "google",
+          "generate-content",
+          { promptTokenCount: 1000, candidatesTokenCount: 100, cacheWriteTokenCount: 10 },
+          { modelId: "gemini-4-argon" },
+        ),
+        context,
+      ).total,
+    ).toBeNull();
   });
   it("prices documented native xAI reasoning and Mistral cache semantics completely", () => {
     const xai = normalizeProviderUsage(

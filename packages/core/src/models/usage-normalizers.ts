@@ -151,8 +151,9 @@ export function normalizeProviderUsage(
     providerId === "mistral" && api === "chat-completions" && context.modelId === "mistral-small-2603";
   const reviewedXAI =
     providerId === "xai" && ["chat-completions", "responses"].includes(api) && context.modelId === "grok-4.6";
-  const decisionsInputOnly =
+  const decisionsFreeOutput =
     providerId === "openai-decisions" && api === "decisions" && context.modelId === "gpt-6-luna";
+  const reviewedArgon = providerId === "google" && api === "generate-content" && context.modelId === "gemini-4-argon";
   const flagNestedFields = (value: unknown, known: string[], path: string) => {
     const unknown = Object.keys(record(value)).filter((key) => !known.includes(key));
     if (unknown.length) {
@@ -474,19 +475,21 @@ export function normalizeProviderUsage(
       message: `Unrecognized usage fields: ${unknownFields.join(", ")}`,
     });
   }
-  const measurements = tokenMeasurements(tokens, issues);
+  const omitArgonCacheWrite = reviewedArgon && tokens.input.cacheWrite === 0;
+  const requiredMeters = TOKEN_METERS.filter((meter) => !omitArgonCacheWrite || meter !== "token.cache_write");
+  const measurements = tokenMeasurements(tokens, issues).filter(
+    (measurement) => !omitArgonCacheWrite || measurement.meter !== "token.cache_write",
+  );
   if (api === "messages" && tokens.input.cacheWrite === 0 && tokens.input.cacheWriteByTTL.length === 0) {
     const write = measurements.find((measurement) => measurement.meter === "token.cache_write");
     if (write) write.dimensions.ttlSeconds = "none";
   }
-  if (decisionsInputOnly) {
-    // This endpoint charges inclusive input once. Cache/output counts remain statistics, not payable units.
-    for (const measurement of measurements) {
-      measurement.quantity =
-        measurement.meter === "token.input" ? (tokens.input.total === null ? null : String(tokens.input.total)) : "0";
-      measurement.source = "derived";
-      measurement.evidencePaths =
-        measurement.meter === "token.input" ? ["input_tokens"] : ["contract:openai/decisions/gpt-6-luna/input-only"];
+  if (decisionsFreeOutput) {
+    const output = measurements.find((measurement) => measurement.meter === "token.output");
+    if (output) {
+      output.quantity = "0";
+      output.source = "derived";
+      output.evidencePaths = ["contract:openai/decisions/gpt-6-luna/free-output"];
     }
   }
   if (api === "chat-v2") {
@@ -507,10 +510,10 @@ export function normalizeProviderUsage(
   return {
     schemaVersion: 1,
     normalizerId: `${providerId}/${api}`,
-    normalizerVersion: "1.1.0",
+    normalizerVersion: decisionsFreeOutput || reviewedArgon ? "1.2.0" : "1.1.0",
     tokens,
     measurements,
-    coverage: { requiredMeters: [...TOKEN_METERS], unsupportedFeatures },
+    coverage: { requiredMeters, unsupportedFeatures },
     ...retainRawUsage(raw),
     issues,
     context: {

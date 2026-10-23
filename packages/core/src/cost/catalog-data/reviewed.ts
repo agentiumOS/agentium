@@ -2,6 +2,7 @@ import type { PriceRule, PricingCatalog } from "../accounting-types.js";
 import { Decimal } from "../decimal.js";
 
 const verifiedAt = "2026-10-08T00:00:00.000Z";
+const currentVerifiedAt = "2026-10-23T21:42:29.000Z";
 const tokenMeters = ["token.input", "token.cache_read", "token.cache_write", "token.output"] as const;
 type TokenRates = readonly [string, string, string, string];
 const rules: PriceRule[] = [];
@@ -12,7 +13,7 @@ function addTokenRules(
   match: PriceRule["match"],
   rates: TokenRates,
   sourceUrl: string,
-  options: Pick<PriceRule, "contextBand" | "effectiveUntil"> = {},
+  options: Partial<Pick<PriceRule, "contextBand" | "effectiveFrom" | "effectiveUntil" | "verifiedAt">> = {},
 ) {
   for (const [index, meter] of tokenMeters.entries())
     rules.push({
@@ -34,61 +35,80 @@ const openAITiers = [
   { names: ["priority", "fast"], multiplier: "2" },
   { names: ["flex", "batch"], multiplier: "0.5" },
 ];
-function openAI(modelId: string, rates: TokenRates, tiers = openAITiers) {
+function openAI(
+  modelId: string,
+  rates: TokenRates,
+  tiers = openAITiers,
+  options: { api?: string; regions?: string[] } & Partial<Pick<PriceRule, "verifiedAt" | "effectiveFrom">> = {},
+) {
   for (const tier of tiers)
     for (const long of [false, true])
-      for (const regional of [false, true]) {
-        if (regional && tier.names.includes("ultrafast")) continue;
+      for (const region of options.regions ?? (tier.names.includes("ultrafast") ? ["global"] : ["global", "us"])) {
+        const regionKey = region === "global" ? "false" : region === "us" ? "true" : region;
         const adjusted = (index: number) =>
           Decimal.from(rates[index])
             .multiply(Decimal.from(tier.multiplier))
             .multiply(Decimal.from(long ? (index === 3 ? "1.5" : "2") : "1"))
-            .multiply(Decimal.from(regional ? "1.1" : "1"))
+            .multiply(Decimal.from(region !== "global" ? "1.1" : "1"))
             .toString();
         addTokenRules(
-          `openai:${modelId}:${tier.names[0]}:${long}:${regional}`,
+          `openai:${modelId}:${tier.names[0]}:${long}:${regionKey}`,
           {
             providerId: "openai",
             billingProviderId: "openai",
             modelId,
-            api: ["responses", "chat-completions"],
+            api: options.api ?? ["responses", "chat-completions"],
             actualServiceTier: tier.names,
-            region: regional ? "us" : "global",
+            region,
             modality: "*",
           },
           [adjusted(0), adjusted(1), adjusted(2), adjusted(3)],
-          tier.names.includes("ultrafast")
+          tier.names.includes("ultrafast") && modelId !== "gpt-6.1-sol"
             ? "https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast"
             : `https://developers.openai.com/api/docs/models/${modelId}`,
-          { contextBand: { field: "inputTokens", ...(long ? { above: 272000 } : { upTo: 272000 }) } },
+          {
+            contextBand: { field: "inputTokens", ...(long ? { above: 272000 } : { upTo: 272000 }) },
+            ...(options.verifiedAt ? { verifiedAt: options.verifiedAt } : {}),
+            ...(options.effectiveFrom ? { effectiveFrom: options.effectiveFrom } : {}),
+          },
         );
       }
 }
 openAI("gpt-6.1-sol", ["2", "0.1", "2.5", "10"]);
 openAI("gpt-6-astra", ["10", "1", "12.5", "50"], [...openAITiers, { names: ["ultrafast"], multiplier: "6" }]);
 openAI("gpt-6-luna", ["0.1", "0.01", "0.125", "0.5"]);
+openAI("gpt-6.1-sol", ["2", "0.1", "2.5", "10"], [{ names: ["ultrafast"], multiplier: "6" }], {
+  api: "responses",
+  regions: ["global", "us", "eu"],
+  verifiedAt: currentVerifiedAt,
+  effectiveFrom: currentVerifiedAt,
+});
 
-// Decisions has an endpoint-specific input-only contract, independent of generation tier prices.
 for (const long of [false, true])
-  for (const regional of [false, true]) {
-    const rate = Decimal.from("0.1")
-      .multiply(Decimal.from(long ? "2" : "1"))
-      .multiply(Decimal.from(regional ? "1.1" : "1"))
-      .toString();
+  for (const region of ["global", "us", "eu"]) {
+    const rate = (amount: string) =>
+      Decimal.from(amount)
+        .multiply(Decimal.from(long ? "2" : "1"))
+        .multiply(Decimal.from(region !== "global" ? "1.1" : "1"))
+        .toString();
     addTokenRules(
-      `decisions:gpt-6-luna:${long}:${regional}`,
+      `decisions:gpt-6-luna:${long}:${region}`,
       {
         providerId: "openai-decisions",
         billingProviderId: "openai",
         modelId: "gpt-6-luna",
         api: "decisions",
         actualServiceTier: "*",
-        region: regional ? "us" : "global",
+        region,
         modality: "*",
       },
-      [rate, "0", "0", "0"],
+      [rate("0.1"), rate("0.01"), rate("0.125"), "0"],
       "https://developers.openai.com/api/docs/guides/decisions#pricing-and-availability",
-      { contextBand: { field: "inputTokens", ...(long ? { above: 272000 } : { upTo: 272000 }) } },
+      {
+        contextBand: { field: "inputTokens", ...(long ? { above: 272000 } : { upTo: 272000 }) },
+        verifiedAt: currentVerifiedAt,
+        effectiveFrom: currentVerifiedAt,
+      },
     );
   }
 
@@ -192,6 +212,41 @@ for (const row of googleRows)
     },
   );
 
+// The source names December 1 without a timezone. Leave the worldwide UTC uncertainty interval unpriced.
+for (const period of [
+  {
+    id: "introductory",
+    effectiveFrom: currentVerifiedAt,
+    effectiveUntil: "2026-11-30T10:00:00.000Z",
+    rates: ["2", "0.1", "10"],
+  },
+  { id: "standard", effectiveFrom: "2026-12-01T12:00:00.000Z", rates: ["4", "0.2", "20"] },
+])
+  for (const [index, meter] of ["token.input", "token.cache_read", "token.output"].entries())
+    rules.push({
+      id: `google:gemini-4-argon:${period.id}:${meter}`,
+      version: "1",
+      meter,
+      unit: "token",
+      currency: "USD",
+      match: {
+        ...invariantDimensions,
+        providerId: "google",
+        billingProviderId: "google",
+        modelId: "gemini-4-argon",
+        api: "generate-content",
+        actualServiceTier: "standard",
+        region: "global",
+        modality: "text",
+        pricePlan: "paid",
+      },
+      verifiedAt: currentVerifiedAt,
+      effectiveFrom: period.effectiveFrom,
+      ...(period.effectiveUntil ? { effectiveUntil: period.effectiveUntil } : {}),
+      sourceUrl: "https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon",
+      rate: { kind: "unit", amount: period.rates[index], per: "1000000" },
+    });
+
 // Exact first-party contracts only. Compatible gateways and partner deployments require their own tariffs.
 for (const long of [false, true])
   addTokenRules(
@@ -243,7 +298,7 @@ addTokenRules(
 /** Reviewed subset, never a promise to price unknown models, accounts, or future billing features. */
 export const REVIEWED_PRICING_CATALOG: PricingCatalog = {
   id: "agentium-reviewed",
-  version: "2026-10-08.2",
+  version: "2026-10-24.1",
   validUntil: "2026-11-08T00:00:00.000Z",
   rules,
 };

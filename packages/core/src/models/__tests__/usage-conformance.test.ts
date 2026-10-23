@@ -46,6 +46,68 @@ describe("canonical provider usage", () => {
     expect(usage.measurements.map((value) => value.quantity)).toEqual(["1000", "12000", "2000", "500"]);
     expect(usage.issues).toEqual([]);
   });
+  it("keeps Decisions GA cache partitions payable and only output free", () => {
+    const usage = normalizeProviderUsage(
+      "openai-decisions",
+      "decisions",
+      {
+        input_tokens: 1000,
+        output_tokens: 50,
+        total_tokens: 1050,
+        input_tokens_details: { cached_tokens: 800, cache_write_tokens: 100 },
+      },
+      { modelId: "gpt-6-luna" },
+    );
+    expect(usage.measurements.map((value) => value.quantity)).toEqual(["100", "800", "100", "0"]);
+    expect(usage.tokens?.total).toBe(1050);
+    expect(usage.normalizerVersion).toBe("1.2.0");
+    expect(normalizeProviderUsage("openai", "responses", USAGE_FIXTURES.openai.raw).normalizerVersion).toBe("1.1.0");
+    expect(usage.measurements.at(-1)?.evidencePaths).toEqual(["contract:openai/decisions/gpt-6-luna/free-output"]);
+  });
+  it.each([
+    [undefined, [null, null, null, "0"]],
+    [{ cached_tokens: 800 }, [null, "800", null, "0"]],
+    [{ cached_tokens: 800, cache_write_tokens: 300 }, [null, "800", "300", "0"]],
+    [{ cached_tokens: -1, cache_write_tokens: 100 }, [null, null, "100", "0"]],
+  ])("retains unknown or invalid Decisions cache evidence %j", (details, quantities) => {
+    const usage = normalizeProviderUsage(
+      "openai-decisions",
+      "decisions",
+      {
+        input_tokens: 1000,
+        output_tokens: 50,
+        input_tokens_details: details,
+      },
+      { modelId: "gpt-6-luna" },
+    );
+    expect(usage.measurements.map((value) => value.quantity)).toEqual(quantities);
+  });
+  it("does not apply the Decisions free-output contract to unknown models", () => {
+    const usage = normalizeProviderUsage(
+      "openai-decisions",
+      "decisions",
+      {
+        input_tokens: 1000,
+        output_tokens: 50,
+        input_tokens_details: { cached_tokens: 800, cache_write_tokens: 100 },
+      },
+      { modelId: "unknown" },
+    );
+    expect(usage.measurements.map((value) => value.quantity)).toEqual(["100", "800", "100", "50"]);
+    expect(usage.normalizerVersion).toBe("1.1.0");
+  });
+  it("omits only the proven-zero Argon cache-write payable meter", () => {
+    const usage = normalizeProviderUsage("google", "generate-content", USAGE_FIXTURES.google.raw, {
+      modelId: "gemini-4-argon",
+    });
+    expect(usage.tokens?.input.cacheWrite).toBe(0);
+    expect(usage.normalizerVersion).toBe("1.2.0");
+    expect(usage.measurements.map((value) => value.meter)).toEqual(["token.input", "token.cache_read", "token.output"]);
+    expect(usage.coverage.requiredMeters).toEqual(["token.input", "token.cache_read", "token.output"]);
+    const missing = normalizeProviderUsage("google", "generate-content", undefined, { modelId: "gemini-4-argon" });
+    expect(missing.measurements.find((value) => value.meter === "token.cache_write")?.quantity).toBeNull();
+    expect(missing.coverage.requiredMeters).toContain("token.cache_write");
+  });
   it.each(["anthropic", "aws-claude"])("adds exclusive %s input and preserves both TTL buckets", (provider) => {
     const usage = normalizeProviderUsage(provider, "messages", USAGE_FIXTURES.anthropic.raw);
     expect(usage.tokens?.input.total).toBe(15000);
