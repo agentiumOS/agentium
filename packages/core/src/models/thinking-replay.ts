@@ -1,4 +1,4 @@
-import type { ChatMessage, ProviderOptions, ReasoningConfig } from "./types.js";
+import type { ChatMessage, ModelConfig, ProviderOptions, ReasoningConfig } from "./types.js";
 
 export function anthropicReplayContent(msg: ChatMessage): unknown[] | undefined {
   if (
@@ -60,12 +60,35 @@ export function applyGoogleThinkingConfig(
 ): void {
   if (!options?.reasoning?.enabled) return;
   const thinkingConfig: Record<string, unknown> = { includeThoughts: true };
-  if (/gemini-3/i.test(modelId)) {
+  if (/gemini-3/i.test(modelId) || isGoogleArgon(modelId)) {
     thinkingConfig.thinkingLevel = geminiThinkingLevel(options.reasoning.effort);
   } else {
     thinkingConfig.thinkingBudget = options.reasoning.budgetTokens ?? 10000;
   }
   config.thinkingConfig = thinkingConfig;
+}
+
+function isGoogleArgon(modelId: string): boolean {
+  return /^(?:models\/)?gemini-4-argon$/i.test(modelId);
+}
+
+export function validateGoogleArgonOptions(modelId: string, options?: ModelConfig): void {
+  if (!isGoogleArgon(modelId)) return;
+  const reasoning = options?.reasoning;
+  if (reasoning?.enabled === false || reasoning?.effort === "none" || reasoning?.effort === "minimal") {
+    throw new Error("Gemini 4 Argon requires reasoning at low, medium, or high; omit reasoning to use its default.");
+  }
+  if (reasoning?.budgetTokens !== undefined) {
+    throw new Error("Gemini 4 Argon uses reasoning effort levels, not budgetTokens. Choose low, medium, or high.");
+  }
+  if (options?.providerOptions?.cachedContent !== undefined) {
+    throw new Error("Gemini 4 Argon does not support explicit cachedContent. Omit it to use implicit caching.");
+  }
+  if (options?.maxTokens !== undefined && options.maxTokens > 65536) {
+    throw new Error(
+      "Gemini 4 Argon supports maxTokens up to 65536 in this adapter; automatic continuation is unsupported.",
+    );
+  }
 }
 
 /** Opus/Sonnet 4.6+ and Claude 5 / Fable / Mythos reject `thinking.type: enabled`. */
@@ -132,13 +155,13 @@ export function applyAnthropicThinking(
   return betas.length ? { "anthropic-beta": betas.join(",") } : undefined;
 }
 
-/** Gemini 3.8+ sampling fields, media resolution, cache, and Search grounding. */
+/** Gemini sampling fields, media resolution, cache, and Search grounding. */
 export function applyGoogleRequestExtras(
   config: Record<string, unknown>,
   modelId: string,
   options?: { providerOptions?: ProviderOptions },
 ): void {
-  if (/gemini-3\.(?:[8-9]|\d{2,})/i.test(modelId)) {
+  if (/gemini-3\.(?:[8-9]|\d{2,})/i.test(modelId) || isGoogleArgon(modelId)) {
     delete config.temperature;
     delete config.topP;
   }

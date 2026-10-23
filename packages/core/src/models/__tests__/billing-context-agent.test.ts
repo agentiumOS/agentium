@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Agent } from "../../agent/agent.js";
+import { CostTracker } from "../../cost/cost-tracker.js";
 import type { ModelProvider } from "../provider.js";
 import { CohereProvider } from "../providers/cohere.js";
 import { GoogleProvider } from "../providers/google.js";
@@ -7,6 +8,7 @@ import { MistralProvider } from "../providers/mistral.js";
 
 const native = vi.hoisted(() => ({
   google: vi.fn<(params: Record<string, unknown>) => Promise<unknown>>(),
+  googleStream: vi.fn<(params: Record<string, unknown>) => Promise<AsyncIterable<unknown>>>(),
   cohere: vi.fn<(params: Record<string, unknown>) => Promise<unknown>>(),
   mistral: vi.fn<(params: Record<string, unknown>) => Promise<unknown>>(),
 }));
@@ -20,7 +22,7 @@ vi.mock("node:module", async (importOriginal) => {
         if (id === "@google/genai")
           return {
             GoogleGenAI: class {
-              models = { generateContent: native.google };
+              models = { generateContent: native.google, generateContentStream: native.googleStream };
             },
           };
         if (id === "cohere-ai")
@@ -43,6 +45,7 @@ vi.mock("node:module", async (importOriginal) => {
 });
 
 beforeEach(() => {
+  native.googleStream.mockReset();
   native.google.mockReset().mockResolvedValue({
     modelVersion: "gemini-3.8-flash",
     candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
@@ -93,6 +96,59 @@ const providers: Array<{
 ];
 
 describe("native Agent billing context", () => {
+  it.each(["generate", "stream"])("retains requested and returned Google models through Agent %s", async (mode) => {
+    native.googleStream.mockResolvedValue(
+      (async function* () {
+        yield {
+          modelVersion: "gemini-3.8-flash",
+          responseId: "served-42",
+          candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+        };
+        yield {
+          usageMetadata: {
+            promptTokenCount: 1000,
+            cachedContentTokenCount: 800,
+            candidatesTokenCount: 100,
+            thoughtsTokenCount: 20,
+            totalTokenCount: 1120,
+          },
+        };
+      })(),
+    );
+    const tracker = new CostTracker();
+    const agent = new Agent({
+      name: "returned-model",
+      model: new GoogleProvider("gemini-retired-request", { apiKey: "fixture-only" }),
+      register: false,
+      costTracker: tracker,
+      billingContext: { actualServiceTier: "standard", region: "global", dimensions: { pricePlan: "paid" } },
+    });
+    try {
+      if (mode === "stream") {
+        let text = "";
+        for await (const chunk of agent.stream("hello", { tenantId: "google-identity", runId: "run" })) {
+          if (chunk.type === "text") text += chunk.text;
+        }
+        expect(text).toBe("ok");
+      } else await agent.run("hello", { tenantId: "google-identity", runId: "run" });
+      const records = (await tracker.queryUsage({ tenantId: "google-identity", runId: "run" })).items.filter(
+        (item) => item.executionStatus === "succeeded",
+      );
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        executionStatus: "succeeded",
+        context: {
+          requestedModelId: "gemini-retired-request",
+          modelId: "gemini-3.8-flash",
+          provenance: { modelId: "response" },
+        },
+        usage: { tokens: { total: 1120 } },
+      });
+    } finally {
+      await agent.close();
+    }
+  });
+
   it.each(providers)("prices $name native usage with explicit host facts", async ({ create, amount, dimensions }) => {
     const agent = new Agent({
       name: "native-paid",

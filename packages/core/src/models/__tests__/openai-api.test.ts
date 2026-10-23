@@ -16,6 +16,7 @@ import {
   applyGoogleRequestExtras,
   applyGoogleThinkingConfig,
   extrasFromGoogleParts,
+  validateGoogleArgonOptions,
 } from "../thinking-replay.js";
 import type { StreamChunk } from "../types.js";
 
@@ -164,6 +165,28 @@ describe("Responses conversion", () => {
 });
 
 describe("Gemini / Vertex thinking", () => {
+  it.each(["gemini-4-argon", "models/gemini-4-argon"])(
+    "maps Argon reasoning levels without a thinking budget for %s",
+    (model) => {
+      const config: Record<string, unknown> = { temperature: 0.5, topP: 0.9 };
+      applyGoogleThinkingConfig(config, model, { reasoning: { enabled: true, effort: "high" } });
+      applyGoogleRequestExtras(config, model);
+      expect(config).toEqual({ thinkingConfig: { includeThoughts: true, thinkingLevel: "HIGH" } });
+    },
+  );
+
+  it.each(["not-gemini-4-argon", "gemini-4-argonish", "gemini-4-argon-001", "gemini-5-argon"])(
+    "does not infer Argon support for %s",
+    (model) => {
+      expect(() =>
+        validateGoogleArgonOptions(model, { reasoning: { enabled: false }, maxTokens: 100000 }),
+      ).not.toThrow();
+      const config: Record<string, unknown> = { temperature: 0.5, topP: 0.9 };
+      applyGoogleRequestExtras(config, model);
+      expect(config).toEqual({ temperature: 0.5, topP: 0.9 });
+    },
+  );
+
   it("uses thinkingBudget + includeThoughts on Gemini 2.5", () => {
     const config: Record<string, unknown> = {};
     applyGoogleThinkingConfig(config, "gemini-2.5-pro", {

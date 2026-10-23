@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import type { BillingContext } from "../../cost/accounting-types.js";
 import type { ModelProvider } from "../provider.js";
 import {
   abortableStream,
@@ -12,6 +13,7 @@ import {
   applyGoogleThinkingConfig,
   extrasFromGoogleParts,
   googleReplayParts,
+  validateGoogleArgonOptions,
 } from "../thinking-replay.js";
 import {
   type ChatMessage,
@@ -21,21 +23,28 @@ import {
   type ModelConfig,
   type ModelResponse,
   type StreamChunk,
+  type TokenUsage,
   type ToolCall,
   type ToolDefinition,
 } from "../types.js";
-import { providerTokenUsage, safeResponseContext } from "../usage-normalizers.js";
+import {
+  ModelUsageError,
+  mergeResponseContext,
+  providerTokenUsage,
+  safeResponseContext,
+} from "../usage-normalizers.js";
 
 const _require = createRequire(import.meta.url);
 type GoogleStreamChunk = {
   usageMetadata?: unknown;
   candidates?: {
     finishReason?: string;
+    continuationToken?: string;
     content?: {
       parts?: {
         thought?: boolean;
         text?: string;
-        functionCall?: { name: string; args?: unknown };
+        functionCall?: { id?: string; name: string; args?: unknown };
       }[];
     };
   }[];
@@ -131,6 +140,7 @@ export class GoogleProvider implements ModelProvider {
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): Promise<ModelResponse> {
+    validateGoogleArgonOptions(this.modelId, options);
     const scope = createRequestScope(this.config ?? {}, options);
     try {
       const { systemInstruction, contents } = this.toGoogleMessages(messages);
@@ -180,7 +190,7 @@ export class GoogleProvider implements ModelProvider {
 
       const client = this.getClient(options?.apiKey);
       const response = await scope.retry(() => client.models.generateContent(params));
-      return this.normalizeResponse(response, options, usageDimensions);
+      return this.normalizeResponse(response, usageDimensions);
     } finally {
       scope.dispose();
     }
@@ -190,6 +200,7 @@ export class GoogleProvider implements ModelProvider {
     messages: ChatMessage[],
     options?: ModelConfig & { tools?: ToolDefinition[] },
   ): AsyncGenerator<StreamChunk> {
+    validateGoogleArgonOptions(this.modelId, options);
     const scope = createRequestScope(this.config ?? {}, options);
     try {
       const { systemInstruction, contents } = this.toGoogleMessages(messages);
@@ -228,39 +239,33 @@ export class GoogleProvider implements ModelProvider {
       );
 
       let toolCallCounter = 0;
-      let replayParts: unknown[] = [];
+      const replayParts: unknown[] = [];
       let lastFinishReason = "stop";
+      let context: Partial<BillingContext> = {
+        modelId: this.modelId,
+        requestedModelId: this.modelId,
+        dimensions: usageDimensions,
+      };
+      let lastUsage: TokenUsage | undefined;
+      let usagePending = false;
 
       for await (const chunk of abortableStream(streamResult, scope.signal)) {
-        if (chunk.usageMetadata)
-          providerTokenUsage(this.providerId, "generate-content", chunk.usageMetadata, {
-            modelId: this.modelId,
-            ...safeResponseContext(chunk),
-            dimensions: usageDimensions,
-          });
+        context = mergeResponseContext(context, chunk);
+        if (chunk.usageMetadata) {
+          lastUsage = providerTokenUsage(this.providerId, "generate-content", chunk.usageMetadata, context);
+          usagePending = true;
+        }
         const candidate = chunk.candidates?.[0];
-        if (!candidate?.content?.parts) {
-          if (chunk.usageMetadata)
-            yield {
-              type: "finish",
-              finishReason: lastFinishReason,
-              usage: providerTokenUsage(this.providerId, "generate-content", chunk.usageMetadata, {
-                modelId: this.modelId,
-                ...safeResponseContext(chunk),
-                dimensions: usageDimensions,
-              }),
-              providerExtras: extrasFromGoogleParts(replayParts),
-            };
-          continue;
+        if (candidate?.finishReason === "CONTINUATION" || candidate?.continuationToken) {
+          throw new ModelUsageError(
+            "Google returned an incomplete answer requiring continuation, which this adapter does not support. Reduce maxTokens or use a separate long-decode integration.",
+            lastUsage ?? providerTokenUsage(this.providerId, "generate-content", undefined, context),
+          );
         }
+        const parts = candidate?.content?.parts ?? [];
+        replayParts.push(...parts);
 
-        if (candidate.finishReason && candidate.content.parts.length) {
-          replayParts = candidate.content.parts;
-        } else {
-          replayParts = replayParts.concat(candidate.content.parts);
-        }
-
-        for (const part of candidate.content.parts) {
+        for (const part of parts) {
           if (part.thought) {
             yield { type: "thinking", text: part.text ?? "" };
             if (part.text) yield { type: "reasoning_summary", text: part.text };
@@ -269,7 +274,8 @@ export class GoogleProvider implements ModelProvider {
           }
 
           if (part.functionCall) {
-            const id = `google_tc_${toolCallCounter++}`;
+            const fallbackId = `google_tc_${toolCallCounter++}`;
+            const id = part.functionCall.id ?? fallbackId;
             yield {
               type: "tool_call_start",
               toolCall: { id, name: part.functionCall.name },
@@ -283,7 +289,7 @@ export class GoogleProvider implements ModelProvider {
           }
         }
 
-        if (candidate.finishReason) {
+        if (candidate?.finishReason) {
           let finishReason = "stop";
           if (candidate.finishReason === "STOP" || candidate.finishReason === "END_TURN") {
             finishReason = "stop";
@@ -293,24 +299,25 @@ export class GoogleProvider implements ModelProvider {
             finishReason = "content_filter";
           }
 
-          const hasToolCalls = candidate.content?.parts?.some((p: any) => p.functionCall);
-          if (hasToolCalls) finishReason = "tool_calls";
+          if (toolCallCounter > 0) finishReason = "tool_calls";
 
           lastFinishReason = finishReason;
-          const cum = chunk.usageMetadata;
           yield {
             type: "finish",
             finishReason,
-            usage: cum
-              ? providerTokenUsage(this.providerId, "generate-content", cum, {
-                  modelId: this.modelId,
-                  ...safeResponseContext(chunk),
-                  dimensions: usageDimensions,
-                })
-              : undefined,
+            usage: lastUsage,
             providerExtras: extrasFromGoogleParts(replayParts),
           };
+          usagePending = false;
         }
+      }
+      if (usagePending) {
+        yield {
+          type: "finish",
+          finishReason: lastFinishReason,
+          usage: lastUsage,
+          providerExtras: extrasFromGoogleParts(replayParts),
+        };
       }
     } finally {
       scope.dispose();
@@ -455,15 +462,21 @@ export class GoogleProvider implements ModelProvider {
 
   private normalizeResponse(
     response: any,
-    _options?: ModelConfig,
     usageDimensions: Record<string, string> = {},
   ): ModelResponse & { thinking?: string } {
     const usage = providerTokenUsage(this.providerId, "generate-content", response.usageMetadata, {
       modelId: this.modelId,
+      requestedModelId: this.modelId,
       ...safeResponseContext(response),
       dimensions: usageDimensions,
     });
     const candidate = response.candidates?.[0];
+    if (candidate?.finishReason === "CONTINUATION" || candidate?.continuationToken) {
+      throw new ModelUsageError(
+        "Google returned an incomplete answer requiring continuation, which this adapter does not support. Reduce maxTokens or use a separate long-decode integration.",
+        usage,
+      );
+    }
     const parts = candidate?.content?.parts ?? [];
 
     let textContent = "";
@@ -478,8 +491,9 @@ export class GoogleProvider implements ModelProvider {
         textContent += part.text;
       }
       if (part.functionCall) {
+        const fallbackId = `google_tc_${toolCallCounter++}`;
         toolCalls.push({
-          id: `google_tc_${toolCallCounter++}`,
+          id: part.functionCall.id ?? fallbackId,
           name: part.functionCall.name,
           arguments: part.functionCall.args ?? {},
         });
