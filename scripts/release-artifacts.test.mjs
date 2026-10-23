@@ -18,7 +18,7 @@ import {
 const exec = promisify(execFile);
 const sourceRef = "a".repeat(40);
 
-async function fixture(t) {
+async function fixture(t, names = ["core", "harness"]) {
   const directory = await mkdtemp(join(tmpdir(), "agentium-release-gate-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const root = join(directory, "repo");
@@ -26,7 +26,7 @@ async function fixture(t) {
   await mkdir(root);
   const files = ["package.json", "package-lock.json"];
   const packages = {};
-  for (const name of ["core", "harness"]) {
+  for (const name of names) {
     const workspace = `packages/${name}`;
     await mkdir(join(root, workspace, "dist"), { recursive: true });
     const metadata = {
@@ -39,7 +39,7 @@ async function fixture(t) {
         prepack: "node -e 'throw new Error(\"Packing must not rebuild\")'",
         prepublishOnly: "node -e 'throw new Error(\"Publishing must not rebuild\")'",
       },
-      ...(name === "harness" ? { peerDependencies: { "@agentium/core": "^4.9.0" } } : {}),
+      ...(name !== "core" ? { peerDependencies: { "@agentium/core": "^4.9.0" } } : {}),
     };
     await writeFile(join(root, workspace, "package.json"), JSON.stringify(metadata));
     await writeFile(join(root, workspace, "dist/index.js"), `export const name = ${JSON.stringify(name)};\n`);
@@ -96,11 +96,165 @@ function registryExecutor(options, lookup, upload) {
   };
 }
 
-async function packedFixture(t) {
-  const options = await fixture(t);
+async function packedFixture(t, names) {
+  const options = await fixture(t, names);
   const result = await packRelease(options);
   return { options, manifest: result.manifest, manifestSha256: result.manifestSha256 };
 }
+
+test("publication overlaps independent packages only after dependencies are verified", {
+  timeout: 15_000,
+}, async (t) => {
+  const { options, manifest, manifestSha256 } = await packedFixture(t, ["core", "harness", "transport", "queue"]);
+  const published = new Set();
+  const uploaded = [];
+  let active = 0;
+  let maximum = 0;
+  let release;
+  const peersStarted = new Promise((resolve) => {
+    release = resolve;
+  });
+  const outcomes = await publishRelease({
+    ...options,
+    manifestSha256,
+    publishConcurrency: 3,
+    lookup: async (entry) =>
+      published.has(entry.name)
+        ? {
+            integrity: entry.integrity,
+            tarball: `https://registry.npmjs.org/${encodeURIComponent(`${entry.name}@${entry.version}`)}`,
+          }
+        : undefined,
+    execute: async (command, args, executionOptions) => {
+      if (command !== "npm" || args[0] !== "publish") return options.execute(command, args, executionOptions);
+      const entry = manifest.packages.find((pkg) => args[1].endsWith(pkg.filename));
+      uploaded.push(entry.name);
+      active++;
+      maximum = Math.max(maximum, active);
+      if (entry.name !== "@agentium/core") {
+        const saved = JSON.parse(await readFile(join(options.directory, "outcomes.json"), "utf8"));
+        assert.equal(saved.packages[0].status, "verified_published");
+        if (active === 3) release();
+        await peersStarted;
+      }
+      published.add(entry.name);
+      active--;
+      return { stdout: "published" };
+    },
+  });
+  assert.equal(maximum, 3);
+  assert.deepEqual(
+    uploaded,
+    manifest.packages.map((entry) => entry.name),
+  );
+  assert.ok(outcomes.packages.every((entry) => entry.status === "verified_published"));
+  assert.deepEqual(JSON.parse(await readFile(join(options.directory, "outcomes.json"), "utf8")), outcomes);
+});
+
+test("publication concurrency is explicitly bounded", () => {
+  assert.equal(parseReleaseOptions(["--publish-concurrency", "3"]).publishConcurrency, 3);
+  for (const value of ["0", "-1", "1.5", "4", "Infinity", "1e0"]) {
+    assert.throws(() => parseReleaseOptions(["--publish-concurrency", value]), /concurrency/i);
+  }
+});
+
+test("cyclic internal publication dependencies fail before any upload", async (t) => {
+  const options = await fixture(t);
+  const path = join(options.root, "packages/core/package.json");
+  const metadata = JSON.parse(await readFile(path, "utf8"));
+  metadata.peerDependencies = { "@agentium/harness": "^4.9.0" };
+  await writeFile(path, JSON.stringify(metadata));
+  const lockPath = join(options.root, "package-lock.json");
+  const lock = JSON.parse(await readFile(lockPath, "utf8"));
+  lock.packages["packages/core"].peerDependencies = metadata.peerDependencies;
+  await writeFile(lockPath, JSON.stringify(lock));
+  const { manifestSha256 } = await packRelease(options);
+  let uploads = 0;
+  await assert.rejects(
+    publishRelease({
+      ...options,
+      manifestSha256,
+      publishConcurrency: 3,
+      lookup: async () => undefined,
+      execute: async (command, args, executionOptions) => {
+        if (command === "npm" && args[0] === "publish") uploads++;
+        return options.execute(command, args, executionOptions);
+      },
+    }),
+    /dependency cycle/,
+  );
+  assert.equal(uploads, 0);
+});
+
+test("a parallel upload failure drains admitted work and prevents later batches", { timeout: 15_000 }, async (t) => {
+  const { options, manifest, manifestSha256 } = await packedFixture(t, [
+    "core",
+    "harness",
+    "transport",
+    "queue",
+    "browser",
+  ]);
+  const published = new Set();
+  const uploaded = new Set();
+  let releasePeers;
+  let peersReady;
+  let failureRead;
+  const peers = new Promise((resolve) => {
+    releasePeers = resolve;
+  });
+  const ready = new Promise((resolve) => {
+    peersReady = resolve;
+  });
+  const failed = new Promise((resolve) => {
+    failureRead = resolve;
+  });
+  const running = publishRelease({
+    ...options,
+    manifestSha256,
+    publishConcurrency: 3,
+    reconciliationTimeoutMs: 0,
+    lookup: async (entry) => {
+      if (entry.name === "@agentium/harness" && uploaded.has(entry.name)) failureRead();
+      return published.has(entry.name)
+        ? {
+            integrity: entry.integrity,
+            tarball: `https://registry.npmjs.org/${encodeURIComponent(`${entry.name}@${entry.version}`)}`,
+          }
+        : undefined;
+    },
+    execute: async (command, args, executionOptions) => {
+      if (command !== "npm" || args[0] !== "publish") return options.execute(command, args, executionOptions);
+      const entry = manifest.packages.find((pkg) => args[1].endsWith(pkg.filename));
+      uploaded.add(entry.name);
+      if (entry.name === "@agentium/harness") throw new Error("upload failed");
+      if (entry.name !== "@agentium/core") {
+        if (uploaded.has("@agentium/transport") && uploaded.has("@agentium/queue")) peersReady();
+        await peers;
+      }
+      published.add(entry.name);
+      return { stdout: "published" };
+    },
+  });
+  let settled = false;
+  running.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  await Promise.all([ready, failed]);
+  assert.equal(settled, false);
+  releasePeers();
+  await assert.rejects(running, /publish_unconfirmed/);
+  assert.equal(uploaded.has("@agentium/browser"), false);
+  const saved = JSON.parse(await readFile(join(options.directory, "outcomes.json"), "utf8"));
+  assert.deepEqual(
+    saved.packages.map((entry) => entry.status),
+    ["verified_published", "unknown", "verified_published", "verified_published", "missing"],
+  );
+});
 
 test("registry preflight starts every lookup before any ordered upload", { timeout: 10_000 }, async (t) => {
   const { options, manifest, manifestSha256 } = await packedFixture(t);

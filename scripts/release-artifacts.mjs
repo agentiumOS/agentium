@@ -405,6 +405,31 @@ async function registryState(entry, lookup, download, remainingMs = () => Infini
   }
 }
 
+function publicationBatches(packages, outcomes, concurrency) {
+  const names = new Set(packages.map((entry) => entry.name));
+  const verified = new Set(
+    outcomes.packages.filter((entry) => entry.status === "verified_published").map((entry) => entry.name),
+  );
+  const remaining = new Set(packages.map((_, index) => index).filter((index) => !verified.has(packages[index].name)));
+  const batches = [];
+  while (remaining.size) {
+    const batch = [...remaining]
+      .filter((index) => {
+        const metadata = packages[index].metadata;
+        const dependencies = Object.keys({ ...metadata.dependencies, ...metadata.peerDependencies });
+        return dependencies.every((name) => !names.has(name) || verified.has(name));
+      })
+      .slice(0, concurrency);
+    assert.ok(batch.length, "Internal publication dependency cycle; no package can be published safely");
+    batches.push(batch);
+    for (const index of batch) {
+      remaining.delete(index);
+      verified.add(packages[index].name);
+    }
+  }
+  return batches;
+}
+
 export async function publishRelease(options) {
   const {
     root = process.cwd(),
@@ -416,7 +441,12 @@ export async function publishRelease(options) {
     now = () => performance.now(),
     wait = delay,
     onProgress = () => {},
+    publishConcurrency = 1,
   } = options;
+  assert.ok(
+    Number.isInteger(publishConcurrency) && publishConcurrency >= 1 && publishConcurrency <= 3,
+    "Publication concurrency must be an integer from 1 to 3",
+  );
   assert.ok(Number.isFinite(reconciliationTimeoutMs) && reconciliationTimeoutMs >= 0, "Invalid reconciliation timeout");
   assert.ok(
     Number.isFinite(reconciliationIntervalMs) && reconciliationIntervalMs > 0,
@@ -438,9 +468,14 @@ export async function publishRelease(options) {
       reason: "not_checked",
     })),
   };
-  const persist = async () => {
-    await writeFile(join(directory, "outcomes.json.tmp"), `${JSON.stringify(outcomes, null, 2)}\n`);
-    await rename(join(directory, "outcomes.json.tmp"), join(directory, "outcomes.json"));
+  let persistence = Promise.resolve();
+  const persist = () => {
+    const snapshot = `${JSON.stringify(outcomes, null, 2)}\n`;
+    persistence = persistence.then(async () => {
+      await writeFile(join(directory, "outcomes.json.tmp"), snapshot);
+      await rename(join(directory, "outcomes.json.tmp"), join(directory, "outcomes.json"));
+    });
+    return persistence;
   };
   await persist();
   // Reconcile every version before the first upload, preventing avoidable partial releases.
@@ -465,8 +500,9 @@ export async function publishRelease(options) {
       `${entry.name}: registry state is ${state.status} (${state.reason}); publication stopped`,
     );
   }
-  for (const [index, entry] of manifest.packages.entries()) {
-    if (outcomes.packages[index].status === "verified_published") continue;
+  const batches = publicationBatches(manifest.packages, outcomes, publishConcurrency);
+  const publishOne = async (index) => {
+    const entry = manifest.packages[index];
     outcomes.packages[index] = { ...outcomes.packages[index], status: "unknown", reason: "publish_in_progress" };
     await persist();
     let uploadFailed = false;
@@ -533,6 +569,11 @@ export async function publishRelease(options) {
       "verified_published",
       `${entry.name}: publication ${outcomes.packages[index].reason ?? "unconfirmed"}; stopped for reconciliation`,
     );
+  };
+  for (const batch of batches) {
+    const results = await Promise.allSettled(batch.map(publishOne));
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure) throw failure.reason;
   }
   return outcomes;
 }
@@ -541,14 +582,23 @@ export function parseReleaseOptions(args, root = process.cwd()) {
   const options = { root };
   for (let index = 0; index < args.length; index += 2) {
     assert.ok(
-      ["--directory", "--ref", "--version", "--tag", "--manifest-sha256", "--reconciliation-timeout-ms"].includes(
-        args[index],
-      ) && args[index + 1],
+      [
+        "--directory",
+        "--ref",
+        "--version",
+        "--tag",
+        "--manifest-sha256",
+        "--reconciliation-timeout-ms",
+        "--publish-concurrency",
+      ].includes(args[index]) && args[index + 1],
       "Invalid release artifact command arguments",
     );
     const key = args[index].slice(2).replace(/-([a-z])/g, (_, character) => character.toUpperCase());
     const value = args[index + 1];
-    if (key === "reconciliationTimeoutMs") {
+    if (key === "publishConcurrency") {
+      assert.ok(/^[1-3]$/.test(value), "Publication concurrency must be an integer from 1 to 3");
+      options[key] = Number(value);
+    } else if (key === "reconciliationTimeoutMs") {
       const timeoutMs = Number(value);
       assert.ok(
         /^[1-9]\d*$/.test(value) && Number.isSafeInteger(timeoutMs) && timeoutMs <= 600_000,

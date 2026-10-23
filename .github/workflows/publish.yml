@@ -73,7 +73,7 @@ jobs:
           path: ${{ runner.temp }}/agentium-release
       - name: Verify and reconcile publication of the exact retained tarballs
         working-directory: release-source
-        run: node "$GITHUB_WORKSPACE/publication-tools/scripts/release-artifacts.mjs" publish --directory "$RUNNER_TEMP/agentium-release" --ref "$RELEASE_REF" --version "$RELEASE_VERSION" --manifest-sha256 "$MANIFEST_SHA256" --reconciliation-timeout-ms 600000
+        run: node "$GITHUB_WORKSPACE/publication-tools/scripts/release-artifacts.mjs" publish --directory "$RUNNER_TEMP/agentium-release" --ref "$RELEASE_REF" --version "$RELEASE_VERSION" --manifest-sha256 "$MANIFEST_SHA256" --reconciliation-timeout-ms 600000 --publish-concurrency 3
         env:
           RELEASE_REF: ${{ needs.preflight.outputs.sha }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
