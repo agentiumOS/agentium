@@ -359,6 +359,13 @@ it.skipIf(!enabled).each([false, true])(
       await writeFile(
         join(fixture, "consumer.cts"),
         `
+        import { OpenAIDecisionsProvider, type DecisionJSONValue, type DecisionInputItem, type DecisionInputPart, type DecisionInstructionPart, type OpenAIDecisionsEvaluateOptions, type ModelResponse } from "@agentium/core";
+        const evidence: DecisionJSONValue = {ticket:{charges:[49,49]}};
+        const part: DecisionInputPart = {type:"input_json",data:{evidence}};
+        const instruction: DecisionInstructionPart = {type:"input_text",text:"Does this contain duplicate charges?"};
+        const nativeInput: DecisionInputItem[] = [{role:"user",content:[part]}];
+        const decisionOptions: OpenAIDecisionsEvaluateOptions = {questions:[{type:"predicate",instructions:[instruction]}],promptCacheOptions:{mode:"explicit"}};
+        const decisionResult: Promise<ModelResponse> = new OpenAIDecisionsProvider().evaluate(nativeInput, decisionOptions);
         import { defineHarness, describeHarness } from "@agentium/harness";
         import { verifiedCompletionPolicy, continuityContextPolicy, type RecallStore, type TaskSummaryRecord } from "@agentium/harness";
         import { createHarnessEvalTarget, type HarnessEvalTarget } from "@agentium/harness/testing";

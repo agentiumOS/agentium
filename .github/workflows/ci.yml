@@ -103,7 +103,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps --include=optional
+        run: npm ci --legacy-peer-deps --include=optional --prefer-offline --no-audit --no-fund
 
       - name: Verify installed native bindings and lock consistency
         run: |
@@ -113,20 +113,8 @@ jobs:
       - name: Build packages
         run: npm run build
 
-      - name: Typecheck source and test fixtures
-        run: |
-          for package in core harness transport queue browser eval observability admin edge cli; do
-            npx tsc -p "packages/$package/tsconfig.json" --noEmit --pretty false
-          done
-
-      - name: Lint & format check
-        run: npx biome ci .
-
-      - name: Verify release metadata
-        run: node --test scripts/release-lock.test.mjs scripts/cjs-declarations.test.mjs scripts/release-artifacts.test.mjs
-
-      - name: Run tests, including Redis delivery and MongoDB crash recovery
-        run: npx vitest run --maxWorkers=2
+      - name: Verify types, lint, release metadata and tests concurrently
+        run: node scripts/ci-checks.mjs
         env:
           AGENTIUM_REDIS_TEST: "1"
           AGENTIUM_DURABLE_MONGO_TEST: "1"

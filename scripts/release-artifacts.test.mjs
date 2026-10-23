@@ -11,6 +11,7 @@ import {
   parseReleaseOptions,
   preflightRelease,
   publishRelease,
+  readRegistryVersion,
   verifyRelease,
 } from "./release-artifacts.mjs";
 
@@ -76,16 +77,22 @@ function missingVersion() {
 }
 
 function registryExecutor(options, lookup, upload) {
-  return async (command, args, executionOptions) => {
-    if (command === "npm" && args[0] === "view")
-      return {
-        stdout: JSON.stringify({
-          integrity: await lookup(args[1]),
-          tarball: `https://registry.npmjs.org/${encodeURIComponent(args[1])}`,
-        }),
-      };
-    if (command === "npm" && args[0] === "publish") return upload(args);
-    return options.execute(command, args, executionOptions);
+  return {
+    execute: async (command, args, executionOptions) => {
+      if (command === "npm" && args[0] === "publish") return upload(args);
+      return options.execute(command, args, executionOptions);
+    },
+    lookup: async (entry) => {
+      try {
+        return {
+          integrity: await lookup(`${entry.name}@${entry.version}`),
+          tarball: `https://registry.npmjs.org/${encodeURIComponent(`${entry.name}@${entry.version}`)}`,
+        };
+      } catch (error) {
+        if (error.stdout === JSON.stringify({ error: { code: "E404" } })) return undefined;
+        throw error;
+      }
+    },
   };
 }
 
@@ -94,6 +101,42 @@ async function packedFixture(t) {
   const result = await packRelease(options);
   return { options, manifest: result.manifest, manifestSha256: result.manifestSha256 };
 }
+
+test("registry preflight starts every lookup before any ordered upload", { timeout: 10_000 }, async (t) => {
+  const { options, manifest, manifestSha256 } = await packedFixture(t);
+  const started = new Set();
+  const uploaded = [];
+  let release;
+  const allStarted = new Promise((resolve) => {
+    release = resolve;
+  });
+  const result = await publishRelease({
+    ...options,
+    manifestSha256,
+    lookup: async (entry) => {
+      if (uploaded.includes(entry.name))
+        return {
+          integrity: entry.integrity,
+          tarball: `https://registry.npmjs.org/${encodeURIComponent(`${entry.name}@${entry.version}`)}`,
+        };
+      started.add(entry.name);
+      if (started.size === manifest.packages.length) release();
+      await allStarted;
+      return undefined;
+    },
+    execute: async (command, args, executionOptions) => {
+      if (command !== "npm" || args[0] !== "publish") return options.execute(command, args, executionOptions);
+      assert.equal(started.size, manifest.packages.length);
+      uploaded.push(manifest.packages[uploaded.length].name);
+      return { stdout: "" };
+    },
+  });
+  assert.deepEqual(
+    uploaded,
+    manifest.packages.map((entry) => entry.name),
+  );
+  assert.ok(result.packages.every((entry) => entry.status === "verified_published"));
+});
 
 test("retains independently usable tarballs and their source identity without running build scripts", async (t) => {
   const { options, manifest, manifestSha256 } = await packedFixture(t);
@@ -183,7 +226,7 @@ test("packing allows relative declaration maps without embedded sources and reje
 test("registry metadata with matching integrity cannot certify different served bytes", async (t) => {
   const { options, manifest, manifestSha256 } = await packedFixture(t);
   let uploaded = false;
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async () => manifest.packages[0].integrity,
     async () => {
@@ -191,7 +234,13 @@ test("registry metadata with matching integrity cannot certify different served 
     },
   );
   await assert.rejects(
-    publishRelease({ ...options, manifestSha256, execute, download: async () => Buffer.from("wrong registry bytes") }),
+    publishRelease({
+      ...options,
+      manifestSha256,
+      execute,
+      lookup,
+      download: async () => Buffer.from("wrong registry bytes"),
+    }),
     /registry_bytes_mismatch/i,
   );
   assert.equal(uploaded, false);
@@ -221,7 +270,7 @@ test("resume skips a matching registry version and publishes the remaining retai
   const { options, manifest, manifestSha256 } = await packedFixture(t);
   const registry = new Map([["@agentium/core@4.9.0", manifest.packages[0].integrity]]);
   const uploaded = [];
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async (name) => {
       if (!registry.has(name)) throw missingVersion();
@@ -233,7 +282,7 @@ test("resume skips a matching registry version and publishes the remaining retai
       return { stdout: "published" };
     },
   );
-  const outcomes = await publishRelease({ ...options, manifestSha256, execute });
+  const outcomes = await publishRelease({ ...options, manifestSha256, execute, lookup });
   assert.equal(uploaded.length, 1);
   assert.equal(uploaded[0][1], join(options.directory, manifest.packages[1].filename));
   assert.ok(uploaded[0].includes("--ignore-scripts"));
@@ -249,7 +298,7 @@ test("resume skips a matching registry version and publishes the remaining retai
 test("differing registry bytes halt the entire release before publishing any missing packages", async (t) => {
   const { options, manifestSha256 } = await packedFixture(t);
   let uploaded = false;
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async (name) => {
       if (name.startsWith("@agentium/core@")) throw missingVersion();
@@ -259,7 +308,7 @@ test("differing registry bytes halt the entire release before publishing any mis
       uploaded = true;
     },
   );
-  await assert.rejects(publishRelease({ ...options, manifestSha256, execute }), /integrity/i);
+  await assert.rejects(publishRelease({ ...options, manifestSha256, execute, lookup }), /integrity/i);
   assert.equal(uploaded, false);
   const outcomes = JSON.parse(await readFile(join(options.directory, "outcomes.json"), "utf8"));
   assert.equal(outcomes.packages[1].status, "failed");
@@ -269,7 +318,7 @@ test("differing registry bytes halt the entire release before publishing any mis
 test("registry network failure remains unknown and never becomes permission to publish", async (t) => {
   const { options, manifestSha256 } = await packedFixture(t);
   let uploaded = false;
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async () => {
       throw new Error("Network timeout");
@@ -278,7 +327,7 @@ test("registry network failure remains unknown and never becomes permission to p
       uploaded = true;
     },
   );
-  await assert.rejects(publishRelease({ ...options, manifestSha256, execute }), /unknown/i);
+  await assert.rejects(publishRelease({ ...options, manifestSha256, execute, lookup }), /unknown/i);
   assert.equal(uploaded, false);
   const outcomes = JSON.parse(await readFile(join(options.directory, "outcomes.json"), "utf8"));
   assert.equal(outcomes.packages[0].status, "unknown");
@@ -287,7 +336,7 @@ test("registry network failure remains unknown and never becomes permission to p
 test("matching registry metadata with an unavailable served tarball remains unknown", async (t) => {
   const { options, manifest, manifestSha256 } = await packedFixture(t);
   let uploaded = false;
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async () => manifest.packages[0].integrity,
     async () => {
@@ -299,6 +348,7 @@ test("matching registry metadata with an unavailable served tarball remains unkn
       ...options,
       manifestSha256,
       execute,
+      lookup,
       download: async () => {
         throw new Error("Registry tarball request timed out");
       },
@@ -313,7 +363,7 @@ test("matching registry metadata with an unavailable served tarball remains unkn
 test("publication stops after an upload whose served bytes do not match the retained tarball", async (t) => {
   const { options, manifest, manifestSha256 } = await packedFixture(t);
   let uploads = 0;
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async () => {
       if (uploads === 0) throw missingVersion();
@@ -325,7 +375,13 @@ test("publication stops after an upload whose served bytes do not match the reta
     },
   );
   await assert.rejects(
-    publishRelease({ ...options, manifestSha256, execute, download: async () => Buffer.from("different bytes") }),
+    publishRelease({
+      ...options,
+      manifestSha256,
+      execute,
+      lookup,
+      download: async () => Buffer.from("different bytes"),
+    }),
     /registry_bytes_mismatch/i,
   );
   assert.equal(uploads, 1);
@@ -339,7 +395,7 @@ test("an upload timeout reconciles accepted bytes and resumes without publishing
   const { options, manifest, manifestSha256 } = await packedFixture(t);
   const registry = new Map();
   let uploads = 0;
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async (name) => {
       if (!registry.has(name)) throw missingVersion();
@@ -353,7 +409,7 @@ test("an upload timeout reconciles accepted bytes and resumes without publishing
       return { stdout: "published" };
     },
   );
-  const outcomes = await publishRelease({ ...options, manifestSha256, execute });
+  const outcomes = await publishRelease({ ...options, manifestSha256, execute, lookup });
   assert.equal(uploads, 2);
   assert.equal(outcomes.packages[0].action, "reconciled_after_error");
   assert.ok(outcomes.packages.every((entry) => entry.status === "verified_published"));
@@ -362,7 +418,7 @@ test("an upload timeout reconciles accepted bytes and resumes without publishing
 test("an unconfirmed upload stops with a persisted unknown outcome", async (t) => {
   const { options, manifestSha256 } = await packedFixture(t);
   let uploads = 0;
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async () => {
       throw missingVersion();
@@ -373,7 +429,7 @@ test("an unconfirmed upload stops with a persisted unknown outcome", async (t) =
     },
   );
   await assert.rejects(
-    publishRelease({ ...options, manifestSha256, execute, reconciliationTimeoutMs: 0 }),
+    publishRelease({ ...options, manifestSha256, execute, lookup, reconciliationTimeoutMs: 0 }),
     /unconfirmed/i,
   );
   assert.equal(uploads, 1);
@@ -404,7 +460,7 @@ for (const uploadFails of [false, true]) {
     const clock = reconciliationClock();
     let uploads = 0;
     let readsAfterUpload = 0;
-    const execute = registryExecutor(
+    const { execute, lookup } = registryExecutor(
       options,
       async (name) => {
         if (name.startsWith("@agentium/harness@")) return manifest.packages[1].integrity;
@@ -417,7 +473,7 @@ for (const uploadFails of [false, true]) {
         return { stdout: "accepted" };
       },
     );
-    const outcomes = await publishRelease({ ...options, manifestSha256, execute, ...clock });
+    const outcomes = await publishRelease({ ...options, manifestSha256, execute, lookup, ...clock });
     assert.equal(uploads, 1);
     assert.equal(readsAfterUpload, 3);
     assert.equal(clock.waits.length, 2);
@@ -432,7 +488,7 @@ test("registry visibility reconciliation expires at its default monotonic deadli
   const { options, manifestSha256 } = await packedFixture(t);
   const clock = reconciliationClock();
   let uploads = 0;
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async () => {
       throw missingVersion();
@@ -443,7 +499,7 @@ test("registry visibility reconciliation expires at its default monotonic deadli
     },
   );
   await assert.rejects(
-    publishRelease({ ...options, manifestSha256, execute, ...clock, reconciliationIntervalMs: 70_000 }),
+    publishRelease({ ...options, manifestSha256, execute, lookup, ...clock, reconciliationIntervalMs: 70_000 }),
     /publication_missing/i,
   );
   assert.equal(uploads, 1);
@@ -459,7 +515,7 @@ test("an upload with an uncertain response remains unknown when visibility recon
   const { options, manifestSha256 } = await packedFixture(t);
   const clock = reconciliationClock();
   let uploads = 0;
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async () => {
       throw missingVersion();
@@ -474,6 +530,7 @@ test("an upload with an uncertain response remains unknown when visibility recon
       ...options,
       manifestSha256,
       execute,
+      lookup,
       ...clock,
       reconciliationTimeoutMs: 5,
       reconciliationIntervalMs: 3,
@@ -493,7 +550,7 @@ for (const registryFailure of ["mismatch", "unknown"]) {
     const clock = reconciliationClock();
     let uploads = 0;
     let readsAfterUpload = 0;
-    const execute = registryExecutor(
+    const { execute, lookup } = registryExecutor(
       options,
       async () => {
         if (!uploads || ++readsAfterUpload < 2) throw missingVersion();
@@ -506,7 +563,7 @@ for (const registryFailure of ["mismatch", "unknown"]) {
       },
     );
     await assert.rejects(
-      publishRelease({ ...options, manifestSha256, execute, ...clock }),
+      publishRelease({ ...options, manifestSha256, execute, lookup, ...clock }),
       registryFailure === "mismatch" ? /integrity_mismatch/i : /registry_unavailable/i,
     );
     assert.equal(uploads, 1);
@@ -525,7 +582,7 @@ test("registry reads use the remaining reconciliation budget instead of extendin
   let readsAfterUpload = 0;
   const readTimeouts = [];
   const downloadTimeouts = [];
-  const registryExecute = registryExecutor(
+  const transport = registryExecutor(
     options,
     async (name) => {
       if (name.startsWith("@agentium/core@")) return manifest.packages[0].integrity;
@@ -541,14 +598,15 @@ test("registry reads use the remaining reconciliation budget instead of extendin
       return { stdout: "accepted" };
     },
   );
-  const execute = async (command, args, executionOptions) => {
-    if (command === "npm" && args[0] === "view" && uploads) readTimeouts.push(executionOptions.timeout);
-    return registryExecute(command, args, executionOptions);
+  const lookup = async (entry, timeoutMs) => {
+    if (uploads) readTimeouts.push(timeoutMs);
+    return transport.lookup(entry, timeoutMs);
   };
   const outcomes = await publishRelease({
     ...options,
     manifestSha256,
-    execute,
+    execute: transport.execute,
+    lookup,
     ...clock,
     reconciliationTimeoutMs: 1_000,
     reconciliationIntervalMs: 500,
@@ -589,7 +647,7 @@ test("an operator-selected deadline reconciles visibility beyond three minutes w
   const { options, manifest, manifestSha256 } = await packedFixture(t);
   const clock = reconciliationClock();
   let uploads = 0;
-  const execute = registryExecutor(
+  const { execute, lookup } = registryExecutor(
     options,
     async (name) => {
       if (name.startsWith("@agentium/harness@")) return manifest.packages[1].integrity;
@@ -606,6 +664,7 @@ test("an operator-selected deadline reconciles visibility beyond three minutes w
     ...parseReleaseOptions(["--reconciliation-timeout-ms", "600000"], options.root),
     manifestSha256,
     execute,
+    lookup,
     ...clock,
     reconciliationIntervalMs: 120_000,
   });
@@ -614,4 +673,54 @@ test("an operator-selected deadline reconciles visibility beyond three minutes w
   assert.equal(clock.now(), 240_000);
   assert.ok(outcomes.packages.every((entry) => entry.status === "verified_published"));
   assert.equal(outcomes.packages[0].action, "published");
+});
+
+test("registry lookup reads an uncached exact version without invoking npm", async () => {
+  const calls = [];
+  const entry = { name: "@agentium/core", version: "4.11.0" };
+  const dist = { integrity: "sha512-fixture", tarball: "https://registry.npmjs.org/core.tgz" };
+  const result = await readRegistryVersion(entry, 1000, async (url, options) => {
+    calls.push({ url, options });
+    return Response.json({ ...entry, dist });
+  });
+  assert.deepEqual(result, dist);
+  assert.equal(calls[0].url, "https://registry.npmjs.org/%40agentium%2Fcore/4.11.0");
+  assert.equal(calls[0].options.redirect, "error");
+  assert.equal(calls[0].options.headers["cache-control"], "no-cache");
+  assert.ok(calls[0].options.signal instanceof AbortSignal);
+});
+
+test("only registry HTTP 404 establishes an absent version", async () => {
+  const entry = { name: "@agentium/core", version: "4.11.0" };
+  assert.equal(await readRegistryVersion(entry, 1000, async () => new Response(null, { status: 404 })), undefined);
+  for (const status of [401, 403, 429, 500]) {
+    await assert.rejects(
+      readRegistryVersion(entry, 1000, async () => new Response(null, { status })),
+      /registry/i,
+    );
+  }
+  await assert.rejects(
+    readRegistryVersion(entry, 1000, async () => Response.json({ name: "wrong", version: "4.11.0" })),
+    /identity/i,
+  );
+  await assert.rejects(
+    readRegistryVersion(entry, 1000, async () => Response.json(entry)),
+    /distribution/i,
+  );
+});
+
+test("registry lookup timeout covers response body consumption", async () => {
+  const entry = { name: "@agentium/core", version: "4.11.0" };
+  await assert.rejects(
+    readRegistryVersion(entry, 10, async (_url, { signal }) => ({
+      ok: true,
+      status: 200,
+      json: () =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          setTimeout(() => reject(new Error("lookup did not abort")), 100);
+        }),
+    })),
+    /timeout/i,
+  );
 });

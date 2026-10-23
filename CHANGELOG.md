@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.11.0] - 2026-10-24
+
+### Added
+- Native `OpenAIDecisionsProvider.evaluate()` for typed JSON, conversation roles, historical function/custom-tool evidence, hosted images and explicit prompt-cache controls. Questions accept text/image instructions, up to 400 questions and 128 images across the request.
+- Gemini 4 Argon thinking-level controls and request validation through the existing Google adapter. Unsupported explicit caching, thinking budgets and output limits above 65,536 fail before dispatch.
+- Reviewed Sol Ultrafast Responses and Gemini Argon GenerateContent tariffs, with exact billing dimensions and effective intervals.
+
+### Fixed
+- Google streams retain earlier signed function calls across terminal chunks, native call IDs, and requested/served model identities. Unsupported continuation fails with available usage retained.
+- Decisions accounting separates ordinary input, cache reads and cache writes. Output remains nonpayable under the verified contract. Stored assessments retain their original evidence.
+- Release verification overlaps independent checks after build. Registry reconciliation uses direct exact-version reads, concurrent preflight and per-package timing while preserving ordered uploads and byte verification.
+
+### Upgrade notes
+- Existing Agent question and answer shapes remain supported. Decisions now preserves real message roles instead of converting them to textual role labels. Recheck representative classification examples when upgrading.
+- Corrected Decisions billing can change estimated costs. Missing counters and unsupported tariff dimensions remain incomplete. The bundled catalog still expires on November 8, 2026; no old verification dates were extended.
+- Use `new OpenAIDecisionsProvider(...).evaluate()` for native evidence. The registry-backed `openaiDecisions()` factory keeps its generic `ModelProvider` return type. Direct evaluation returns usage without creating an Agent ledger attempt.
+- Long-decode orchestration, background Interactions and automatic model routing remain outside this release.
+
 ## [4.10.0] - 2026-10-24
 
 ### Added

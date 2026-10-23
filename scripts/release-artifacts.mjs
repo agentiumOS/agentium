@@ -345,16 +345,18 @@ export async function verifyRelease({ root = process.cwd(), directory, ref, vers
   return { manifest, manifestSha256: digest };
 }
 
-function npmErrorCode(error) {
-  for (const output of [error.stdout, error.stderr]) {
-    try {
-      const value = JSON.parse(output);
-      if (typeof value?.error?.code === "string") return value.error.code;
-    } catch {
-      /* Unparseable command output cannot prove that a version is absent. */
-    }
-  }
-  return undefined;
+export async function readRegistryVersion(entry, timeoutMs, request = fetch) {
+  const response = await request(`${registry}/${encodeURIComponent(entry.name)}/${encodeURIComponent(entry.version)}`, {
+    signal: AbortSignal.timeout(Math.ceil(timeoutMs)),
+    redirect: "error",
+    headers: { accept: "application/json", "cache-control": "no-cache" },
+  });
+  if (response.status === 404) return undefined;
+  assert.ok(response.ok, `Registry metadata request failed: HTTP ${response.status}`);
+  const metadata = await response.json();
+  assert.ok(metadata.name === entry.name && metadata.version === entry.version, "Registry version identity mismatch");
+  assert.ok(metadata.dist && typeof metadata.dist === "object", "Registry version distribution is missing");
+  return metadata.dist;
 }
 
 async function downloadTarball(url, size, timeoutMs = 30_000) {
@@ -378,18 +380,12 @@ async function downloadTarball(url, size, timeoutMs = 30_000) {
   }
 }
 
-async function registryState(root, execute, entry, download, remainingMs = () => Infinity) {
+async function registryState(entry, lookup, download, remainingMs = () => Infinity) {
   try {
     const lookupTimeoutMs = Math.ceil(Math.min(60_000, remainingMs()));
     if (lookupTimeoutMs <= 0) return { status: "unknown", reason: "registry_unavailable" };
-    const output = await run(
-      execute,
-      root,
-      "npm",
-      ["view", `${entry.name}@${entry.version}`, "dist", "--json", `--registry=${registry}`],
-      lookupTimeoutMs,
-    );
-    const dist = JSON.parse(output.stdout);
+    const dist = await lookup(entry, lookupTimeoutMs);
+    if (dist === undefined) return { status: "missing" };
     if (typeof dist?.integrity !== "string") return { status: "unknown", reason: "registry_integrity_unavailable" };
     if (dist.integrity !== entry.integrity) return { status: "failed", reason: "integrity_mismatch" };
     const url = new URL(dist.tarball);
@@ -405,9 +401,7 @@ async function registryState(root, execute, entry, download, remainingMs = () =>
       : { status: "failed", reason: "registry_bytes_mismatch" };
   } catch (error) {
     if (error.code === "ARTIFACT_TOO_LARGE") return { status: "failed", reason: "registry_bytes_mismatch" };
-    return npmErrorCode(error) === "E404"
-      ? { status: "missing" }
-      : { status: "unknown", reason: "registry_unavailable" };
+    return { status: "unknown", reason: "registry_unavailable" };
   }
 }
 
@@ -415,11 +409,13 @@ export async function publishRelease(options) {
   const {
     root = process.cwd(),
     execute = exec,
+    lookup = readRegistryVersion,
     download = downloadTarball,
     reconciliationTimeoutMs = 180_000,
     reconciliationIntervalMs = 2_000,
     now = () => performance.now(),
     wait = delay,
+    onProgress = () => {},
   } = options;
   assert.ok(Number.isFinite(reconciliationTimeoutMs) && reconciliationTimeoutMs >= 0, "Invalid reconciliation timeout");
   assert.ok(
@@ -448,8 +444,10 @@ export async function publishRelease(options) {
   };
   await persist();
   // Reconcile every version before the first upload, preventing avoidable partial releases.
-  for (const [index, entry] of manifest.packages.entries()) {
-    const state = await registryState(root, execute, entry, download);
+  const preflightStarted = now();
+  const initialStates = await Promise.all(manifest.packages.map((entry) => registryState(entry, lookup, download)));
+  for (const index of initialStates.keys()) {
+    const state = initialStates[index];
     outcomes.packages[index] = {
       ...outcomes.packages[index],
       ...state,
@@ -457,7 +455,11 @@ export async function publishRelease(options) {
       ...(state.status === "verified_published" ? { action: "already_present" } : {}),
     };
     if (state.reason === undefined) delete outcomes.packages[index].reason;
-    await persist();
+  }
+  await persist();
+  onProgress({ phase: "registry-preflight", elapsedMs: Math.round(now() - preflightStarted) });
+  for (const [index, entry] of manifest.packages.entries()) {
+    const state = initialStates[index];
     assert.ok(
       state.status === "missing" || state.status === "verified_published",
       `${entry.name}: registry state is ${state.status} (${state.reason}); publication stopped`,
@@ -468,6 +470,7 @@ export async function publishRelease(options) {
     outcomes.packages[index] = { ...outcomes.packages[index], status: "unknown", reason: "publish_in_progress" };
     await persist();
     let uploadFailed = false;
+    const uploadStarted = now();
     try {
       await run(
         execute,
@@ -486,15 +489,11 @@ export async function publishRelease(options) {
     } catch {
       uploadFailed = true;
     }
+    onProgress({ phase: "upload", package: entry.name, elapsedMs: Math.round(now() - uploadStarted), uploadFailed });
+    const reconciliationStarted = now();
     const deadline = now() + reconciliationTimeoutMs;
     const remainingMs = () => Math.max(0, deadline - now());
-    let state = await registryState(
-      root,
-      execute,
-      entry,
-      download,
-      reconciliationTimeoutMs === 0 ? undefined : remainingMs,
-    );
+    let state = await registryState(entry, lookup, download, reconciliationTimeoutMs === 0 ? undefined : remainingMs);
     // An accepted upload may precede registry visibility. Poll reads only; never retry the upload here.
     while (state.status === "missing" && remainingMs() > 0) {
       outcomes.packages[index] = {
@@ -505,7 +504,7 @@ export async function publishRelease(options) {
       await persist();
       await wait(Math.min(reconciliationIntervalMs, remainingMs()));
       if (remainingMs() <= 0) break;
-      state = await registryState(root, execute, entry, download, remainingMs);
+      state = await registryState(entry, lookup, download, remainingMs);
     }
     outcomes.packages[index] = {
       ...outcomes.packages[index],
@@ -523,6 +522,12 @@ export async function publishRelease(options) {
         reason: uploadFailed ? "publish_unconfirmed" : "publication_missing",
       };
     await persist();
+    onProgress({
+      phase: "registry-reconciliation",
+      package: entry.name,
+      elapsedMs: Math.round(now() - reconciliationStarted),
+      status: outcomes.packages[index].status,
+    });
     assert.equal(
       outcomes.packages[index].status,
       "verified_published",
@@ -562,7 +567,10 @@ async function main() {
   const options = parseReleaseOptions(args);
   const commands = { preflight: preflightRelease, pack: packRelease, verify: verifyRelease, publish: publishRelease };
   assert.ok(Object.hasOwn(commands, command), "Use preflight, pack, verify or publish");
-  const result = await commands[command](options);
+  const result = await commands[command]({
+    ...options,
+    onProgress: (event) => console.log(JSON.stringify(event)),
+  });
   const outputs =
     command === "preflight"
       ? result
