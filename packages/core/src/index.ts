@@ -273,7 +273,15 @@ export type { UserFact } from "./memory/stores/user-facts.js";
 export { UserFacts } from "./memory/stores/user-facts.js";
 export type { UserProfileData } from "./memory/stores/user-profile.js";
 export { UserProfile } from "./memory/stores/user-profile.js";
-export type { DecisionAnswer, DecisionQuestion, ModelQuestions } from "./models/decisions.js";
+export type {
+  DecisionAnswer,
+  DecisionInputItem,
+  DecisionInputPart,
+  DecisionInstructionPart,
+  DecisionJSONValue,
+  DecisionQuestion,
+  ModelQuestions,
+} from "./models/decisions.js";
 export type { JevQuestions } from "./models/jev-sdk.js";
 export { choice, noul, score } from "./models/jev-sdk.js";
 // Models
@@ -304,7 +312,7 @@ export type { OpenAIConfig } from "./models/providers/openai.js";
 export { OpenAIProvider } from "./models/providers/openai.js";
 export type { OpenAICompatibleConfig } from "./models/providers/openai-compatible.js";
 export { OpenAICompatibleProvider } from "./models/providers/openai-compatible.js";
-export type { OpenAIDecisionsConfig } from "./models/providers/openai-decisions.js";
+export type { OpenAIDecisionsConfig, OpenAIDecisionsEvaluateOptions } from "./models/providers/openai-decisions.js";
 export { OpenAIDecisionsProvider } from "./models/providers/openai-decisions.js";
 export type { PerplexityConfig, PerplexitySearchOptions } from "./models/providers/perplexity.js";
 export { PerplexityProvider } from "./models/providers/perplexity.js";

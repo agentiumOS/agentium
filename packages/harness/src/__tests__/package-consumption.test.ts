@@ -156,6 +156,8 @@ it.skipIf(!enabled).each([false, true])(
       }
       if (!withEval) await expect(access(join(fixture, "node_modules/@agentium/eval"))).rejects.toThrow();
       const expression = `
+      const decisions = new core.OpenAIDecisionsProvider("gpt-6-luna");
+      if (typeof decisions.evaluate !== "function") throw new Error("Missing native Decisions API");
       for (const name of ["verifiedCompletionPolicy", "continuityContextPolicy", "currentSessionRecallPolicy", "incrementalTaskSummaryPolicy"]) {
         if (typeof harness[name] !== "function") throw new Error("Missing dependability export: " + name);
       }
@@ -210,6 +212,16 @@ it.skipIf(!enabled).each([false, true])(
       await exec(process.execPath, [join(fixture, "esm.mjs")], { cwd: fixture });
       await exec(process.execPath, [join(fixture, "common.cjs")], { cwd: fixture });
       const offline = `
+        const nativeDecisions = new core.OpenAIDecisionsProvider("gpt-6-luna", {questions:[{type:"predicate",instructions:"Is this valid?"}]});
+        const cancelled = new AbortController();
+        const cancellation = new Error("packed Decisions cancellation");
+        cancelled.abort(cancellation);
+        try {
+          await nativeDecisions.evaluate([{role:"user",content:[{type:"input_json",data:{valid:true}}]}], {signal:cancelled.signal});
+          throw new Error("Native Decisions ignored cancellation");
+        } catch (error) {
+          if (error !== cancellation) throw error;
+        }
         const domain = z4.object({value:z4.string()});
         const binding = {id:"echo",version:"1",kind:"tool",input:domain,output:z4.string(),recovery:"pure",
           tool:{name:"echo",description:"echo",parameters:domain,execute:async(args)=>args.value}};
@@ -257,6 +269,13 @@ it.skipIf(!enabled).each([false, true])(
         `
       import { Agent, defineTool, getCommunicationCapabilities, type PublicMessageEvent, type InputRequest, type ModelProvider } from "@agentium/core";
       import { type OpenAIConfig, type AnthropicConfig, type ModelCapabilities, type ProviderRequestControls, validateModelRequest } from "@agentium/core";
+      import { OpenAIDecisionsProvider, type DecisionJSONValue, type DecisionInputItem, type DecisionInputPart, type DecisionInstructionPart, type OpenAIDecisionsEvaluateOptions, type ModelResponse } from "@agentium/core";
+      const evidence: DecisionJSONValue = {ticket:{charges:[49,49]}};
+      const part: DecisionInputPart = {type:"input_json",data:{evidence}};
+      const instruction: DecisionInstructionPart = {type:"input_text",text:"Does this contain duplicate charges?"};
+      const nativeInput: DecisionInputItem[] = [{role:"user",content:[part]}];
+      const decisionOptions: OpenAIDecisionsEvaluateOptions = {questions:[{type:"predicate",instructions:[instruction]}],promptCacheOptions:{mode:"explicit"}};
+      const decisionResult: Promise<ModelResponse> = new OpenAIDecisionsProvider().evaluate(nativeInput, decisionOptions);
       import { validateRunInput, parseRunInput, RUN_INPUT_LIMITS, type HarnessBudgetSnapshot, type HistoryArchive, type ResidentHistoryPolicy } from "@agentium/harness";
       import { type AgentCloseOptions, type MemoryDrainResult, type RememberResult, type ScopedStorageOptions, type WorkflowContinuationOptions } from "@agentium/core";
       import { verifiedCompletionPolicy, continuityContextPolicy, currentSessionRecallPolicy, incrementalTaskSummaryPolicy, type RecallBudget, type RecallStore, type RecallScope, type TaskSummaryRecord } from "@agentium/harness";

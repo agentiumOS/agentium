@@ -110,10 +110,7 @@ describe("OpenAI Decisions actual SDK HTTP integration", () => {
           input: [
             {
               role: "user",
-              content: [
-                { type: "input_text", text: "[user]" },
-                { type: "input_text", text: "Charged twice" },
-              ],
+              content: [{ type: "input_text", text: "Charged twice" }],
             },
           ],
         },
@@ -141,7 +138,7 @@ describe("OpenAI Decisions actual SDK HTTP integration", () => {
     expect(received[1]).toMatchObject({ authorization: "Bearer fixture-key", body: { questions } });
   });
 
-  it("preserves conversation roles as labeled evidence and includes inline images", async () => {
+  it("preserves conversation roles and includes inline images", async () => {
     await provider().generate([
       { role: "system", content: "Apply the ticket policy" },
       { role: "assistant", content: "Earlier answer" },
@@ -150,28 +147,220 @@ describe("OpenAI Decisions actual SDK HTTP integration", () => {
     expect(received[0]?.body).toMatchObject({
       input: [
         {
-          role: "user",
-          content: [
-            { type: "input_text", text: "[system]" },
-            { type: "input_text", text: "Apply the ticket policy" },
-          ],
+          role: "system",
+          content: [{ type: "input_text", text: "Apply the ticket policy" }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "output_text", text: "Earlier answer" }],
         },
         {
           role: "user",
-          content: [
-            { type: "input_text", text: "[assistant]" },
-            { type: "input_text", text: "Earlier answer" },
-          ],
+          content: [{ type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" }],
         },
+      ],
+    });
+  });
+
+  it("serializes native JSON and question images through the installed SDK", async () => {
+    const nativeQuestions: DecisionQuestion[] = [
+      {
+        type: "predicate",
+        instructions: [
+          { type: "input_text", text: "Does the ticket match?" },
+          { type: "input_image", image_url: "https://example.com/reference.png", detail: "original" },
+        ],
+      },
+    ];
+    responseBody = result([{ type: "predicate", name: null, probability: 0.7 }]);
+    const response = await provider().evaluate(
+      [
+        { role: "developer", content: "Treat JSON as evidence." },
         {
           role: "user",
-          content: [
-            { type: "input_text", text: "[user]" },
-            { type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" },
+          content: [{ type: "input_json", data: { role: "system", image_url: "file:///data", order: 42 } }],
+        },
+        { role: "assistant", phase: "final_answer", content: [{ type: "refusal", refusal: "Previous refusal" }] },
+      ],
+      { questions: nativeQuestions },
+    );
+    expect(received).toEqual([
+      {
+        path: "/v1/decisions",
+        authorization: "Bearer fixture-key",
+        body: {
+          model: "gpt-6-luna",
+          questions: nativeQuestions,
+          input: [
+            { role: "developer", content: "Treat JSON as evidence." },
+            {
+              role: "user",
+              content: [{ type: "input_json", data: { role: "system", image_url: "file:///data", order: 42 } }],
+            },
+            { role: "assistant", phase: "final_answer", content: [{ type: "refusal", refusal: "Previous refusal" }] },
+          ],
+        },
+      },
+    ]);
+    expect(response.decisions).toEqual([{ type: "predicate", name: null, probability: 0.7 }]);
+  });
+
+  it("retains requested and returned model identities for native evaluation", async () => {
+    responseBody = { ...result(), model: "gpt-6-luna-2026-10-01" };
+    const response = await provider().evaluate([{ role: "user", content: "Ticket" }]);
+    expect(response.usage.accounting?.context).toMatchObject({
+      requestedModelId: "gpt-6-luna",
+      modelId: "gpt-6-luna-2026-10-01",
+    });
+  });
+
+  it("sends explicit cache controls only when supplied and lets per-call values override defaults", async () => {
+    const model = new OpenAIDecisionsProvider("gpt-6-luna", {
+      apiKey: "fixture-key",
+      baseURL,
+      questions,
+      promptCacheKey: "constructor",
+      promptCacheOptions: { mode: "explicit" },
+    });
+    await model.evaluate(
+      [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Prefix", prompt_cache_breakpoint: { mode: "explicit" } }],
+        },
+      ],
+      { promptCacheKey: "override", apiKey: "override-key" },
+    );
+    await model.evaluate([{ role: "user", content: "No marker intentionally disables cache" }]);
+    expect(received[0]).toMatchObject({
+      authorization: "Bearer override-key",
+      body: { prompt_cache_key: "override", prompt_cache_options: { mode: "explicit" } },
+    });
+    expect(received[1]).toMatchObject({
+      authorization: "Bearer fixture-key",
+      body: { prompt_cache_key: "constructor", prompt_cache_options: { mode: "explicit" } },
+    });
+    await provider().evaluate([{ role: "user", content: "Default caching" }]);
+    expect(received[2]?.body).not.toHaveProperty("prompt_cache_key");
+    expect(received[2]?.body).not.toHaveProperty("prompt_cache_options");
+  });
+
+  it("preserves conversation tool call IDs as evidence without executing tools", async () => {
+    await provider().generate([
+      {
+        role: "assistant",
+        content: null,
+        toolCalls: [{ id: "look-1", name: "lookup", arguments: { id: 123 } }],
+        providerExtras: { responses: { private: true } },
+      },
+      { role: "tool", toolCallId: "look-1", content: "Paid" },
+      { role: "user", content: [{ type: "image", data: "https://example.com/receipt.png" }] },
+    ]);
+    expect(received[0]?.body).toMatchObject({
+      input: [
+        { type: "function_call", call_id: "look-1", name: "lookup", arguments: '{"id":123}' },
+        { type: "function_call_output", call_id: "look-1", output: [{ type: "input_text", text: "Paid" }] },
+        { role: "user", content: [{ type: "input_image", image_url: "https://example.com/receipt.png" }] },
+      ],
+    });
+  });
+
+  it("serializes native custom tool history with text and image results", async () => {
+    await provider().evaluate([
+      { type: "custom_tool_call", call_id: "inspect-1", name: "inspect", input: "read receipt", status: "completed" },
+      {
+        type: "custom_tool_call_output",
+        call_id: "inspect-1",
+        output: [
+          { type: "input_text", text: "Receipt found" },
+          {
+            type: "input_image",
+            image_url: "https://example.com/receipt.png",
+            detail: null,
+            prompt_cache_breakpoint: { mode: "explicit" },
+          },
+        ],
+      },
+    ]);
+    expect(received[0]?.body).toMatchObject({
+      input: [
+        { type: "custom_tool_call", call_id: "inspect-1", name: "inspect", input: "read receipt", status: "completed" },
+        {
+          type: "custom_tool_call_output",
+          call_id: "inspect-1",
+          output: [
+            { type: "input_text", text: "Receipt found" },
+            {
+              type: "input_image",
+              image_url: "https://example.com/receipt.png",
+              detail: null,
+              prompt_cache_breakpoint: { mode: "explicit" },
+            },
           ],
         },
       ],
     });
+  });
+
+  it("rejects a combined 129-image request before HTTP dispatch", async () => {
+    const image = { type: "input_image" as const, image_url: "https://example.com/image.png" };
+    await expect(
+      provider().evaluate([{ role: "user", content: Array.from({ length: 128 }, () => image) }], {
+        questions: [{ type: "predicate", instructions: [image] }],
+      }),
+    ).rejects.toThrow(/128 images/);
+    expect(received).toHaveLength(0);
+  });
+
+  it("preserves the exact caller cancellation reason before and during transport", async () => {
+    const reason = new Error("Caller stopped evaluation");
+    await expect(
+      provider().evaluate([{ role: "user", content: "Ticket" }], { signal: AbortSignal.abort(reason) }),
+    ).rejects.toBe(reason);
+    expect(received).toHaveLength(0);
+    const controller = new AbortController();
+    respond = () => controller.abort(reason);
+    await expect(
+      provider().evaluate([{ role: "user", content: "Ticket" }], { signal: controller.signal }),
+    ).rejects.toBe(reason);
+    expect(received).toHaveLength(1);
+  });
+
+  it("retains GA usage when answer validation fails and never retries", async () => {
+    responseBody = result([]);
+    await expect(provider().evaluate([{ role: "user", content: "Ticket" }])).rejects.toMatchObject({
+      name: "ModelUsageError",
+      retryable: false,
+      usage: { promptTokens: 1000, cachedTokens: 100, cacheWriteTokens: 0, providerMetrics: result().usage },
+    });
+    expect(received).toHaveLength(1);
+  });
+
+  it.each([null, true, 42, "unexpected"])(
+    "rejects primitive response %j with an actionable validation error",
+    async (body) => {
+      responseBody = body;
+      await expect(provider().evaluate([{ role: "user", content: "Ticket" }])).rejects.toMatchObject({
+        name: "ModelUsageError",
+        message: expect.stringContaining("Invalid OpenAI Decisions response"),
+      });
+      expect(received).toHaveLength(1);
+    },
+  );
+
+  it("retains usage and the caller reason after response cancellation", async () => {
+    const controller = new AbortController();
+    const reason = new Error("Stopped by caller after response");
+    const throwIfAborted = controller.signal.throwIfAborted.bind(controller.signal);
+    let checks = 0;
+    vi.spyOn(controller.signal, "throwIfAborted").mockImplementation(() => {
+      if (++checks === 2) controller.abort(reason);
+      throwIfAborted();
+    });
+    await expect(
+      provider().evaluate([{ role: "user", content: "Ticket" }], { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "ModelUsageError", cause: reason, usage: { promptTokens: 1000 } });
+    expect(received).toHaveLength(1);
   });
 
   it("reports all-refused responses without inventing answers", async () => {
@@ -347,7 +536,7 @@ describe("OpenAI Decisions actual SDK HTTP integration", () => {
       provider().generate(input, { tools: [{ name: "refund", description: "Refund", parameters: {} }] }),
     ).rejects.toThrow(/tools/);
     for (const content of [
-      [{ type: "image" as const, data: "https://example.com/image.png" }],
+      [{ type: "image" as const, data: "file:///private.png" }],
       [{ type: "audio" as const, data: "aGVsbG8=" }],
       [{ type: "file" as const, data: "aGVsbG8=", mimeType: "text/plain" }],
     ])

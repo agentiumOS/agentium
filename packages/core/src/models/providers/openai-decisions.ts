@@ -1,7 +1,13 @@
 import { createRequire } from "node:module";
 import type OpenAI from "openai";
-import type { DecisionInputMessage, DecisionInputPart } from "openai/resources/decisions";
-import { type DecisionQuestion, parseDecisionQuestions, parseDecisionResponse } from "../decisions.js";
+import { z } from "zod";
+import { buildDecisionInput, validateDecisionInput } from "../decision-input.js";
+import {
+  type DecisionInputItem,
+  type DecisionQuestion,
+  parseDecisionQuestions,
+  parseDecisionResponse,
+} from "../decisions.js";
 import type { ModelProvider } from "../provider.js";
 import type { ChatMessage, ModelConfig, ModelResponse, StreamChunk, ToolDefinition } from "../types.js";
 import {
@@ -23,39 +29,29 @@ export interface OpenAIDecisionsConfig {
   questions?: DecisionQuestion[];
   /** Opaque end-user identifier; this does not authenticate the user. */
   safetyIdentifier?: string;
+  /** Partition reusable prompt prefixes. */
+  promptCacheKey?: string;
+  /** Disable the implicit cache breakpoint. With no explicit markers, caching is disabled. */
+  promptCacheOptions?: { mode: "explicit" };
 }
 
-function buildInput(messages: ChatMessage[]): DecisionInputMessage[] {
-  let images = 0;
-  const input: DecisionInputMessage[] = [];
-  for (const message of messages) {
-    if (message.toolCalls?.length || message.role === "tool")
-      throw new Error("OpenAI Decisions does not support tool calls or tool results");
-    const parts: DecisionInputPart[] = [];
-    if (typeof message.content === "string") {
-      if (message.content) parts.push({ type: "input_text", text: message.content });
-    } else {
-      for (const part of message.content ?? []) {
-        if (part.type === "text") parts.push({ type: "input_text", text: part.text });
-        else if (part.type === "image") {
-          const imageURL = part.data.startsWith("data:")
-            ? part.data
-            : `data:${part.mimeType ?? "image/png"};base64,${part.data}`;
-          if (!/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(imageURL))
-            throw new Error("OpenAI Decisions images must contain inline base64 data; external URLs are unsupported");
-          if (++images > 128) throw new Error("OpenAI Decisions accepts at most 128 images");
-          parts.push({ type: "input_image", image_url: imageURL });
-        } else throw new Error(`OpenAI Decisions does not support ${part.type} input`);
-      }
-    }
-    if (!parts.length) continue;
-    // The endpoint only accepts user messages. Preserve role boundaries as text evidence.
-    parts.unshift({ type: "input_text", text: `[${message.role}]` });
-    input.push({ role: "user", content: parts });
-  }
-  if (!input.length) throw new Error("OpenAI Decisions requires text or image input");
-  return input;
+/** Native evidence evaluation without changing the generic chat input contract. */
+export interface OpenAIDecisionsEvaluateOptions {
+  questions?: DecisionQuestion[];
+  signal?: AbortSignal;
+  apiKey?: string;
+  promptCacheKey?: string;
+  promptCacheOptions?: { mode: "explicit" };
 }
+
+const cacheSchema = z.object({
+  prompt_cache_key: z.string().max(64).optional(),
+  prompt_cache_options: z
+    .object({ mode: z.literal("explicit") })
+    .strict()
+    .optional(),
+});
+const responseEnvelope = z.object({ usage: z.unknown().optional() }).passthrough();
 
 /** Typed classification through POST /v1/decisions; no generated tool arguments. */
 export class OpenAIDecisionsProvider implements ModelProvider {
@@ -82,7 +78,7 @@ export class OpenAIDecisionsProvider implements ModelProvider {
     const key = apiKey ?? this.config.apiKey ?? process.env.OPENAI_API_KEY;
     if (!key) throw new Error("OpenAI Decisions requires apiKey or OPENAI_API_KEY");
     const client = new ctor({ apiKey: key, baseURL: this.config.baseURL, maxRetries: 0 });
-    if (typeof client.decisions?.create !== "function") throw new Error(SDK_REQUIRED);
+    if (typeof client.post !== "function") throw new Error(SDK_REQUIRED);
     if (!apiKey) this.client = client;
     return client;
   }
@@ -105,23 +101,53 @@ export class OpenAIDecisionsProvider implements ModelProvider {
       options?.stop !== undefined
     )
       throw new Error("OpenAI Decisions does not support chat sampling, reasoning, or provider options");
+    const questions = options?.questions;
+    if (questions !== undefined && !Array.isArray(questions))
+      throw new Error("OpenAI Decisions questions must be an ordered question array");
+    return this.evaluate(buildDecisionInput(messages), {
+      questions,
+      signal: options?.signal,
+      apiKey: options?.apiKey,
+    });
+  }
+
+  /** Evaluate native messages, JSON, and historical tool activity in one request. */
+  async evaluate(input: DecisionInputItem[], options?: OpenAIDecisionsEvaluateOptions): Promise<ModelResponse> {
+    options?.signal?.throwIfAborted();
     const questions = parseDecisionQuestions(options?.questions ?? this.config.questions);
-    const input = buildInput(messages);
-    const raw = await this.getClient(options?.apiKey).decisions.create(
-      {
-        model: this.modelId,
-        input,
-        questions,
-        ...(this.config.safetyIdentifier !== undefined ? { safety_identifier: this.config.safetyIdentifier } : {}),
-      },
-      { signal: options?.signal },
-    );
+    const evidence = validateDecisionInput(input, questions);
+    const cache = cacheSchema.safeParse({
+      prompt_cache_key: options?.promptCacheKey ?? this.config.promptCacheKey,
+      prompt_cache_options: options?.promptCacheOptions ?? this.config.promptCacheOptions,
+    });
+    if (!cache.success) throw new Error(`Invalid OpenAI Decisions cache options: ${cache.error.message}`);
+    let raw: unknown;
+    try {
+      raw = await this.getClient(options?.apiKey).post<unknown>("/decisions", {
+        body: {
+          model: this.modelId,
+          input: evidence,
+          questions,
+          ...cache.data,
+          ...(this.config.safetyIdentifier !== undefined ? { safety_identifier: this.config.safetyIdentifier } : {}),
+        },
+        signal: options?.signal,
+      });
+    } catch (cause) {
+      options?.signal?.throwIfAborted();
+      throw cause;
+    }
+    const envelope = responseEnvelope.safeParse(raw);
     const usage = providerTokenUsage(
       this.providerId,
       "decisions",
-      raw.usage,
+      envelope.success ? envelope.data.usage : undefined,
       mergeResponseContext(
-        { ...endpointBillingContext(this.providerId, this.config.baseURL), modelId: this.modelId },
+        {
+          ...endpointBillingContext(this.providerId, this.config.baseURL),
+          modelId: this.modelId,
+          requestedModelId: this.modelId,
+        },
         raw,
       ),
     );

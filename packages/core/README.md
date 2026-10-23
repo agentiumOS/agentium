@@ -164,9 +164,33 @@ try {
 }
 ```
 
-The default model is `gpt-6-luna`. A run question array replaces constructor defaults. Answers can include individual refusals; scores can be fractional. `stream()` emits completed JSON followed by a finish chunk containing `decisions`. Only text and inline base64 images are supported. Conversation roles become labeled text evidence in user messages; question instructions define the classification task. Tools, arbitrary output schemas, chat sampling options, and semantic caching are unsupported.
+The default model is `gpt-6-luna`. A run question array replaces constructor defaults. Answers can include individual refusals; scores can be fractional. `stream()` emits completed JSON followed by a finish chunk containing `decisions`. Conversation roles and paired function-call history are preserved as evidence. User messages accept text and inline or hosted images. Up to 400 questions can include text and image instructions; the complete request may contain at most 128 images. Tool definitions, arbitrary output schemas, chat sampling options, and semantic caching remain unsupported.
+
+The following native input API is part of the unreleased provider update. Existing Agent calls still use `ChatMessage`; construct `OpenAIDecisionsProvider` and use `evaluate()` for structured JSON or custom-tool history. The registry-backed `openaiDecisions()` factory retains its generic `ModelProvider` return type.
+
+```typescript
+import { OpenAIDecisionsProvider, type DecisionInputItem } from "@agentium/core";
+
+const provider = new OpenAIDecisionsProvider("gpt-6-luna", {
+  questions: [{ type: "predicate", name: "duplicate", instructions: "Are there duplicate charges?" }],
+});
+const input: DecisionInputItem[] = [{
+  role: "user",
+  content: [{ type: "input_json", data: { charges: [49, 49] } }],
+}];
+const result = await provider.evaluate(input);
+console.log(result.decisions);
+```
+
+Native JSON accepts objects or arrays of objects, with finite JSON values inside. Invalid roles, unsupported media, circular data, and unmatched tool outputs fail before transport. The adapter uses the documented generic request method in `openai@7.30.0`, so no SDK upgrade is required. Constructor cache defaults and per-call `promptCacheKey` / `promptCacheOptions: { mode: "explicit" }` control prompt caching. Explicit mode with no marked parts disables caching; semantic caching remains separate. Direct provider calls return usage but do not create an Agent accounting attempt.
 
 Decisions usage is recorded under its own API and actual billing context. Regional, context, and account conditions must match a catalog rule; missing conditions remain unpriced. See the [Decisions guide](https://docs.agentium.in/models/openai-decisions).
+
+## Gemini Argon (unreleased provider update)
+
+Use `google("gemini-4-argon")` with `@google/genai@2.27.0` or later for the existing single-request generate and stream paths. Reasoning efforts `low`, `medium`, and `high` map to the provider's levels; `xhigh` and `max` use `HIGH`. Omit reasoning to retain the provider default. Argon rejects disabled reasoning, `none` / `minimal`, token-based thinking budgets, explicit cached-content resources, and output limits above 65,536. Smaller caller limits and timeouts are preserved. Sampling values are omitted for Argon.
+
+Long-decode continuation is not implemented in this adapter. If Google returns a continuation marker, the call fails with `ModelUsageError` carrying available usage instead of reporting a completed answer or issuing another request. Streamed text before that error is provisional. Native function-call IDs, thought signatures, and returned model identities survive tool history and accounting. Existing Gemini 2.5 and 3 controls keep their behavior.
 
 ## Usage and cost accounting
 
